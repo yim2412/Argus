@@ -1,0 +1,43 @@
+# Argus 기본 설정 — 패키지 동봉본. 이 파일을 직접 고치지 말 것.
+#
+# 사용자 설정은 %APPDATA%\Argus\settings.yaml 이며, 첫 실행 시 이 파일의 사본이 생성된다.
+# 적용 우선순위:  기본값(이 파일)  <  사용자 settings.yaml  <  환경변수(ARGUS_*)
+#
+# 환경변수 형식: ARGUS_<섹션>__<키>   예) ARGUS_BUDGET__CPU_PERCENT=1.0
+#
+# 규칙: 탐지 임계값을 코드에 박지 않는다. 튜닝은 코드 수정 없이 이 파일로만 되어야 한다.
+
+general:
+  log_level: INFO            # DEBUG / INFO / WARNING / ERROR
+  console_log: true
+
+storage:
+  # 배치 쓰기 — 수집 스레드가 DB 를 기다리지 않게 모아서 넣는다.
+  flush_interval_ms: 200
+  flush_max_rows: 500
+  # 큐가 가득 차면 오래된 것부터 버린다. 수집 경로는 절대 블로킹하지 않는다.
+  queue_max_rows: 20000
+
+budget:
+  # Argus 자신의 리소스 상한. 모니터가 병목이 되는 순간 제품은 실패다.
+  cpu_percent: 2.0
+  rss_mb: 300
+  check_interval_s: 5.0
+  # 상한을 연속 몇 회 초과해야 스로틀을 올리는가 (순간 스파이크로 흔들리지 않게)
+  breach_streak_to_throttle: 3
+  # 연속 몇 회 여유로워야 스로틀을 내리는가. 올릴 때보다 크게 잡아 히스테리시스를 준다.
+  calm_streak_to_relax: 12
+  # 스로틀 단계별 수집 주기 배수 (1.0 = 정상)
+  throttle_multipliers: [1.0, 2.0, 4.0, 10.0]
+
+self_telemetry:
+  enabled: true
+  interval_s: 5.0
+
+calibration:
+  # 첫 실행 시 이 PC 의 기준선을 만든다. 하드웨어를 가정하지 않기 위해 필수.
+  enabled: true
+  # 디스크 벤치에 쓸 임시 파일 크기(MB). 캐시 폴더에 쓰고 즉시 지운다.
+  disk_bench_mb: 16
+  # 하드웨어 시그니처가 그대로면 재실행하지 않는다.
+  reuse_days: 90

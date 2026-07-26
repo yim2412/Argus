@@ -13,6 +13,9 @@ dist/
 # 수집 데이터 — 프로세스명·실행경로·네트워크 목적지 등 개인정보가 들어있다. 절대 커밋 금지
 data/
 warm/
+# ARGUS_DATA_DIR 로 지정하는 개발용 데이터 폴더
+# (주의: .gitignore 는 줄 끝 주석을 지원하지 않는다. 반드시 별도 줄에 쓸 것)
+.devdata/
 *.db
 *.db-wal
 *.db-shm

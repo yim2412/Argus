@@ -3,8 +3,8 @@
 Windows PC 성능 이상 탐지 프로그램. 리소스 사용 패턴을 학습해 **"평소와 다른" 상태를 감지하고,
 느려진 원인 프로세스를 지목**한다.
 
-> **상태: 설계 단계 (Phase 0 착수 전)** — 아직 실행 가능한 코드가 없습니다.
-> 현재 저장소에는 스펙·계획·규칙 문서만 있습니다.
+> **상태: Phase 0 완료** — 실행은 되지만 아직 **자기 자신만 관측합니다.**
+> 시스템 메트릭 수집은 Phase 1, 이상 탐지는 Phase 3부터입니다. 진행 상황은 [`CHANGELOG.md`](CHANGELOG.md) 참조.
 
 ---
 
@@ -39,11 +39,37 @@ Argus는 **그 값이 이 PC 기준으로 이상한지**를 판단하고, 이상
 
 ---
 
+## 실행
+
+```powershell
+uv venv --python 3.12 .venv
+uv pip install --python .venv\Scripts\python.exe -r requirements.txt
+
+.venv\Scripts\python.exe -m argus --check          # 기동 점검 (권한·GPU·DB·기준선)
+.venv\Scripts\python.exe -m argus                  # 상주 실행 (Ctrl+C 종료)
+.venv\Scripts\python.exe -m argus --duration 60    # 60초만 실행
+```
+
+첫 실행 시 `%APPDATA%\Argus\` 에 DB·설정·로그가 만들어지고, 약 3초간 하드웨어 기준선을 측정합니다.
+개발 중 실사용 데이터를 건드리지 않으려면 `ARGUS_DATA_DIR` 로 위치를 옮기세요.
+
+### 검증
+
+```powershell
+.venv\Scripts\python.exe -m argus.storage.hot      # 모듈별 스모크 ([OK]/[FAIL])
+.venv\Scripts\python.exe -m pytest tests -q        # 정상 종료·DB 무결성
+```
+
+각 모듈은 단독 실행하면 자기 점검 결과를 출력합니다.
+
+---
+
 ## 문서
 
 | 문서 | 내용 |
 |---|---|
 | [`PLAN.md`](PLAN.md) | 아키텍처, 데이터 모델, Phase별 개발 계획 (**현행 기준**) |
+| [`CHANGELOG.md`](CHANGELOG.md) | 변경 이력과 Phase별 실측 결과 |
 | [`CLAUDE.md`](CLAUDE.md) | 프로젝트 규칙 — 설계 원칙, 수집·탐지 규칙, 작업 방식 |
 | [`docs/Argus.md`](docs/Argus.md) | 최초 스펙 문서 (원본, 충돌 시 `PLAN.md` 우선) |
 

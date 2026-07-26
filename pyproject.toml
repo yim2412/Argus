@@ -1,0 +1,38 @@
+[project]
+name = "argus"
+version = "0.1.0"
+description = "Windows PC 성능 이상 탐지 프로그램 — 평소와 다른 상태를 감지하고 원인 프로세스를 지목한다"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { file = "LICENSE" }
+authors = [{ name = "yim2412" }]
+
+# Phase 0 의존성만. 각 Phase 착수 시 필요한 것을 추가한다.
+#   Phase 1  : (없음 — psutil/pywin32/pynvml 이미 포함)
+#   Phase 2+ : numpy, scipy, pyarrow, duckdb
+#   Phase 5+ : scikit-learn, river
+#   Phase 7  : torch, onnxruntime
+#   Phase 10 : streamlit, plotly
+dependencies = [
+    "psutil>=6.0",
+    "pywin32>=306",
+    "PyYAML>=6.0",
+    "pydantic>=2.7",
+    "nvidia-ml-py>=12.560",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+argus = "argus.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["argus*"]
+
+[tool.setuptools.package-data]
+argus = ["config/*.yaml", "storage/migrations/*.sql"]

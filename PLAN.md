@@ -206,6 +206,10 @@ self_telemetry(ts, cpu, rss, queue_depth, drop_count, write_latency_ms)
 
 **DoD**: `python -m argus` 실행 → 자기 자신의 리소스 사용량이 SQLite에 쌓이고, 로그가 남고, Ctrl+C로 깨끗하게 종료된다.
 
+> ✅ **완료.** 60초 실행 실측: CPU 평균 0.013%(최대 0.050%), RSS 67.5MB, 기록 간격 5.009초,
+> 핸들 안정, `drop_count` 0, 시그널 종료 후 DB 무결성 OK. 상세는 `CHANGELOG.md`.
+> 24시간 연속 가동 검증은 실제 수집기가 붙는 Phase 1 에서 함께 한다.
+
 ---
 
 ### Phase 1 — 수집 레이어 (3~5일)
@@ -589,7 +593,7 @@ argus/
 
 | 영역 | 선택 | 비고 |
 |---|---|---|
-| 런타임 | Python 3.11 | 3.12는 일부 win32 패키지 호환성 확인 필요 |
+| 런타임 | **Python 3.12** | 3.14는 PyTorch·river 지원이 불확실해 회피. 3.12는 전 의존성이 안정 지원 |
 | 시스템 메트릭 | psutil, pywin32(PDH) | |
 | GPU | pynvml | NVML 부재 시 graceful degradation |
 | 커널 이벤트 | pywintrace / xperf fallback, PresentMon | Phase 12, 고위험 |

@@ -1,0 +1,6 @@
+# Phase 0 의존성. 정본은 pyproject.toml — 이 파일은 편의용 미러.
+psutil>=6.0
+pywin32>=306
+PyYAML>=6.0
+pydantic>=2.7
+nvidia-ml-py>=12.560
