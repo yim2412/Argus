@@ -34,6 +34,45 @@ self_telemetry:
   enabled: true
   interval_s: 5.0
 
+collector:
+  # 1Hz 시스템 스냅샷 (CPU/메모리/디스크/네트워크)
+  system_interval_s: 1.0
+  # Windows 성능 카운터. 디스크 응답시간처럼 psutil 로 못 얻는 "증상" 지표를 담당한다.
+  pdh_enabled: true
+  # GPU. NVML 이 없으면 자동으로 꺼진다.
+  gpu_enabled: true
+  gpu_interval_s: 1.0
+
+  process:
+    enabled: true
+    # 수집 주기. PDH "Process V2" 와일드카드 질의는 전체 프로세스를 한 번에 가져오므로
+    # (약 11ms) 매 틱 전부를 수집해도 부담이 없다. 비싼 것은 수집이 아니라 저장이다.
+    collect_interval_s: 1.0
+    # 매 틱 저장할 활성 집합 크기 — CPU 상위 N + 메모리 상위 N + 포어그라운드
+    top_cpu: 15
+    top_memory: 10
+    # 전체 프로세스를 저장하는 주기. 300개를 1초마다 넣으면 하루 2600만 행이 된다.
+    full_store_interval_s: 30.0
+    # PDH 를 쓸 수 없을 때(구형 Windows 등) psutil 로 내려가는데, 그쪽은 프로세스당
+    # 개별 시스템 호출이라 300개 스캔에 1초 넘게 걸린다. 그래서 주기를 크게 잡는다.
+    fallback_interval_s: 15.0
+
+  network:
+    enabled: true
+    interval_s: 30.0
+    # 연결 스냅샷은 개인정보가 짙다. 필요 없으면 여기서 끄면 된다.
+    max_rows_per_snapshot: 500
+
+retention:
+  # 원본(초 단위) 보존 시간. 이후 단계에서 1분 집계로 다운샘플하면 더 줄일 수 있다.
+  raw_hours: 24
+  process_hours: 24
+  network_hours: 72
+  events_days: 30
+  self_telemetry_days: 7
+  # 정리 주기
+  interval_s: 300.0
+
 calibration:
   # 첫 실행 시 이 PC 의 기준선을 만든다. 하드웨어를 가정하지 않기 위해 필수.
   enabled: true

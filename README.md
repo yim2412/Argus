@@ -3,8 +3,10 @@
 Windows PC 성능 이상 탐지 프로그램. 리소스 사용 패턴을 학습해 **"평소와 다른" 상태를 감지하고,
 느려진 원인 프로세스를 지목**한다.
 
-> **상태: Phase 0 완료** — 실행은 되지만 아직 **자기 자신만 관측합니다.**
-> 시스템 메트릭 수집은 Phase 1, 이상 탐지는 Phase 3부터입니다. 진행 상황은 [`CHANGELOG.md`](CHANGELOG.md) 참조.
+> **상태: Phase 1 완료** — 실행하면 **실제 메트릭이 SQLite에 쌓입니다.**
+> 아직 이상 탐지는 하지 않습니다(Phase 3부터). 진행 상황은 [`CHANGELOG.md`](CHANGELOG.md) 참조.
+>
+> 실측(300초 기준): 자체 CPU 평균 0.22% · RSS 76MB · DB 292MB/일 · 유실 0건
 
 ---
 
@@ -53,11 +55,25 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 첫 실행 시 `%APPDATA%\Argus\` 에 DB·설정·로그가 만들어지고, 약 3초간 하드웨어 기준선을 측정합니다.
 개발 중 실사용 데이터를 건드리지 않으려면 `ARGUS_DATA_DIR` 로 위치를 옮기세요.
 
+### 수집 중인 것
+
+| 테이블 | 주기 | 내용 |
+|---|---|---|
+| `metrics_raw` | 1초 | CPU per-core·메모리·디스크 IO/**응답시간**·네트워크·컨텍스트 스위치·**실효 클럭** |
+| `gpu_metrics` | 1초 | 사용률·VRAM·온도·전력·클럭·**스로틀 사유** (NVIDIA) |
+| `process_metrics` | 1초 / 30초 | 활성 집합은 1초, 전체 프로세스는 30초 해상도 |
+| `process_events` | 이벤트 | 프로세스 생성·종료 (부모·실행 경로 포함) |
+| `net_connections` | 30초 | 활성 연결 (DNS 역조회 없음) |
+| `self_telemetry` | 5초 | Argus 자신의 CPU·메모리·핸들·큐·유실 |
+
+굵게 표시한 것이 일반 모니터링 도구에 없는 "증상" 지표입니다. 사용률은 원인이고 응답시간이 증상인데,
+증상 없는 원인은 알릴 가치가 없습니다.
+
 ### 검증
 
 ```powershell
-.venv\Scripts\python.exe -m argus.storage.hot      # 모듈별 스모크 ([OK]/[FAIL])
-.venv\Scripts\python.exe -m pytest tests -q        # 정상 종료·DB 무결성
+.venv\Scripts\python.exe -m argus.collector.process   # 모듈별 스모크 ([OK]/[FAIL])
+.venv\Scripts\python.exe -m pytest tests -q           # 정상 종료·DB 무결성
 ```
 
 각 모듈은 단독 실행하면 자기 점검 결과를 출력합니다.

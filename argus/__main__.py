@@ -16,6 +16,10 @@ import threading
 import time
 
 from . import __version__
+from .collector.gpu import GpuCollector
+from .collector.network import NetworkCollector
+from .collector.process import ProcessCollector
+from .collector.system import SystemCollector
 from .config.loader import ConfigError, load_settings
 from .logging_setup import get_logger, setup, write_crash
 from .machine.calibration import ensure_profile
@@ -23,8 +27,12 @@ from .machine.capabilities import load_or_detect
 from .paths import ENV_DATA_DIR, data_dir, db_path
 from .runtime.budget import BudgetGuard
 from .runtime.selftel import BudgetMonitor, SelfTelemetry
+from .runtime.stats import STATS
 from .runtime.supervisor import Supervisor
 from .storage.hot import Database
+from .storage.queue import SampleQueue
+from .storage.retention import Retention
+from .storage.writer import BatchWriter
 
 log = get_logger("argus")
 
@@ -80,6 +88,73 @@ def _print_startup_report(settings, caps, profile, db: Database) -> None:
     )
 
 
+def _build_collectors(settings, queue: SampleQueue, caps) -> list:
+    """설정과 이 PC 의 능력에 맞춰 수집기를 조립한다.
+
+    쓸 수 없는 것은 애초에 만들지 않는다. NVIDIA GPU 가 없는데 GPU 수집기를 띄워 매 초
+    실패시키는 것은 낭비이고, 로그만 더럽힌다.
+    """
+    collector_settings = settings.collector
+    collectors: list = [
+        SystemCollector(
+            queue,
+            interval_s=collector_settings.system_interval_s,
+            pdh_enabled=collector_settings.pdh_enabled and caps.pdh.available,
+        )
+    ]
+
+    if collector_settings.gpu_enabled and caps.nvml.available:
+        collectors.append(GpuCollector(queue, interval_s=collector_settings.gpu_interval_s))
+
+    process_settings = collector_settings.process
+    if process_settings.enabled:
+        collectors.append(
+            ProcessCollector(
+                queue,
+                collect_interval_s=process_settings.collect_interval_s,
+                top_cpu=process_settings.top_cpu,
+                top_memory=process_settings.top_memory,
+                full_store_interval_s=process_settings.full_store_interval_s,
+                fallback_interval_s=process_settings.fallback_interval_s,
+            )
+        )
+
+    network_settings = collector_settings.network
+    if network_settings.enabled:
+        collectors.append(
+            NetworkCollector(
+                queue,
+                interval_s=network_settings.interval_s,
+                max_rows=network_settings.max_rows_per_snapshot,
+            )
+        )
+
+    return collectors
+
+
+def _print_shutdown_report(db: Database, started: float) -> None:
+    """종료 시 무엇이 얼마나 쌓였는지. 눈으로 확인 가능한 마지막 지점이다."""
+    uptime = time.time() - started
+    tables = (
+        "metrics_raw",
+        "gpu_metrics",
+        "process_metrics",
+        "process_events",
+        "net_connections",
+        "self_telemetry",
+    )
+    print(f"  종료 — 가동 {uptime:.1f}초")
+    for table in tables:
+        try:
+            count = db.query(f"SELECT COUNT(*) AS c FROM {table}")[0]["c"]
+        except Exception:
+            continue
+        print(f"    {table:18} {count:>10,}행")
+    snapshot = STATS.snapshot()
+    print(f"    {'DB 크기':18} {db.size_bytes():>10,} bytes")
+    print(f"    {'버린 행(drop)':18} {snapshot.drop_count:>10,}  (0 이어야 정상)")
+
+
 def run(args: argparse.Namespace) -> int:
     if args.data_dir:
         os.environ[ENV_DATA_DIR] = args.data_dir
@@ -113,10 +188,29 @@ def run(args: argparse.Namespace) -> int:
             return 0
 
         guard = BudgetGuard(settings.budget)
+        queue = SampleQueue(maxsize=settings.storage.queue_max_rows)
         sup = Supervisor(multiplier_fn=lambda: guard.multiplier)
+
+        # 런타임 — 스로틀을 받지 않는다(부하가 클 때야말로 제때 돌아야 하는 것들)
         sup.add(BudgetMonitor(guard))
+        sup.add(
+            BatchWriter(
+                db,
+                queue,
+                flush_interval_ms=settings.storage.flush_interval_ms,
+                flush_max_rows=settings.storage.flush_max_rows,
+            )
+        )
         if settings.self_telemetry.enabled:
             sup.add(SelfTelemetry(db, guard, interval_s=settings.self_telemetry.interval_s))
+        sup.add(Retention(db, settings.retention))
+
+        # 수집기 — 예산이 빠듯해지면 스로틀 대상이 된다
+        collectors = _build_collectors(settings, queue, caps)
+        for collector in collectors:
+            sup.add(collector)
+
+        print("  수집기   : " + ", ".join(c.name for c in collectors))
 
         sup.install_signal_handlers()
         sup.start()
@@ -132,12 +226,16 @@ def run(args: argparse.Namespace) -> int:
         sup.wait()
         sup.stop()
 
-        rows = db.query("SELECT COUNT(*) AS c FROM self_telemetry")[0]["c"]
+        snapshot = STATS.snapshot()
         log.info(
             "Argus 종료",
-            extra={"uptime_s": round(time.time() - started, 1), "self_telemetry_rows": rows},
+            extra={
+                "uptime_s": round(time.time() - started, 1),
+                "drop_count": snapshot.drop_count,
+                "db_bytes": db.size_bytes(),
+            },
         )
-        print(f"  종료 — 가동 {time.time() - started:.1f}초, self_telemetry 누적 {rows}행")
+        _print_shutdown_report(db, started)
         return 0
     finally:
         db.close()

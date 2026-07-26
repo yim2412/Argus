@@ -75,12 +75,55 @@ class CalibrationSettings(BaseModel):
     reuse_days: int = Field(default=90, ge=0)
 
 
+class ProcessCollectorSettings(BaseModel):
+    enabled: bool = True
+    collect_interval_s: float = Field(default=1.0, gt=0)
+    top_cpu: int = Field(default=15, ge=0)
+    top_memory: int = Field(default=10, ge=0)
+    full_store_interval_s: float = Field(default=30.0, gt=0)
+    fallback_interval_s: float = Field(default=15.0, gt=0)
+
+    @field_validator("full_store_interval_s")
+    @classmethod
+    def _slower_than_collect(cls, v: float, info) -> float:
+        collect = info.data.get("collect_interval_s")
+        if collect is not None and v < collect:
+            raise ValueError("full_store_interval_s 는 collect_interval_s 보다 작을 수 없습니다")
+        return v
+
+
+class NetworkCollectorSettings(BaseModel):
+    enabled: bool = True
+    interval_s: float = Field(default=30.0, gt=0)
+    max_rows_per_snapshot: int = Field(default=500, ge=1)
+
+
+class CollectorSettings(BaseModel):
+    system_interval_s: float = Field(default=1.0, gt=0)
+    pdh_enabled: bool = True
+    gpu_enabled: bool = True
+    gpu_interval_s: float = Field(default=1.0, gt=0)
+    process: ProcessCollectorSettings = ProcessCollectorSettings()
+    network: NetworkCollectorSettings = NetworkCollectorSettings()
+
+
+class RetentionSettings(BaseModel):
+    raw_hours: int = Field(default=24, ge=1)
+    process_hours: int = Field(default=24, ge=1)
+    network_hours: int = Field(default=72, ge=1)
+    events_days: int = Field(default=30, ge=1)
+    self_telemetry_days: int = Field(default=7, ge=1)
+    interval_s: float = Field(default=300.0, gt=0)
+
+
 class Settings(BaseModel):
     general: GeneralSettings = GeneralSettings()
     storage: StorageSettings = StorageSettings()
     budget: BudgetSettings = BudgetSettings()
     self_telemetry: SelfTelemetrySettings = SelfTelemetrySettings()
     calibration: CalibrationSettings = CalibrationSettings()
+    collector: CollectorSettings = CollectorSettings()
+    retention: RetentionSettings = RetentionSettings()
 
 
 class ConfigError(Exception):
