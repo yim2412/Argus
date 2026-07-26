@@ -34,6 +34,14 @@ self_telemetry:
   enabled: true
   interval_s: 5.0
 
+gap_monitor:
+  # 절전 복귀·시각 변경 감지. 상주 프로그램은 PC 가 자는 것을 반드시 겪는다.
+  enabled: true
+  interval_s: 1.0
+  # 예상 주기보다 이만큼 더 벌어지면 공백으로 본다. 너무 작으면 일시적 부하를
+  # 절전으로 오인하고, 너무 크면 짧은 절전을 놓친다.
+  threshold_s: 30.0
+
 collector:
   # 1Hz 시스템 스냅샷 (CPU/메모리/디스크/네트워크)
   system_interval_s: 1.0

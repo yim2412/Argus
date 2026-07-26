@@ -10,6 +10,7 @@ Phase 0 에서는 자기 계측만 돈다. 실제 메트릭 수집기는 Phase 1
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import threading
@@ -26,11 +27,14 @@ from .machine.calibration import ensure_profile
 from .machine.capabilities import load_or_detect
 from .paths import ENV_DATA_DIR, data_dir, db_path
 from .runtime.budget import BudgetGuard
+from .runtime.gapmon import GapMonitor, gap_event_row
 from .runtime.selftel import BudgetMonitor, SelfTelemetry
 from .runtime.stats import STATS
 from .runtime.supervisor import Supervisor
 from .storage.hot import Database
-from .storage.queue import SampleQueue
+from .storage.queue import Sample, SampleQueue
+
+SYSTEM_EVENT_COLUMNS = ("ts", "event", "gap_seconds", "detail")
 from .storage.retention import Retention
 from .storage.writer import BatchWriter
 
@@ -141,6 +145,7 @@ def _print_shutdown_report(db: Database, started: float) -> None:
         "process_metrics",
         "process_events",
         "net_connections",
+        "system_events",
         "self_telemetry",
     )
     print(f"  종료 — 가동 {uptime:.1f}초")
@@ -210,6 +215,31 @@ def run(args: argparse.Namespace) -> int:
         for collector in collectors:
             sup.add(collector)
 
+        # 절전 복귀 감지. 수집기를 모두 등록한 뒤에 붙여야 브로드캐스트가 전부에 닿는다.
+        if settings.gap_monitor.enabled:
+            def handle_gap(gap_s: float, detail: dict) -> None:
+                queue.put(
+                    Sample("system_events", SYSTEM_EVENT_COLUMNS, gap_event_row(time.time(), gap_s, detail))
+                )
+                handled = sup.broadcast_time_gap(gap_s)
+                log.info("공백 복구 완료", extra={"components": handled})
+
+            sup.add(
+                GapMonitor(
+                    interval_s=settings.gap_monitor.interval_s,
+                    threshold_s=settings.gap_monitor.threshold_s,
+                    on_gap=handle_gap,
+                )
+            )
+
+        queue.put(
+            Sample(
+                "system_events",
+                SYSTEM_EVENT_COLUMNS,
+                (time.time(), "startup", None, json.dumps({"version": __version__})),
+            )
+        )
+
         print("  수집기   : " + ", ".join(c.name for c in collectors))
 
         sup.install_signal_handlers()
@@ -224,6 +254,16 @@ def run(args: argparse.Namespace) -> int:
 
         started = time.time()
         sup.wait()
+
+        # 종료 표시를 큐에 넣고서 멈춘다. writer 의 teardown 이 잔여분을 비우므로
+        # 이 순서여야 실제로 기록된다.
+        queue.put(
+            Sample(
+                "system_events",
+                SYSTEM_EVENT_COLUMNS,
+                (time.time(), "shutdown", None, json.dumps({"uptime_s": round(time.time() - started, 1)})),
+            )
+        )
         sup.stop()
 
         snapshot = STATS.snapshot()

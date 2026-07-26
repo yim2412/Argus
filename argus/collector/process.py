@@ -139,6 +139,36 @@ class ProcessCollector(Collector):
         if self._source is not None:
             self._source.close()
 
+    def on_time_gap(self, gap_s: float) -> None:
+        """절전 복귀 처리.
+
+        **핵심은 프로세스 목록을 조용히 다시 기준 잡는 것이다.** 절전 전후로 목록이 크게
+        달라지므로 그대로 두면 수백 건의 생성·종료 이벤트가 한꺼번에 쏟아진다. 하지만
+        그 사이에 실제로 무슨 일이 있었는지는 우리가 못 본 것뿐이고, 없던 일을 지어내
+        기록하면 Phase 13 의 보안 탐지가 통째로 오작동한다.
+
+        공백 사실 자체는 `system_events` 에 남으므로 정보를 잃지 않는다.
+        """
+        if self._source is None:
+            return
+        # PDH 속도·백분율 카운터는 표본을 다시 쌓아야 한다.
+        self._source.close()
+        self._source = create_source(prefer_pdh=self._prefer_pdh)
+        snapshot = self._source.snapshot()
+        before = len(self._known)
+        self._known = set(snapshot)
+        # 다음 전체 저장을 즉시 일으켜 복귀 직후 상태를 한 번 남긴다.
+        self._last_full_store = 0.0
+        log.info(
+            "프로세스 기준선 재설정 (이벤트 폭주 방지)",
+            extra={
+                "gap_s": round(gap_s, 1),
+                "before": before,
+                "after": len(self._known),
+                "suppressed_events": abs(len(self._known) - before),
+            },
+        )
+
     # ------------------------------------------------------------------ 내부
 
     def _select_active(self, snapshot: dict[int, ProcSample], fg_pid: int | None) -> set[int]:

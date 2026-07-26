@@ -132,6 +132,11 @@ class NetworkCollector(Collector):
         if rows >= self.max_rows:
             log.debug("연결 스냅샷이 상한에 걸렸다", extra={"limit": self.max_rows})
 
+    def on_time_gap(self, gap_s: float) -> None:
+        # pid 는 재부팅·절전 후 재사용되므로 이름 캐시를 버린다. 안 그러면 엉뚱한
+        # 프로세스 이름이 연결에 붙는다.
+        self._name_cache.clear()
+
     def describe(self) -> dict[str, Any]:
         return {
             "name": self.name,

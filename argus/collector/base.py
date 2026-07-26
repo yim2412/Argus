@@ -76,6 +76,20 @@ class Collector(Component):
             self.queue.put_many(self._pending)
             self._pending.clear()
 
+    def on_time_gap(self, gap_s: float) -> None:
+        """절전 복귀·시각 점프 직후에 불린다.
+
+        누적 카운터 기반 상태를 버려야 한다. 공백을 사이에 둔 두 관측의 차분은
+        "지금"을 대표하지 않기 때문이다. 기본 동작은 속도 추적 초기화이고,
+        더 할 일이 있는 수집기가 덮어쓴다.
+        """
+        self._rates_reset()
+
+    def _rates_reset(self) -> None:
+        tracker = getattr(self, "_rates", None)
+        if isinstance(tracker, RateTracker):
+            tracker.reset()
+
     def describe(self) -> dict[str, Any]:
         """스모크·진단용 상태 요약. 하위 클래스가 덮어쓴다."""
         return {"name": self.name, "interval_s": self.interval_s}

@@ -42,6 +42,9 @@ class Retention(Component):
             ("net_connections", s.network_hours * 3600),
             ("process_events", s.events_days * 86400),
             ("self_telemetry", s.self_telemetry_days * 86400),
+            # 시스템 사건은 양이 적고(하루 몇 건) 진단 가치가 커서 오래 남긴다.
+            # 절전 공백 기록은 나중에 베이스라인이 그 구간을 제외하는 근거가 된다.
+            ("system_events", s.events_days * 86400),
         ]
 
     def purge_once(self) -> dict[str, int]:

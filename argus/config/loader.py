@@ -69,6 +69,12 @@ class SelfTelemetrySettings(BaseModel):
     interval_s: float = Field(default=5.0, gt=0)
 
 
+class GapMonitorSettings(BaseModel):
+    enabled: bool = True
+    interval_s: float = Field(default=1.0, gt=0)
+    threshold_s: float = Field(default=30.0, gt=0)
+
+
 class CalibrationSettings(BaseModel):
     enabled: bool = True
     disk_bench_mb: int = Field(default=16, ge=1, le=512)
@@ -121,6 +127,7 @@ class Settings(BaseModel):
     storage: StorageSettings = StorageSettings()
     budget: BudgetSettings = BudgetSettings()
     self_telemetry: SelfTelemetrySettings = SelfTelemetrySettings()
+    gap_monitor: GapMonitorSettings = GapMonitorSettings()
     calibration: CalibrationSettings = CalibrationSettings()
     collector: CollectorSettings = CollectorSettings()
     retention: RetentionSettings = RetentionSettings()

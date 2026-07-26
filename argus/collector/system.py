@@ -88,6 +88,24 @@ class SystemCollector(Collector):
         if self._pdh is not None:
             self._pdh.close()
 
+    def on_time_gap(self, gap_s: float) -> None:
+        """절전 복귀 처리.
+
+        누적 카운터 차분을 버리는 것에 더해 PDH 질의를 새로 연다. 절전 동안 성능
+        카운터 제공자가 재시작되면 기존 핸들이 무효가 될 수 있고, 속도형 카운터는
+        어차피 표본을 다시 쌓아야 한다.
+        """
+        self._rates.reset()
+        if self._pdh is not None:
+            self._pdh.close()
+            self._pdh = PdhCounters().open()
+            if not self._pdh.available:
+                log.warning("복귀 후 PDH 재개방 실패", extra={"failures": self._pdh.failures})
+        # psutil 의 CPU 사용률도 직전 호출과의 차분이라 기준점을 다시 잡는다.
+        psutil.cpu_percent(percpu=True)
+        psutil.cpu_percent()
+        log.info("시스템 수집기 재설정 완료", extra={"gap_s": round(gap_s, 1)})
+
     # ------------------------------------------------------------------ 수집
 
     def collect(self) -> None:

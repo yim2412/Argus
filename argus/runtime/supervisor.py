@@ -147,6 +147,25 @@ class Supervisor:
         else:
             log.info("모든 컴포넌트 종료 완료")
 
+    def broadcast_time_gap(self, gap_s: float) -> list[str]:
+        """모든 컴포넌트에 시간 공백을 알린다. 처리한 컴포넌트 이름을 돌려준다.
+
+        각 컴포넌트의 처리 실패를 격리한다 — 하나가 복구에 실패해도 나머지는 복구되어야
+        한다. 복구 자체를 못 한 컴포넌트는 다음 틱부터 어차피 스스로 회복하거나
+        에러 격리 경로를 탄다.
+        """
+        handled: list[str] = []
+        for component in self._components:
+            handler = getattr(component, "on_time_gap", None)
+            if handler is None:
+                continue
+            try:
+                handler(gap_s)
+                handled.append(component.name)
+            except Exception:
+                log.exception("공백 복구 실패", extra={"component": component.name})
+        return handled
+
     def install_signal_handlers(self) -> None:
         """Ctrl+C / 종료 요청을 정상 종료로 바꾼다."""
 
