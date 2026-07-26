@@ -1,0 +1,47 @@
+# 파이썬
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# PyInstaller 산출물
+build/
+dist/
+*.spec
+!packaging/*.spec
+
+# 수집 데이터 — 프로세스명·실행경로·네트워크 목적지 등 개인정보가 들어있다. 절대 커밋 금지
+data/
+warm/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.parquet
+machine_profile.json
+capabilities.json
+
+# 모델 아티팩트
+models/
+*.onnx
+*.pt
+*.pth
+*.pkl
+*.joblib
+
+# 평가 산출물
+eval_runs/
+reports/
+
+# 임시/작업 파일
+_build_start.txt
+_bgtask.meta
+*.log
+crash_*.json
+
+# 에디터/OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
