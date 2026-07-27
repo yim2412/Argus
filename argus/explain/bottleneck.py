@@ -1,0 +1,163 @@
+"""병목 분류 — 무엇에 막혔나.
+
+"CPU 가 높다"와 "CPU 에 막혔다"는 다르다. 디스크를 기다리느라 CPU 가 노는 동안에도
+사용자는 느리다고 느낀다. 무엇을 늘려야 빨라지는지 답하려면 자원 종류를 특정해야 한다.
+
+**증상과 원인을 함께 본다.** 사용률(원인)만으로 판정하면 NVMe 에 600MB/s 를 퍼부어도
+응답이 0.2ms 인 경우를 "디스크 병목"이라 부르게 된다. 실제로 Phase 2·3 에서 그 일이
+있었고, 그래서 이 PC 의 `disk_thrash` 시나리오는 증상 없음으로 채점에서 빠진다.
+사용자가 느끼지 못하는 것은 병목이 아니다.
+
+판정은 규칙이다. 학습 모델을 쓰지 않는 이유는 라벨이 없기 때문이다 — "이 구간은
+IO 병목이었다"고 말해 줄 사람이 없다. 규칙으로 시작해 결함 주입으로 검증하고,
+규칙이 못 가르는 경우가 실제로 쌓이면 그때 학습으로 옮긴다.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Mapping
+
+from ..detection.baseline import BaselineSet
+from ..logging_setup import get_logger
+
+log = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class Bottleneck:
+    """병목 판정 결과."""
+
+    kind: str
+    """CPU / IO / MEMORY / GPU / THERMAL / CONTENTION / NONE"""
+    confidence: float
+    """0~1. 근거가 여럿 겹칠수록 높다."""
+    evidence: list[str]
+    resource: str
+    """기여도 분해에 쓸 자원 이름(`attribution.RESOURCE_COLUMNS` 의 키)."""
+
+    @property
+    def label(self) -> str:
+        return {
+            "CPU": "CPU 병목",
+            "IO": "디스크 IO 병목",
+            "MEMORY": "메모리 압박",
+            "GPU": "GPU 병목",
+            "THERMAL": "발열 스로틀링",
+            "CONTENTION": "경합 (자원 포화 없이 지연)",
+            "NONE": "병목 없음",
+        }.get(self.kind, self.kind)
+
+
+def _z(baselines: BaselineSet, metric: str, value: float | None) -> float | None:
+    stats = baselines.stats(metric)
+    return stats.z(value) if stats else None
+
+
+# 디스크 응답시간의 "체감 하한". 이 아래면 어떤 하드웨어에서도 사용자가 느끼지 못한다.
+#
+# **상대 조건만으로는 안 된다.** NVMe 의 평소 응답은 0.1ms 라 산포가 거의 0 이고,
+# 0.1 → 0.2ms 가 20σ 로 계산된다. 그걸 병목이라 부르면 아무도 느끼지 못한 일에
+# 알림을 보내게 된다(실측에서 실제로 그렇게 판정됐다).
+#
+# 반대로 절대값만 쓰면 HDD 사용자(평소 10ms)에게 상시 오탐이 된다. 그래서 **둘 다**
+# 요구한다 — 평소와 다르고(상대), 실제로 아플 만큼 느리다(절대).
+DISK_RESP_FLOOR_MS = 5.0
+
+
+def classify(
+    metrics: Mapping[str, float | None],
+    baselines: BaselineSet,
+    *,
+    z_high: float = 3.0,
+    disk_resp_floor_ms: float = DISK_RESP_FLOOR_MS,
+) -> Bottleneck:
+    """한 시점의 지표로 병목을 판정한다.
+
+    절대 임계값을 최소한으로만 쓴다. `disk_queue`·`cpu_perf_percent` 처럼 단위 자체가
+    하드웨어에 독립적인 지표만 절대값으로 다루고, 나머지는 이 PC 의 평소 대비로 본다.
+    """
+    # 근거는 **판정별로** 모은다. 한 리스트에 섞으면 "CPU 병목 — 근거: 스왑 220MB"
+    # 처럼 판정과 무관한 근거가 붙어, 읽는 사람이 판단을 검증할 수 없게 된다.
+    evidence_by_kind: dict[str, list[str]] = {}
+    scores: dict[str, float] = {}
+
+    def add(kind: str, weight: float, why: str) -> None:
+        scores[kind] = scores.get(kind, 0.0) + weight
+        evidence_by_kind.setdefault(kind, []).append(why)
+
+    cpu = metrics.get("cpu_total")
+    cpu_z = _z(baselines, "cpu_total", cpu)
+    resp = metrics.get("disk_resp_ms")
+    resp_z = _z(baselines, "disk_resp_ms", resp)
+    queue = metrics.get("disk_queue")
+    mem = metrics.get("mem_percent")
+    mem_z = _z(baselines, "mem_percent", mem)
+    swap = metrics.get("swap_used_mb")
+    gpu = metrics.get("gpu_util")
+    perf = metrics.get("cpu_perf_percent")
+    gpu_temp = metrics.get("gpu_temp")
+    throttle = str(metrics.get("gpu_throttle_reason") or "")
+    ctx = metrics.get("ctx_switches_ps")
+    ctx_z = _z(baselines, "ctx_switches_ps", ctx)
+
+    # CPU: 평소보다 크게 높고, 절대적으로도 여유가 없어야 한다.
+    if cpu is not None and cpu >= 70.0:
+        add("CPU", 0.5, f"CPU {cpu:.0f}%")
+        if cpu_z is not None and cpu_z >= z_high:
+            add("CPU", 0.3, f"평소의 {cpu_z:.1f}σ")
+    elif cpu_z is not None and cpu_z >= z_high and (cpu or 0) >= 40.0:
+        add("CPU", 0.4, f"CPU {cpu:.0f}% (평소 {cpu_z:.1f}σ)")
+
+    # IO: **응답시간이 증상이다.** 처리량만 높은 것은 병목이 아니고,
+    # 평소보다 높기만 한 것도 아니다(0.1 → 0.2ms 는 20σ 지만 아무도 못 느낀다).
+    if (
+        resp is not None
+        and resp_z is not None
+        and resp_z >= z_high
+        and resp >= disk_resp_floor_ms
+    ):
+        add("IO", 0.5, f"디스크 응답 {resp:.1f}ms (평소의 {resp_z:.1f}σ)")
+        if queue is not None and queue >= 2.0:
+            add("IO", 0.3, f"큐 깊이 {queue:.1f}")
+    elif queue is not None and queue >= 4.0:
+        # 큐 길이는 단위가 하드웨어 독립적이라 절대값으로 다뤄도 된다.
+        add("IO", 0.4, f"큐 깊이 {queue:.1f}")
+
+    # 메모리: 여유가 실제로 없거나, 스왑이 돌기 시작했을 때만.
+    if mem is not None and mem >= 85.0:
+        add("MEMORY", 0.5, f"메모리 {mem:.0f}%")
+    if swap:
+        add("MEMORY", 0.3, f"스왑 {swap:.0f}MB")
+    if mem_z is not None and mem_z >= z_high and (mem or 0) >= 60.0:
+        add("MEMORY", 0.3, f"메모리 평소의 {mem_z:.1f}σ")
+
+    if gpu is not None and gpu >= 90.0:
+        add("GPU", 0.6, f"GPU {gpu:.0f}%")
+
+    # 발열: 클럭이 떨어졌는데 온도가 높거나 스로틀 사유가 잡힌 경우.
+    if "THERMAL" in throttle.upper():
+        add("THERMAL", 0.7, "GPU 스로틀 사유에 THERMAL")
+    if perf is not None and perf < 80.0:
+        add("THERMAL", 0.3, f"실효 클럭 {perf:.0f}%")
+        if gpu_temp is not None and gpu_temp >= 80.0:
+            add("THERMAL", 0.2, f"GPU {gpu_temp:.0f}°C")
+
+    # 경합: 자원은 남는데 컨텍스트 스위치만 폭증.
+    if ctx_z is not None and ctx_z >= z_high and (cpu or 0) < 60.0:
+        add("CONTENTION", 0.5, f"컨텍스트 스위치 평소의 {ctx_z:.1f}σ")
+
+    if not scores:
+        return Bottleneck("NONE", 0.0, [], "cpu")
+
+    kind = max(scores.items(), key=lambda kv: kv[1])[0]
+    evidence = evidence_by_kind.get(kind, [])
+    resource = {
+        "CPU": "cpu",
+        "IO": "io_write",
+        "MEMORY": "rss",
+        "GPU": "cpu",  # GPU 프로세스 귀인은 Phase 12(NVML per-process) 전까지 CPU 로 대신한다
+        "THERMAL": "cpu",
+        "CONTENTION": "cpu",
+    }[kind]
+    return Bottleneck(kind, min(1.0, scores[kind]), evidence, resource)

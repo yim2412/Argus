@@ -123,6 +123,24 @@ python tools\fault_injector.py cpu_spin --duration 120 --ramp   # 결함 주입 
 .venv\Scripts\python.exe -m argus.eval --detector all --save    # 리플레이 + 채점
 ```
 
+### 귀인 채점 (Phase 8)
+
+```powershell
+.venv\Scripts\python.exe -m argus.eval --attribution
+```
+
+"이상 감지"가 아니라 **"무엇 때문인지"** 를 채점합니다 — 결함 주입 구간에서 원인
+프로세스를 1순위로 지목했는가. 실측 **88.9%(8/9)**, 3위 이내 100%.
+
+```
+CPU 병목 — 14:41:35 ~ 14:45:59 (4분 23초)
+체감 영향: CPU 21% → 96% (평소의 8.6σ)
+
+원인 후보:
+  1. python (프로세스 12개)   기여도 82%  (40.2%, +29.3%)  ← 거의 동시
+  2. discord (프로세스 6개)   기여도  5%  (3.7%, +1.8%)
+```
+
 저장된 데이터를 17만 배속으로 재생하므로 "며칠 돌려봐야 아는" 것을 몇 초에 확인합니다.
 탐지기별 정밀도·재현율·F1·탐지 지연·오탐률이 나오고, 이력은 `eval_runs` 에 쌓여
 회귀 감시에 쓰입니다. 자세한 내용은 [`tools/README.md`](tools/README.md).

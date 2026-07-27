@@ -39,12 +39,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--save", action="store_true", help="결과를 eval_runs 에 남긴다")
     parser.add_argument("--list", action="store_true", help="탐지기 목록")
+    parser.add_argument(
+        "--attribution", action="store_true",
+        help="탐지 대신 귀인을 채점한다 — 원인 프로세스를 1순위로 지목했는가",
+    )
     args = parser.parse_args(argv)
 
     if args.list:
         for name in registry.names():
             print(f"  {name}")
         return 0
+
+    if args.attribution:
+        return _run_attribution(args)
 
     names = registry.names() if args.detector == "all" else [
         n.strip() for n in args.detector.split(",") if n.strip()
@@ -111,6 +118,33 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n  eval_runs 에 {len(results)}행 기록.")
 
     return 0
+
+
+def _run_attribution(args) -> int:
+    """귀인 채점. 리플레이가 필요 없다 — 원본 프로세스 메트릭을 직접 본다."""
+    from . import attribution
+
+    setup(level="WARNING")
+    scenarios = [s.strip() for s in args.scenario.split(",")] if args.scenario else None
+
+    with Database() as db:
+        verdicts = attribution.score_all(db, scenarios=scenarios)
+        if not verdicts:
+            print("[FAIL] 결함 주입 라벨이 없다 — 먼저 주입할 것:")
+            print("       python tools/fault_injector.py cpu_spin --duration 300 --ramp")
+            return 1
+        print(attribution.report(verdicts))
+
+        scored = [v for v in verdicts if not v.skipped]
+        if not scored:
+            return 1
+        rate = sum(1 for v in scored if v.is_top1) / len(scored)
+        print()
+        if rate >= 0.85:
+            print(f"[OK] Phase 8 DoD 충족 — 1순위 지목률 {rate * 100:.1f}% ≥ 85%")
+            return 0
+        print(f"[FAIL] Phase 8 DoD 미달 — 1순위 지목률 {rate * 100:.1f}% < 85%")
+        return 1
 
 
 if __name__ == "__main__":
