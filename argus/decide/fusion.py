@@ -75,6 +75,30 @@ def open_incident(db: Database, signal: dict, severity: str) -> int:
         return int(cursor.lastrowid)
 
 
+def _trigger_rules(db: Database, incident_id: int) -> list[str]:
+    """이 사건에 묶인 신호들이 어떤 룰에서 나왔는지.
+
+    `detectors` 에 `["rules"]` 만 남기면 아무것도 말해 주지 않는다 — 룰 엔진이라는
+    사실은 이미 알고 있다. 알아야 할 것은 **어느 룰이** 울렸는가다.
+    """
+    rows = db.query(
+        "SELECT s.features FROM anomaly_signals s "
+        "JOIN incident_signals i ON i.ts = s.ts AND i.detector = s.detector "
+        "WHERE i.incident_id = ? ORDER BY s.ts",
+        (incident_id,),
+    )
+    names: list[str] = []
+    for row in rows:
+        try:
+            features = json.loads(row["features"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        for name in features.get("rules") or ([features["rule"]] if "rule" in features else []):
+            if name not in names:
+                names.append(name)
+    return names
+
+
 def _attach_signal(db: Database, incident_id: int, signal: dict) -> None:
     with db._lock:  # noqa: SLF001
         db.conn.execute(
@@ -126,16 +150,25 @@ def close_incident(
         contributor.lead_s = lead_time(db, contributor, bottleneck.resource, ts_start)
 
     symptom = _symptom(peak, baselines)
+    triggers = _trigger_rules(db, incident_id)
     report = build_incident(
-        ts_start, ts_end, bottleneck, contributors, symptom=symptom
+        ts_start, ts_end, bottleneck, contributors, symptom=symptom, triggers=triggers
     )
     explanation = render(report, bottleneck.resource)
 
+    # **귀인이 성립할 때만 제목에 프로세스를 넣는다.** GPU·발열은 프로세스별 사용량을
+    # 알 수 없어 CPU 상위로 대신 분해하는데, 그것을 제목에 올리면 "발열 스로틀링 —
+    # svchost 19%" 가 된다. 읽는 사람은 svchost 를 의심하지만 GPU 를 태운 것은 게임이다.
     title = bottleneck.label
-    if contributors:
+    if contributors and bottleneck.attributable:
         title += f" — {contributors[0].name} {contributors[0].share * 100:.0f}%"
+    elif bottleneck.evidence:
+        title += f" — {bottleneck.evidence[0]}"
 
-    _finish(db, incident_id, ts_end, bottleneck, contributors, explanation, title, ts_start=ts_start)
+    _finish(
+        db, incident_id, ts_end, bottleneck, contributors, explanation, title,
+        ts_start=ts_start, triggers=triggers,
+    )
 
 
 # 경계를 다시 찾을 때 볼 지표들. 어느 하나가 아니라 **전부** 본다.
@@ -263,6 +296,7 @@ def _finish(
     title: str,
     *,
     ts_start: float | None = None,
+    triggers: list[str] | None = None,
 ) -> None:
     payload = [
         {
@@ -280,7 +314,7 @@ def _finish(
         db.conn.execute(
             "UPDATE incidents SET ts_start = COALESCE(?, ts_start), ts_end = ?, "
             "bottleneck = ?, title = ?, explanation_md = ?, contributors = ?, "
-            "evidence = ? WHERE id = ?",
+            "evidence = ?, detectors = COALESCE(?, detectors) WHERE id = ?",
             (
                 ts_start,
                 ts_end,
@@ -289,6 +323,7 @@ def _finish(
                 explanation,
                 json.dumps(payload, ensure_ascii=False),
                 json.dumps(bottleneck.evidence, ensure_ascii=False) if bottleneck else None,
+                json.dumps(triggers, ensure_ascii=False) if triggers else None,
                 incident_id,
             ),
         )

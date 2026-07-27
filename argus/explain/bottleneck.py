@@ -36,6 +36,15 @@ class Bottleneck:
     resource: str
     """기여도 분해에 쓸 자원 이름(`attribution.RESOURCE_COLUMNS` 의 키)."""
 
+    attributable: bool = True
+    """`resource` 가 이 병목의 자원과 실제로 같은가.
+
+    GPU·THERMAL 은 프로세스별 GPU 사용량을 얻을 방법이 없어 CPU 로 대신 분해한다
+    (Phase 12 전까지). 그 결과를 **원인이라고 말하면 안 된다.** 실측에서
+    "발열 스로틀링 — svchost 19%" 가 나왔는데, svchost 는 CPU 를 2% 썼을 뿐이고
+    GPU 를 태운 것은 게임이었다. 모르는 것을 아는 척하는 답이 가장 나쁘다.
+    """
+
     @property
     def label(self) -> str:
         return {
@@ -63,6 +72,23 @@ def _z(baselines: BaselineSet, metric: str, value: float | None) -> float | None
 # 반대로 절대값만 쓰면 HDD 사용자(평소 10ms)에게 상시 오탐이 된다. 그래서 **둘 다**
 # 요구한다 — 평소와 다르고(상대), 실제로 아플 만큼 느리다(절대).
 DISK_RESP_FLOOR_MS = 5.0
+
+
+# 병목 종류 → (기여도 분해에 쓸 자원, 그 자원이 병목의 자원과 같은가)
+#
+# GPU·THERMAL 이 CPU 로 내려가는 것은 **대체지 답이 아니다.** NVML 의 per-process
+# 사용량은 지원이 들쭉날쭉해 Phase 12 전까지 프로세스별 GPU 를 알 수 없다.
+# 그 사실을 값에 실어 보내야 리포트가 거짓말을 하지 않는다.
+_RESOURCE_BY_KIND: dict[str, tuple[str, bool]] = {
+    "CPU": ("cpu", True),
+    "IO": ("io_write", True),
+    "MEMORY": ("rss", True),
+    "GPU": ("cpu", False),
+    "THERMAL": ("cpu", False),
+    # 경합은 정의상 "누가 자원을 많이 썼나"로 설명되지 않는다. CPU 상위는 참고일 뿐이다.
+    "CONTENTION": ("cpu", False),
+    "NONE": ("cpu", True),
+}
 
 
 def classify(
@@ -137,7 +163,10 @@ def classify(
 
     # 발열: 클럭이 떨어졌는데 온도가 높거나 스로틀 사유가 잡힌 경우.
     if "THERMAL" in throttle.upper():
-        add("THERMAL", 0.7, "GPU 스로틀 사유에 THERMAL")
+        # 온도를 함께 적는다. 이 근거가 제목으로도 쓰이는데(귀인이 불가능해 프로세스를
+        # 넣을 수 없다), "스로틀 사유에 THERMAL" 만으로는 얼마나 나쁜지 알 수 없다.
+        detail = f"GPU {gpu_temp:.0f}°C 열 스로틀링" if gpu_temp is not None else "GPU 열 스로틀링"
+        add("THERMAL", 0.7, detail)
     if perf is not None and perf < 80.0:
         add("THERMAL", 0.3, f"실효 클럭 {perf:.0f}%")
         if gpu_temp is not None and gpu_temp >= 80.0:
@@ -152,12 +181,5 @@ def classify(
 
     kind = max(scores.items(), key=lambda kv: kv[1])[0]
     evidence = evidence_by_kind.get(kind, [])
-    resource = {
-        "CPU": "cpu",
-        "IO": "io_write",
-        "MEMORY": "rss",
-        "GPU": "cpu",  # GPU 프로세스 귀인은 Phase 12(NVML per-process) 전까지 CPU 로 대신한다
-        "THERMAL": "cpu",
-        "CONTENTION": "cpu",
-    }[kind]
-    return Bottleneck(kind, min(1.0, scores[kind]), evidence, resource)
+    resource, attributable = _RESOURCE_BY_KIND[kind]
+    return Bottleneck(kind, min(1.0, scores[kind]), evidence, resource, attributable)

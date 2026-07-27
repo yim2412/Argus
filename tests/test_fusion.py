@@ -308,3 +308,42 @@ def test_suppressed_incident_is_never_notified(db: Database) -> None:
     decision = budget.decide(db, {"severity": "critical", "suppressed_by": 1}, now)
     assert not decision.notify
     assert "묻힘" in decision.reason
+
+
+# --------------------------------------------------------------- 귀인 정직성
+
+
+def test_gpu_bottleneck_is_marked_unattributable() -> None:
+    """GPU·발열은 프로세스별 사용량을 알 수 없다. 그 사실이 값에 실려야 한다."""
+    from argus.detection.baseline import BaselineSet
+    from argus.explain.bottleneck import classify
+
+    baselines = BaselineSet()
+    thermal = classify(
+        {"gpu_temp_c": 86.0, "gpu_throttle_reason": "SW_THERMAL", "gpu_temp": 86.0},
+        baselines,
+    )
+    assert thermal.kind == "THERMAL"
+    assert not thermal.attributable
+    # 근거에 온도가 들어가야 제목이 "스로틀 사유에 THERMAL" 같은 동어반복이 되지 않는다.
+    assert "86" in " ".join(thermal.evidence)
+
+    cpu = classify({"cpu_total": 95.0}, baselines)
+    assert cpu.kind == "CPU" and cpu.attributable
+
+
+def test_unattributable_report_does_not_name_a_culprit() -> None:
+    """실측에서 "발열 스로틀링 — svchost 19%" 가 나왔다. svchost 는 CPU 를 2% 썼을 뿐이고
+    GPU 를 태운 것은 게임이었다. 모르는 것을 아는 척하면 사용자가 엉뚱한 곳을 고친다."""
+    from argus.explain.attribution import Contributor
+    from argus.explain.bottleneck import Bottleneck
+    from argus.explain.report import build_incident, render
+
+    bottleneck = Bottleneck("THERMAL", 0.7, ["GPU 86°C 열 스로틀링"], "cpu", attributable=False)
+    contributors = [Contributor(name="svchost", share=0.19, before=0.0, after=2.19, pids={1904})]
+    report = build_incident(0.0, 60.0, bottleneck, contributors, triggers=["GPU 열 스로틀링"])
+
+    text = render(report, "cpu")
+    assert "원인 후보:" not in text
+    assert "특정할 수 없습니다" in text
+    assert "발화한 룰: GPU 열 스로틀링" in text

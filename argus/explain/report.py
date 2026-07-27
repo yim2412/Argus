@@ -49,6 +49,13 @@ class Incident:
     symptom: str = ""
     onset_lead_s: float | None = None
     regime: str | None = None
+    triggers: list[str] = field(default_factory=list)
+    """이 사건을 연 룰 이름들.
+
+    방아쇠와 설명이 다른 말을 하는 일이 실제로 있었다 — GPU 온도 룰이 울렸는데
+    제목은 "CPU 병목 — op.gg 22%" 였다. 둘 다 사실이지만 인과가 이어지지 않는다.
+    무엇이 울렸는지 적어 두면 그 어긋남이 눈에 보인다.
+    """
 
     @property
     def duration_s(self) -> float:
@@ -68,6 +75,7 @@ def build_incident(
     symptom: str = "",
     onset_lead_s: float | None = None,
     regime: str | None = None,
+    triggers: list[str] | None = None,
 ) -> Incident:
     return Incident(
         ts_start=ts_start,
@@ -77,6 +85,7 @@ def build_incident(
         symptom=symptom,
         onset_lead_s=onset_lead_s,
         regime=regime,
+        triggers=list(triggers or []),
     )
 
 
@@ -104,10 +113,20 @@ def render(incident: Incident, resource: str | None = None) -> str:
         lines.append(f"체감 영향: {incident.symptom}")
     if incident.bottleneck.evidence:
         lines.append("근거: " + " · ".join(incident.bottleneck.evidence))
+    if incident.triggers:
+        lines.append("발화한 룰: " + " · ".join(incident.triggers))
 
     if incident.contributors:
         lines.append("")
-        lines.append("원인 후보:")
+        if incident.bottleneck.attributable:
+            lines.append("원인 후보:")
+        else:
+            # 자원이 다르면 순위는 답이 아니라 정황이다. 제목·1위를 원인처럼 읽지
+            # 않도록 여기서 분명히 끊는다.
+            lines.append(
+                f"참고 — CPU 사용 상위 (이 병목의 원인 프로세스는 특정할 수 없습니다: "
+                f"{incident.bottleneck.label}은 프로세스별 사용량을 얻을 수 없습니다)"
+            )
         for rank, contributor in enumerate(incident.contributors[:5], start=1):
             share = contributor.share * 100
             delta = contributor.delta * scale
