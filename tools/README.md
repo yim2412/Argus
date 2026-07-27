@@ -9,6 +9,24 @@
 | `soak_task.xml` | 장시간 상주 **검증**용 등록 정의 (수동 트리거 전용) |
 | `argus_task.xml` | 로그온 **자동 시작**용 등록 정의. 경로는 아래 스크립트가 채운다 |
 | `install_autostart.ps1` | 자동 시작 등록·해제 |
+| `backfill_rollup.py` | 워터마크보다 과거에 남은 원본을 소급 집계한다 |
+
+## 롤업 누락 점검·소급 집계
+
+```powershell
+.venv\Scripts\python.exe tools\backfill_rollup.py            # 진단만
+.venv\Scripts\python.exe tools\backfill_rollup.py --apply    # 실제로 접는다 (Argus 정지 필요)
+```
+
+롤업은 워터마크 **이후**만 접는다. 워터마크가 앞서 있는데 그 뒤에 원본이 남아 있으면
+그 구간은 접힐 기회를 영영 얻지 못한 채 보존 기한에 지워진다. 보존 정리의 "워터마크를
+넘지 못한다"는 보호 장치는 이 경우 통과 상태라 막아 주지 못한다.
+
+**누락은 행 수가 아니라 버킷으로 센다.** 원본은 접힌 뒤에도 보존 기한까지 남으므로,
+워터마크 이전 행을 세면 정상인 롤업도 수십만 행으로 나와 누락과 구분되지 않는다.
+
+`--apply` 는 상주 인스턴스가 돌고 있으면 거부한다(`InstanceLock`). 같은 DB 에 롤업이
+둘 돌면 워터마크가 서로 덮인다. `schtasks /end /tn "Argus"` 로 멈추고 돌린 뒤 다시 켠다.
 
 ## 자동 시작
 
