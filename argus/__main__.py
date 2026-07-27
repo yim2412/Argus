@@ -29,6 +29,7 @@ from .paths import ENV_DATA_DIR, data_dir, db_path
 from .runtime.budget import BudgetGuard
 from .runtime.gapmon import GapMonitor, gap_event_row
 from .runtime.selftel import BudgetMonitor, SelfTelemetry
+from .runtime.singleton import AlreadyRunning, InstanceLock
 from .runtime.stats import STATS
 from .runtime.supervisor import Supervisor
 from .storage.hot import Database
@@ -67,6 +68,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         metavar="SECONDS",
         help="지정한 초만큼 돌고 자동 종료한다 (테스트용)",
+    )
+    parser.add_argument(
+        "--allow-multi",
+        action="store_true",
+        help="중복 실행 차단을 끈다 (같은 DB 를 두 프로세스가 쓰게 되므로 진단용)",
     )
     return parser.parse_args(argv)
 
@@ -176,6 +182,19 @@ def run(args: argparse.Namespace) -> int:
     level = args.log_level or settings.general.log_level
     setup(level=level, console=settings.general.console_log)
     log.info("Argus 시작", extra={"version": __version__, "data_dir": str(data_dir())})
+
+    # 같은 DB 를 두 프로세스가 쓰면 수집이 두 배로 들어가고 융합 워터마크·예산 가드가
+    # 서로 덮어쓴다. `--check` 는 아무것도 쓰지 않으므로 상주 인스턴스와 함께 돌 수 있다.
+    lock: InstanceLock | None = None
+    if not (args.check or args.allow_multi):
+        try:
+            lock = InstanceLock().acquire()
+        except AlreadyRunning as e:
+            # 오류가 아니다. 부팅 자동 시작과 손으로 띄운 실행이 겹치는 것은 실수가
+            # 아니라 흔한 일이므로, 크래시 기록 없이 조용히 물러난다.
+            log.info("이미 실행 중이라 종료", extra={"detail": e.detail})
+            print(f"  Argus 가 이미 실행 중입니다 — {e.detail}. 이 프로세스는 종료합니다.")
+            return 0
 
     caps = load_or_detect()
     profile = ensure_profile(
@@ -313,6 +332,8 @@ def run(args: argparse.Namespace) -> int:
         return 0
     finally:
         db.close()
+        if lock is not None:
+            lock.release()
 
 
 def main(argv: list[str] | None = None) -> int:

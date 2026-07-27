@@ -5,8 +5,42 @@
 | 파일 | 용도 |
 |---|---|
 | `fault_injector.py` | 결함을 인위로 주입해 정답 라벨(`fault_injections`)을 만든다 |
-| `soak_entry.py` | 창 없는 진입점. 스케줄러가 base pythonw 로 실행한다 |
-| `soak_task.xml` | 장시간 상주 검증용 작업 스케줄러 등록 정의 |
+| `soak_entry.py` | 창 없는 진입점. 스케줄러가 base pythonw 로 실행한다 (검증·상시 공용) |
+| `soak_task.xml` | 장시간 상주 **검증**용 등록 정의 (수동 트리거 전용) |
+| `argus_task.xml` | 로그온 **자동 시작**용 등록 정의. 경로는 아래 스크립트가 채운다 |
+| `install_autostart.ps1` | 자동 시작 등록·해제 |
+
+## 자동 시작
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\install_autostart.ps1 -Start
+powershell -ExecutionPolicy Bypass -File tools\install_autostart.ps1 -Uninstall
+```
+
+`soak_task.xml` 과 XML 을 공유하지 않는다. 검증용은 수동 트리거 전용이고 상시 운영은
+로그온 트리거 + 실패 시 재시작이 필요해, 한쪽을 고치면 다른 쪽이 조용히 바뀐다.
+
+스크립트가 하는 일 중 **직접 쓰면 틀리기 쉬운 것 세 가지**:
+
+1. **파이썬 경로를 `.venv\pyvenv.cfg` 의 `home` 에서 읽는다.** XML 에 박아 두면 다른
+   PC 에서 깨진다. 읽을 때 `-Encoding UTF8` 이 필수다 — PowerShell 5.1 의 기본값은 시스템
+   ANSI 라 사용자 이름에 한글이 든 경로가 깨지고, 그러면 폴백으로 흘러 **다른 파이썬**이
+   선택된다. 실제로 Microsoft Store 스텁(3.13)이 잡혀 venv(3.12)의 `pydantic_core` 가
+   ABI 불일치로 죽었다.
+2. **등록 전에 `--check` 로 기동을 확인한다.** 등록만 해 두면 실패를 다음 로그온까지 모른다.
+   단 점검은 **콘솔형 `python.exe`** 로 돌린다. `pythonw.exe` 는 GUI 서브시스템이라
+   PowerShell 이 종료를 기다리지 않아 `$LASTEXITCODE` 가 비고, 점검이 늘 통과한 것처럼 보인다.
+3. **네이티브 exe 에 `2>&1` 을 붙이지 않는다.** PowerShell 5.1 은 stderr 한 줄을
+   ErrorRecord 로 감싸며 종료 코드 0 에도 `$?` 를 false 로 만든다. 판정은 `$LASTEXITCODE` 로만.
+
+## 중복 실행
+
+`argus/runtime/singleton.py` 가 named mutex 로 막는다. 이름에 데이터 디렉터리 해시를 섞어
+`ARGUS_DATA_DIR` 로 분리한 인스턴스는 서로 막지 않는다. 이미 돌고 있으면 **종료 코드 0** 으로
+물러난다 — 자동 시작과 수동 실행이 겹치는 것은 실수가 아니다. `--check` 는 아무것도 쓰지
+않으므로 상주 인스턴스와 함께 돌 수 있고, 진단용으로 굳이 겹쳐 띄우려면 `--allow-multi`.
+
+    python -m argus.runtime.singleton    # 뮤텍스·PID 파일 폴백 양쪽 스모크
 
 ## 결함 주입
 

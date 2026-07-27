@@ -14,6 +14,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -23,8 +24,20 @@ if not PYTHON.exists():  # 리눅스/개발자 환경 대비
     PYTHON = Path(sys.executable)
 
 
-def _run_and_interrupt(data_dir: Path, wait_s: float = 8.0) -> tuple[int, str]:
-    env = dict(os.environ, ARGUS_DATA_DIR=str(data_dir), PYTHONIOENCODING="utf-8")
+# sup.start() 와 install_signal_handlers() 가 끝난 뒤에만 출력된다. 이 줄을 보기 전에
+# 시그널을 보내면 핸들러가 없어 기본 동작(0xC000013A STATUS_CONTROL_C_EXIT)으로 죽는다.
+READY_MARKER = "실행 중입니다"
+
+
+def _run_and_interrupt(data_dir: Path, ready_timeout_s: float = 60.0) -> tuple[int, str]:
+    # PYTHONUNBUFFERED 가 없으면 stdout 이 파이프에 물릴 때 블록 버퍼링돼 기동 완료
+    # 표시가 종료 시점까지 나오지 않는다 — 준비를 기다릴 방법이 사라진다.
+    env = dict(
+        os.environ,
+        ARGUS_DATA_DIR=str(data_dir),
+        PYTHONIOENCODING="utf-8",
+        PYTHONUNBUFFERED="1",
+    )
     kwargs: dict = {}
     if sys.platform == "win32":
         # 새 프로세스 그룹이어야 CTRL_BREAK_EVENT 를 이 프로세스만 받는다.
@@ -42,7 +55,28 @@ def _run_and_interrupt(data_dir: Path, wait_s: float = 8.0) -> tuple[int, str]:
         **kwargs,
     )
 
-    time.sleep(wait_s)  # 자기 계측이 최소 한 번은 기록될 시간을 준다
+    # 고정 시간을 자면 안 된다. 첫 실행은 데이터 디렉터리가 비어 있어 캘리브레이션
+    # (디스크 벤치)이 돌고, 디스크가 바쁘면 그 시간이 늘어난다. 준비되기 전에 시그널을
+    # 보내면 핸들러가 아직 없어 테스트가 무작위로 깨진다 — 실제로 그렇게 깨졌다.
+    lines: list[str] = []
+    reader = threading.Thread(target=lambda: lines.extend(iter(proc.stdout.readline, "")))
+    reader.daemon = True
+    reader.start()
+
+    deadline = time.monotonic() + ready_timeout_s
+    while time.monotonic() < deadline:
+        if any(READY_MARKER in line for line in lines):
+            break
+        assert proc.poll() is None, f"프로세스가 준비 전에 종료됐다\n{''.join(lines)}"
+        time.sleep(0.1)
+    else:
+        proc.kill()
+        raise AssertionError(
+            f"{ready_timeout_s}초 안에 기동하지 않았다\n{''.join(lines)}"
+        )
+
+    # 자기 계측이 최소 한 번은 기록돼야 아래 행 수 단언이 성립한다.
+    time.sleep(2.0)
     assert proc.poll() is None, "프로세스가 시그널 전에 이미 종료됐다"
 
     if sys.platform == "win32":
@@ -51,12 +85,13 @@ def _run_and_interrupt(data_dir: Path, wait_s: float = 8.0) -> tuple[int, str]:
         proc.send_signal(signal.SIGINT)
 
     try:
-        output, _ = proc.communicate(timeout=15)
+        proc.wait(timeout=15)
     except subprocess.TimeoutExpired:
         proc.kill()
         raise AssertionError("시그널을 보낸 뒤 15초 안에 종료하지 않았다")
 
-    return proc.returncode, output
+    reader.join(timeout=5)
+    return proc.returncode, "".join(lines)
 
 
 def test_graceful_shutdown(tmp_path: Path) -> None:

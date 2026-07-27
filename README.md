@@ -58,6 +58,27 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 첫 실행 시 `%APPDATA%\Argus\` 에 DB·설정·로그가 만들어지고, 약 3초간 하드웨어 기준선을 측정합니다.
 개발 중 실사용 데이터를 건드리지 않으려면 `ARGUS_DATA_DIR` 로 위치를 옮기세요.
 
+**같은 데이터 폴더에는 하나만 뜹니다.** 이미 실행 중일 때 다시 실행하면 오류 없이
+그대로 종료합니다(자동 시작과 수동 실행이 겹치는 것은 흔한 일이라 실패로 다루지 않습니다).
+`ARGUS_DATA_DIR` 로 분리한 인스턴스는 서로 막지 않습니다.
+
+### 로그온 시 자동 시작
+
+상주 모니터는 켜져 있어야 데이터가 쌓입니다. 켜는 것을 잊으면 그날치가 비고, 베이스라인·
+지문처럼 축적이 필요한 기능이 그만큼 늦어집니다. 작업 스케줄러에 등록해 두세요.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\install_autostart.ps1 -Start
+```
+
+관리자 권한은 필요 없습니다. 로그온 1분 뒤에 시작하고, 창은 뜨지 않습니다.
+
+```powershell
+schtasks /query /tn "Argus" /fo LIST     # 상태
+schtasks /end   /tn "Argus"              # 중지
+powershell -ExecutionPolicy Bypass -File tools\install_autostart.ps1 -Uninstall
+```
+
 ### 수집 중인 것
 
 | 테이블 | 주기 | 내용 |

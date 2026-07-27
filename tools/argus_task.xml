@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  상시 자동 시작용 작업 정의. 소크 검증용 soak_task.xml 과 목적이 다르다
+  (저쪽은 수동 트리거 전용). 콘솔 없는 pythonw 로 띄우는 이유는 tools/README.md 참조.
+
+  {{...}} 자리는 tools\install_autostart.ps1 이 채운다. 경로를 파일에 박아 두면
+  다른 PC 나 다른 파이썬 설치에서 조용히 깨진다.
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Argus 성능 이상 탐지 상주 모니터. 로그온 시 자동으로 시작한다.</Description>
+    <URI>\Argus</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{{USERID}}</UserId>
+      <!-- 부팅 직후는 시작 프로그램들이 몰려 가장 시끄러운 구간이다. 관측자가 그
+           경쟁에 끼어들면 자기 예산도 넘기고 남의 기동도 느리게 한다. 1분 물러선다.
+           그동안의 공백은 GapMonitor 가 time_gap 으로 남긴다. -->
+      <Delay>PT1M</Delay>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{{USERID}}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <!-- 로그온 트리거를 놓쳤을 때(부팅 중 작업 스케줄러 서비스 지연 등) 뒤늦게라도
+         시작한다. 상주 모니터는 늦게 뜨는 것이 안 뜨는 것보다 낫다. -->
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <!-- 크래시로 죽으면 되살린다. 무한 재시도는 하지 않는다 — 기동 자체가 깨진
+         상태라면 1분마다 영원히 재시작해 봐야 로그만 쌓인다. -->
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{{PYTHONW}}</Command>
+      <Arguments>tools\soak_entry.py</Arguments>
+      <!-- argus 가 venv 에 설치돼 있지 않아 import 가 cwd 에 의존한다. 스케줄러는
+           cwd 를 system32 로 주므로 이 항목이 없으면 기동하지 못한다. -->
+      <WorkingDirectory>{{WORKDIR}}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
