@@ -11,6 +11,7 @@ Windows 가 워킹셋을 트림하므로 RSS 가 실제 사용량과 무관하�
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from datetime import datetime
@@ -178,6 +179,26 @@ st.dataframe(
 
 # ---------------------------------------------------------------- 사건·평가
 
+_CAUSE_KO = {
+    "suspend_or_stall": "절전·정지",
+    "clock_change": "시각 변경",
+    "clock_backwards": "시각 역행",
+    "reboot_or_power_loss": "재부팅·전원 차단",
+    "process_killed_or_crash": "강제 종료·크래시",
+    "unknown": "불명",
+}
+
+
+def _cause(detail: str | None) -> str:
+    if not detail:
+        return ""
+    try:
+        cause = json.loads(detail).get("likely_cause")
+    except (ValueError, AttributeError):
+        return ""
+    return _CAUSE_KO.get(cause, cause or "")
+
+
 ecol, vcol = st.columns(2)
 with ecol:
     st.markdown("#### 시스템 사건")
@@ -189,6 +210,9 @@ with ecol:
                     "시각": f"{datetime.fromtimestamp(e['ts']):%m-%d %H:%M:%S}",
                     "사건": e["event"],
                     "공백(초)": f"{e['gap_seconds']:.0f}" if e["gap_seconds"] else "",
+                    # 사건 이름만으로는 "왜"가 안 보인다. 절전인지 재부팅인지 크래시인지가
+                    # 사후 진단의 전부라, detail 안의 추정 원인을 끌어올린다.
+                    "추정 원인": _cause(e["detail"]),
                 }
                 for e in events[:15]
             ],

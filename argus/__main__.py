@@ -29,6 +29,7 @@ from .paths import ENV_DATA_DIR, data_dir, db_path
 from .runtime.budget import BudgetGuard
 from .runtime.gapmon import GapMonitor, gap_event_row
 from .runtime.selftel import BudgetMonitor, SelfTelemetry
+from .runtime.session import detect_unclean_shutdown
 from .runtime.singleton import AlreadyRunning, InstanceLock
 from .runtime.stats import STATS
 from .runtime.supervisor import Supervisor
@@ -284,6 +285,21 @@ def run(args: argparse.Namespace) -> int:
                     on_gap=handle_gap,
                 )
             )
+
+        # 직전 세션의 사인(死因)을 남긴다. startup 을 넣기 전이어야 "마지막 startup" 이
+        # 직전 세션을 가리킨다. 큐가 아니라 직접 쓰는 이유는, 이 판정이 바로 다음 줄의
+        # startup 보다 먼저 커밋되어야 순서가 뒤집히지 않기 때문이다.
+        try:
+            unclean = detect_unclean_shutdown(db.conn)
+            if unclean is not None:
+                db.conn.execute(
+                    f"INSERT INTO system_events ({','.join(SYSTEM_EVENT_COLUMNS)}) VALUES (?,?,?,?)",
+                    unclean,
+                )
+                db.conn.commit()
+        except Exception:
+            # 사후 판정 실패가 기동을 막아서는 안 된다.
+            log.exception("직전 세션 판정 실패")
 
         queue.put(
             Sample(
