@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from ..paths import data_dir
 from ..runtime.supervisor import Component
 from .hot import Database
 from .rollup import COLUMNS as ROLLUP_COLUMNS
+from .rollup import PROCESS_COLUMNS
 
 log = get_logger(__name__)
 
@@ -36,13 +38,29 @@ def warm_dir() -> Path:
     return path
 
 
-def partition_path(date_key: str) -> Path:
-    """`warm/date=YYYY-MM-DD/metrics.parquet`.
+@dataclass(frozen=True)
+class Source:
+    """내보낼 대상 하나. 종류가 늘어도 이 표만 고치면 된다."""
+
+    kind: str
+    table: str
+    ts_column: str
+    columns: tuple[str, ...]
+
+
+SOURCES: dict[str, Source] = {
+    "metrics": Source("metrics", "metrics_1m", "ts_min", ROLLUP_COLUMNS),
+    "process": Source("process", "process_5m", "ts_5m", PROCESS_COLUMNS),
+}
+
+
+def partition_path(date_key: str, kind: str = "metrics") -> Path:
+    """`warm/date=YYYY-MM-DD/<kind>.parquet`.
 
     Hive 스타일 디렉터리명을 쓰는 이유: DuckDB 가 `hive_partitioning` 으로 경로에서
     날짜를 컬럼으로 복원해 준다. 날짜 필터가 파일을 열지 않고 걸린다.
     """
-    return warm_dir() / f"date={date_key}" / "metrics.parquet"
+    return warm_dir() / f"date={date_key}" / f"{kind}.parquet"
 
 
 def _day_bounds(day: date) -> tuple[float, float]:
@@ -64,18 +82,25 @@ class WarmStore:
 
     # ------------------------------------------------------------ 내보내기
 
-    def exportable_dates(self, now: float | None = None) -> list[str]:
+    def exportable_dates(self, kind: str = "metrics", now: float | None = None) -> list[str]:
         """아직 안 내보냈고, 이미 끝난 날짜들."""
+        source = SOURCES[kind]
         now = now if now is not None else time.time()
         cutoff = datetime.fromtimestamp(now).date() - timedelta(days=self.settings.export_after_days)
 
-        rows = self.db.query("SELECT MIN(ts_min) AS lo, MAX(ts_min) AS hi FROM metrics_1m")
+        rows = self.db.query(
+            f"SELECT MIN({source.ts_column}) AS lo, MAX({source.ts_column}) AS hi "
+            f"FROM {source.table}"
+        )
         if not rows or rows[0]["lo"] is None:
             return []
         lo = datetime.fromtimestamp(rows[0]["lo"]).date()
         hi = datetime.fromtimestamp(rows[0]["hi"]).date()
 
-        done = {r["date_key"] for r in self.db.query("SELECT date_key FROM warm_exports")}
+        done = {
+            r["date_key"]
+            for r in self.db.query("SELECT date_key FROM warm_exports WHERE kind = ?", (kind,))
+        }
         out: list[str] = []
         day = lo
         while day <= hi and day <= cutoff:
@@ -85,23 +110,24 @@ class WarmStore:
             day += timedelta(days=1)
         return out
 
-    def export_date(self, date_key: str) -> int:
+    def export_date(self, date_key: str, kind: str = "metrics") -> int:
         """하루치를 Parquet 으로 쓴다. 쓴 행 수를 돌려준다."""
         import pyarrow as pa
         import pyarrow.parquet as pq
 
+        source = SOURCES[kind]
         day = date.fromisoformat(date_key)
         start, end = _day_bounds(day)
         rows = self.db.query(
-            f"SELECT {', '.join(ROLLUP_COLUMNS)} FROM metrics_1m "
-            "WHERE ts_min >= ? AND ts_min < ? ORDER BY ts_min",
+            f"SELECT {', '.join(source.columns)} FROM {source.table} "
+            f"WHERE {source.ts_column} >= ? AND {source.ts_column} < ? ORDER BY {source.ts_column}",
             (start, end),
         )
         if not rows:
             return 0
 
-        table = pa.table({name: [row[name] for row in rows] for name in ROLLUP_COLUMNS})
-        target = partition_path(date_key)
+        table = pa.table({name: [row[name] for row in rows] for name in source.columns})
+        target = partition_path(date_key, kind)
         target.parent.mkdir(parents=True, exist_ok=True)
 
         # 임시 파일에 쓰고 원자적으로 옮긴다. 쓰는 도중 죽어도 반쪽 파일이
@@ -113,11 +139,11 @@ class WarmStore:
         size = target.stat().st_size
         with self.db._lock:  # noqa: SLF001
             self.db.conn.execute(
-                "INSERT INTO warm_exports (date_key, path, row_count, bytes, exported_at) "
-                "VALUES (?, ?, ?, ?, ?) ON CONFLICT(date_key) DO UPDATE SET "
+                "INSERT INTO warm_exports (date_key, kind, path, row_count, bytes, exported_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(date_key, kind) DO UPDATE SET "
                 "path=excluded.path, row_count=excluded.row_count, bytes=excluded.bytes, "
                 "exported_at=excluded.exported_at",
-                (date_key, str(target), len(rows), size, time.time()),
+                (date_key, kind, str(target), len(rows), size, time.time()),
             )
             self.db.conn.commit()
 
@@ -127,13 +153,18 @@ class WarmStore:
             if verified:
                 with self.db._lock:  # noqa: SLF001
                     self.db.conn.execute(
-                        "DELETE FROM metrics_1m WHERE ts_min >= ? AND ts_min < ?", (start, end)
+                        f"DELETE FROM {source.table} "
+                        f"WHERE {source.ts_column} >= ? AND {source.ts_column} < ?",
+                        (start, end),
                     )
                     self.db.conn.commit()
             else:
-                log.error("Parquet 검증 실패 — SQLite 원본을 남긴다", extra={"date": date_key})
+                log.error(
+                    "Parquet 검증 실패 — SQLite 원본을 남긴다",
+                    extra={"date": date_key, "kind": kind},
+                )
 
-        log.info("웜 내보내기", extra={"date": date_key, "rows": len(rows), "bytes": size})
+        log.info("웜 내보내기", extra={"date": date_key, "kind": kind, "rows": len(rows), "bytes": size})
         return len(rows)
 
     def _verify(self, path: Path, expected_rows: int) -> bool:
@@ -146,13 +177,15 @@ class WarmStore:
             return False
 
     def export_pending(self, now: float | None = None) -> dict[str, int]:
+        """모든 종류의 밀린 날짜를 내보낸다. 키는 `YYYY-MM-DD/<kind>`."""
         result: dict[str, int] = {}
-        for date_key in self.exportable_dates(now):
-            try:
-                result[date_key] = self.export_date(date_key)
-            except Exception:
-                # 하루가 실패해도 나머지 날짜는 내보낸다.
-                log.exception("웜 내보내기 실패", extra={"date": date_key})
+        for kind in SOURCES:
+            for date_key in self.exportable_dates(kind, now):
+                try:
+                    result[f"{date_key}/{kind}"] = self.export_date(date_key, kind)
+                except Exception:
+                    # 하루가 실패해도 나머지 날짜·종류는 내보낸다.
+                    log.exception("웜 내보내기 실패", extra={"date": date_key, "kind": kind})
         return result
 
     # ------------------------------------------------------------ 조회
@@ -160,23 +193,31 @@ class WarmStore:
     def query(self, sql: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]:
         """DuckDB 로 웜 스토어를 조회한다.
 
-        SQL 안에서 `warm` 을 테이블처럼 쓰면 된다 — 전 파티션을 가리키는 뷰로 바꿔 준다.
+        SQL 안에서 `warm`(1분 지표)과 `warm_process`(5분 프로세스)를 테이블처럼 쓴다.
+        **종류별로 뷰를 나누는 이유**: 두 Parquet 은 스키마가 다르다. 한 뷰로 묶으면
+        컬럼이 맞지 않아 조회 자체가 실패한다. 나눠 두면 필요할 때 조인하면 된다.
+
+        존재하지 않는 종류의 뷰는 만들지 않는다 — 파티션이 하나도 없는 경로를
+        `read_parquet` 에 주면 오류가 난다.
         """
         import duckdb
 
-        pattern = str(warm_dir() / "**" / "*.parquet").replace("\\", "/")
         con = duckdb.connect(":memory:")
         try:
-            con.execute(
-                f"CREATE VIEW warm AS SELECT * FROM read_parquet('{pattern}', "
-                "hive_partitioning = true)"
-            )
+            for kind, view in (("metrics", "warm"), ("process", "warm_process")):
+                if not self.has_partitions(kind):
+                    continue
+                pattern = str(warm_dir() / "**" / f"{kind}.parquet").replace("\\", "/")
+                con.execute(
+                    f"CREATE VIEW {view} AS SELECT * FROM read_parquet('{pattern}', "
+                    "hive_partitioning = true)"
+                )
             return con.execute(sql, params or []).fetchall()
         finally:
             con.close()
 
-    def has_partitions(self) -> bool:
-        return any(warm_dir().glob("date=*/metrics.parquet"))
+    def has_partitions(self, kind: str = "metrics") -> bool:
+        return any(warm_dir().glob(f"date=*/{kind}.parquet"))
 
 
 class WarmExporter(Component):
@@ -202,18 +243,30 @@ if __name__ == "__main__":  # 스모크: python -m argus.storage.warm
     with Database() as db:
         store = WarmStore(db, settings.warm)
         print(f"  웜 디렉터리 : {warm_dir()}")
-        print(f"  내보낼 날짜 : {store.exportable_dates() or '(없음 — 끝난 날짜가 아직 없다)'}")
+        for kind in SOURCES:
+            pending = store.exportable_dates(kind)
+            print(f"  내보낼 날짜 ({kind:<7}): {pending or '(없음 — 끝난 날짜가 아직 없다)'}")
 
         exported = store.export_pending()
         print(f"  내보냄      : {exported or '(없음)'}")
 
-        rows = db.query("SELECT date_key, row_count, bytes FROM warm_exports ORDER BY date_key")
+        rows = db.query(
+            "SELECT date_key, kind, row_count, bytes FROM warm_exports ORDER BY date_key, kind"
+        )
         for row in rows:
-            print(f"    {row['date_key']}  {row['row_count']}행  {row['bytes']:,} bytes")
+            print(
+                f"    {row['date_key']} {row['kind']:<8} {row['row_count']:>6}행  "
+                f"{row['bytes']:,} bytes"
+            )
 
-        if store.has_partitions():
-            got = store.query("SELECT count(*), min(ts_min), max(ts_min) FROM warm")
-            print(f"  DuckDB 조회 : {got}")
+        if store.has_partitions("metrics") or store.has_partitions("process"):
+            if store.has_partitions("metrics"):
+                print(f"  DuckDB(지표) : {store.query('SELECT count(*) FROM warm')}")
+            if store.has_partitions("process"):
+                print(
+                    "  DuckDB(프로세스): "
+                    f"{store.query('SELECT count(*), count(DISTINCT name) FROM warm_process')}"
+                )
         else:
             # 파티션이 없어도 DuckDB 자체는 확인해 둔다. 배포 후 여기서 처음
             # 깨지면 이유를 찾기 어렵다.

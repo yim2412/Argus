@@ -34,48 +34,53 @@ class Retention(Component):
         self.settings = settings
         self.interval_s = settings.interval_s
 
-    def _rules(self) -> list[tuple[str, float, bool]]:
-        """(테이블, 보존 초, 롤업 워터마크에 묶이는가) 목록.
+    def _rules(self) -> list[tuple[str, float, str | None]]:
+        """(테이블, 보존 초, 이 원본을 접는 롤업의 이름) 목록.
 
-        세 번째 값이 True 인 테이블은 롤업이 접기 전에는 지우지 않는다. 1분 집계의
-        입력이 되는 원본들이다.
+        세 번째 값이 있는 테이블은 **그 롤업이** 접기 전에는 지우지 않는다.
+
+        롤업 이름을 테이블마다 따로 적는 것이 중요하다. 처음에는 "롤업 워터마크"
+        하나만 보게 해 뒀는데, 그 워터마크는 `metrics_1m` 것이었고 `process_metrics` 는
+        1분 롤업이 접지 않는다. **접히지도 않은 채 "롤업이 지나갔으니 안전하다"는
+        이유로 지워지고 있었다** — 보호 장치가 헛돌았다.
         """
         s = self.settings
         return [
-            ("metrics_raw", s.raw_hours * 3600, True),
-            ("gpu_metrics", s.raw_hours * 3600, True),
-            ("process_metrics", s.process_hours * 3600, True),
-            ("net_connections", s.network_hours * 3600, False),
-            ("process_events", s.events_days * 86400, False),
-            ("self_telemetry", s.self_telemetry_days * 86400, False),
+            ("metrics_raw", s.raw_hours * 3600, "metrics_1m"),
+            ("gpu_metrics", s.raw_hours * 3600, "metrics_1m"),
+            ("process_metrics", s.process_hours * 3600, "process_5m"),
+            ("net_connections", s.network_hours * 3600, None),
+            ("process_events", s.events_days * 86400, None),
+            ("self_telemetry", s.self_telemetry_days * 86400, None),
             # 시스템 사건은 양이 적고(하루 몇 건) 진단 가치가 커서 오래 남긴다.
             # 절전 공백 기록은 나중에 베이스라인이 그 구간을 제외하는 근거가 된다.
-            ("system_events", s.events_days * 86400, False),
+            ("system_events", s.events_days * 86400, None),
         ]
 
-    def _rollup_watermark(self) -> float | None:
-        """롤업이 접기를 마친 시각. 롤업이 없거나 아직 안 돌았으면 None."""
+    def _watermarks(self) -> dict[str, float]:
+        """롤업별로 접기를 마친 시각."""
         try:
-            rows = self.db.query("SELECT watermark_ts FROM rollup_state WHERE name='metrics_1m'")
+            rows = self.db.query("SELECT name, watermark_ts FROM rollup_state")
         except Exception:
             # 마이그레이션 이전 DB. 이 경우 원본을 지키는 쪽이 안전하다.
-            return None
-        return float(rows[0]["watermark_ts"]) if rows else None
+            return {}
+        return {row["name"]: float(row["watermark_ts"]) for row in rows}
 
     def purge_once(self) -> dict[str, int]:
         """한 번 정리하고 테이블별 삭제 행 수를 돌려준다."""
         now = time.time()
         deleted: dict[str, int] = {}
-        watermark = self._rollup_watermark()
-        if watermark is None:
-            # 롤업이 아직 한 번도 돌지 않았다. 첫 기동 직후에는 정상이지만,
-            # 계속 이 상태면 롤업이 죽은 것이고 DB 가 무한히 자란다.
-            held = [t for t, _, needs in self._rules() if needs]
-            log.warning("롤업 워터마크가 없어 원본 정리를 건너뛴다", extra={"tables": held})
+        watermarks = self._watermarks()
 
-        for table, keep_seconds, needs_rollup in self._rules():
+        waiting = [t for t, _, rollup in self._rules() if rollup and rollup not in watermarks]
+        if waiting:
+            # 첫 기동 직후에는 정상이지만, 계속 이 상태면 롤업이 죽은 것이고 DB 가 자란다.
+            log.warning("롤업 워터마크가 없어 원본 정리를 건너뛴다", extra={"tables": waiting})
+
+        for table, keep_seconds, rollup in self._rules():
             cutoff = now - keep_seconds
-            if needs_rollup:
+            if rollup is not None:
+                watermark = watermarks.get(rollup)
                 if watermark is None:
                     continue
                 cutoff = min(cutoff, watermark)

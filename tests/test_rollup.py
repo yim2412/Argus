@@ -158,13 +158,13 @@ def test_warm_export_roundtrip(db: Database, tmp_path: Path, monkeypatch) -> Non
     assert before == 10
 
     store = warm_module.WarmStore(db, WarmSettings())
-    dates = store.exportable_dates()
+    dates = store.exportable_dates("metrics")
     assert dates, "이틀 전 날짜가 내보내기 대상이 아니다"
     exported = store.export_pending()
     assert sum(exported.values()) == 10
 
     # 파일이 실제로 생겼고 DuckDB 로 읽힌다
-    assert store.has_partitions()
+    assert store.has_partitions("metrics")
     count, lo, hi = store.query("SELECT count(*), min(ts_min), max(ts_min) FROM warm")[0]
     assert count == 10
     assert lo == start
@@ -173,3 +173,131 @@ def test_warm_export_roundtrip(db: Database, tmp_path: Path, monkeypatch) -> Non
     assert db.query("SELECT COUNT(*) AS c FROM metrics_1m")[0]["c"] == 0
     # 두 번 내보내지 않는다
     assert store.export_pending() == {}
+
+
+def test_warm_keeps_schemas_apart(db: Database, tmp_path: Path, monkeypatch) -> None:
+    """지표와 프로세스는 스키마가 다르므로 뷰를 나눠야 한다.
+
+    한 뷰로 묶으면 컬럼이 맞지 않아 조회 자체가 실패한다.
+    """
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("duckdb")
+
+    from argus.storage.rollup import ProcessRollup
+    import argus.storage.warm as warm_module
+
+    monkeypatch.setattr(warm_module, "warm_dir", lambda: tmp_path / "warm")
+
+    start = bucket_of(time.time() - 2 * 86400, 300)
+    _seed(db, start, 10)
+    _seed_processes(db, start, 10)
+    Rollup(db, RollupSettings()).run_once()
+    ProcessRollup(db, RollupSettings()).run_once()
+
+    store = warm_module.WarmStore(db, WarmSettings())
+    exported = store.export_pending()
+    assert any(k.endswith("/metrics") for k in exported)
+    assert any(k.endswith("/process") for k in exported)
+    assert store.has_partitions("metrics") and store.has_partitions("process")
+
+    # 각자의 뷰로 읽힌다
+    assert store.query("SELECT count(*) FROM warm")[0][0] == 10
+    names = store.query("SELECT DISTINCT name FROM warm_process ORDER BY name")
+    assert [n[0] for n in names] == ["chrome", "python"]
+
+
+# ---------------------------------------------------------------- 프로세스 롤업
+
+
+def _seed_processes(database: Database, start: int, minutes: int) -> None:
+    rows = []
+    for minute in range(minutes):
+        for second in range(0, 60, 2):
+            ts = start + minute * 60 + second
+            # chrome 은 프로세스 3개, python 은 1개
+            for pid in (10, 11, 12):
+                rows.append((ts, pid, "chrome", 5.0, 300.0, 0.0, 1000.0, 200, 20, 0))
+            rows.append((ts, 20, "python", 40.0, 100.0, 0.0, 0.0, 50, 5, 1))
+    database.insert_many(
+        "process_metrics",
+        ("ts", "pid", "name", "cpu_percent", "rss_mb", "io_read_bps", "io_write_bps",
+         "handles", "threads", "foreground"),
+        rows,
+    )
+
+
+def test_process_rollup_sums_across_pids(db: Database) -> None:
+    """한 프로그램의 프로세스 여럿은 **시각별로 먼저 합친** 뒤 분위수를 낸다.
+
+    표본을 그냥 모아 분위수를 내면 "개별 프로세스의 p95"가 되는데, 지문에 필요한 것은
+    "크롬 전체가 평소 얼마나 쓰나"다. 크롬 탭이 30개면 둘은 30배 다르다.
+    """
+    from argus.storage.rollup import ProcessRollup
+
+    start = bucket_of(time.time() - 7200, 300)
+    _seed_processes(db, start, 5)
+
+    rollup = ProcessRollup(db, RollupSettings(), top_n=10)
+    assert rollup.run_once() > 0
+
+    chrome = db.query("SELECT * FROM process_5m WHERE name='chrome' ORDER BY ts_5m")[0]
+    assert chrome["pid_count"] == 3
+    assert chrome["cpu_p50"] == pytest.approx(15.0), "프로세스 3개 × 5% = 15%"
+    assert chrome["rss_p95"] == pytest.approx(900.0)
+
+    python = db.query("SELECT * FROM process_5m WHERE name='python' ORDER BY ts_5m")[0]
+    assert python["cpu_p50"] == pytest.approx(40.0)
+    assert python["foreground_ratio"] == pytest.approx(1.0)
+
+
+def test_process_rollup_caps_rows_per_bucket(db: Database) -> None:
+    """버킷당 행 수에 상한이 있어야 한다.
+
+    조건 필터로 거르면 프로세스가 500개인 PC 에서 저장량이 예측 불가로 늘어난다.
+    배포 대상의 하드웨어를 가정하지 않으려면 상한이 필요하다.
+    """
+    from argus.storage.rollup import ProcessRollup
+
+    start = bucket_of(time.time() - 7200, 300)
+    rows = []
+    for second in range(0, 60, 2):
+        for index in range(100):  # 프로그램 100개
+            rows.append((start + second, 1000 + index, f"prog{index}", float(index), 10.0, 0, 0, 10, 2, 0))
+    db.insert_many(
+        "process_metrics",
+        ("ts", "pid", "name", "cpu_percent", "rss_mb", "io_read_bps", "io_write_bps",
+         "handles", "threads", "foreground"),
+        rows,
+    )
+
+    ProcessRollup(db, RollupSettings(), top_n=10).run_once()
+    kept = db.query("SELECT COUNT(*) AS c FROM process_5m")[0]["c"]
+    # CPU 상위 10 + RSS 상위 10 의 합집합이므로 20 을 넘지 않는다
+    assert 10 <= kept <= 20, f"상한이 지켜지지 않았다: {kept}행"
+
+
+def test_retention_uses_the_rollup_that_folds_it(db: Database) -> None:
+    """`process_metrics` 는 **프로세스 롤업의** 워터마크를 봐야 한다.
+
+    처음에는 워터마크가 하나뿐이었고 그것은 `metrics_1m` 것이었다. 프로세스 데이터는
+    1분 롤업이 접지 않는데도 "롤업이 지나갔으니 안전하다"는 이유로 지워지고 있었다 —
+    보호 장치가 헛돌았다.
+    """
+    from argus.storage.rollup import ProcessRollup
+
+    old = bucket_of(time.time() - 40 * 3600, 300)
+    _seed_processes(db, old, 5)
+    _seed(db, old, 5)
+
+    # 1분 롤업만 돌린다 — 프로세스는 아직 접히지 않았다
+    Rollup(db, RollupSettings()).run_once()
+    Retention(db, RetentionSettings()).purge_once()
+    assert db.query("SELECT COUNT(*) AS c FROM process_metrics")[0]["c"] > 0, (
+        "프로세스 롤업이 돌지 않았는데 원본이 지워졌다"
+    )
+
+    # 프로세스 롤업이 지나간 뒤에는 지운다
+    ProcessRollup(db, RollupSettings()).run_once()
+    Retention(db, RetentionSettings()).purge_once()
+    assert db.query("SELECT COUNT(*) AS c FROM process_metrics")[0]["c"] == 0
+    assert db.query("SELECT COUNT(*) AS c FROM process_5m")[0]["c"] > 0

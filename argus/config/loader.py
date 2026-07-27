@@ -123,6 +123,10 @@ class RollupSettings(BaseModel):
     # 한 틱에 접을 버킷 상한. 오래 꺼져 있다 켜면 수천 분이 밀려 있는데,
     # 그걸 한 번에 처리하면 우리가 만든 디스크 IO 가 관측 대상을 오염시킨다.
     max_buckets_per_run: int = Field(default=720, ge=1)
+    # 프로세스 5분 롤업에서 버킷마다 남길 프로그램 수(CPU 상위 N + 메모리 상위 N).
+    # 조건 필터가 아니라 상위 N 인 이유: 프로세스가 500개인 PC 에서도 하루 행 수에
+    # 상한이 있어야 한다. 하드웨어를 가정하지 않는다.
+    process_top_n: int = Field(default=40, ge=1)
 
 
 class WarmSettings(BaseModel):

@@ -94,13 +94,21 @@ def _max(values: Sequence[float]) -> float | None:
     return round(max(values), 3) if values else None
 
 
-def _p95(values: Sequence[float]) -> float | None:
-    """표본 백분위. 60개 남짓이라 보간 없이 최근접 순위로 충분하다."""
+def _pct(values: Sequence[float], q: float) -> float | None:
+    """표본 백분위(최근접 순위).
+
+    보간하지 않는 이유는 관측된 값만 남기기 위해서다 — "응답시간 p95 = 95.05ms"처럼
+    실제로 없던 값을 만들지 않는다.
+    """
     if not values:
         return None
     ordered = sorted(values)
-    index = min(len(ordered) - 1, int(round(0.95 * (len(ordered) - 1))))
+    index = min(len(ordered) - 1, int(round(q * (len(ordered) - 1))))
     return round(ordered[index], 3)
+
+
+def _p95(values: Sequence[float]) -> float | None:
+    return _pct(values, 0.95)
 
 
 def _std(values: Sequence[float]) -> float | None:
@@ -112,64 +120,89 @@ def _std(values: Sequence[float]) -> float | None:
     return round(variance**0.5, 3)
 
 
-def bucket_of(ts: float) -> int:
-    return int(ts // BUCKET_S) * BUCKET_S
+def bucket_of(ts: float, size: int = BUCKET_S) -> int:
+    return int(ts // size) * size
 
 
-# ---------------------------------------------------------------- 컴포넌트
+# ---------------------------------------------------------------- 공통 골격
 
 
-class Rollup(Component):
-    """완결된 1분 버킷을 `metrics_1m` 으로 접는다."""
+class _RollupBase(Component):
+    """워터마크 관리와 밀린 구간 계산. 1분·5분 롤업이 공유한다.
 
-    name = "rollup"
+    워터마크를 롤업마다 따로 두는 이유: 보존 정리가 **자기를 접은 롤업의** 워터마크를
+    봐야 하기 때문이다. 하나로 묶으면 프로세스 데이터가 "1분 롤업이 지나갔다"는 이유로
+    접히지도 않은 채 지워진다 — 실제로 그렇게 되어 있었다.
+    """
 
-    def __init__(self, db: Database, settings: RollupSettings) -> None:
-        self.db = db
-        self.settings = settings
-        self.interval_s = settings.interval_s
+    state_name: str = ""
+    bucket_s: int = BUCKET_S
+    source_table: str = "metrics_raw"
+    source_ts_column: str = "ts"
 
-    # ------------------------------------------------------------ 워터마크
+    db: Database
+    settings: RollupSettings
 
     def watermark(self) -> float | None:
-        rows = self.db.query("SELECT watermark_ts FROM rollup_state WHERE name='metrics_1m'")
+        rows = self.db.query(
+            "SELECT watermark_ts FROM rollup_state WHERE name=?", (self.state_name,)
+        )
         return float(rows[0]["watermark_ts"]) if rows else None
 
     def _set_watermark(self, ts: float) -> None:
         with self.db._lock:  # noqa: SLF001 - 같은 커넥션을 쓰는 내부 협력
             self.db.conn.execute(
-                "INSERT INTO rollup_state (name, watermark_ts, updated_at) VALUES ('metrics_1m', ?, ?) "
+                "INSERT INTO rollup_state (name, watermark_ts, updated_at) VALUES (?, ?, ?) "
                 "ON CONFLICT(name) DO UPDATE SET watermark_ts=excluded.watermark_ts, "
                 "updated_at=excluded.updated_at",
-                (ts, time.time()),
+                (self.state_name, ts, time.time()),
             )
             self.db.conn.commit()
-
-    # ------------------------------------------------------------ 집계
 
     def _pending_range(self, now: float) -> tuple[int, int] | None:
         """접어야 할 [start, end) 버킷 구간. 없으면 None.
 
-        진행 중인 분은 접지 않는다 — 아직 데이터가 들어오는 중이라 반쪽짜리가 된다.
+        진행 중인 버킷은 접지 않는다 — 아직 데이터가 들어오는 중이라 반쪽짜리가 된다.
         `lag_s` 는 배치 writer 가 큐를 비우는 시간까지 감안한 여유다.
         """
         start_ts = self.watermark()
         if start_ts is None:
-            rows = self.db.query("SELECT MIN(ts) AS lo FROM metrics_raw")
+            rows = self.db.query(
+                f"SELECT MIN({self.source_ts_column}) AS lo FROM {self.source_table}"
+            )
             if not rows or rows[0]["lo"] is None:
                 return None
             start_ts = float(rows[0]["lo"])
 
-        start = bucket_of(start_ts)
-        end = bucket_of(now - self.settings.lag_s)
+        start = bucket_of(start_ts, self.bucket_s)
+        end = bucket_of(now - self.settings.lag_s, self.bucket_s)
         if end <= start:
             return None
 
         # 한 번에 처리할 버킷 수를 제한한다. 첫 실행이나 오래 꺼져 있던 뒤에는
-        # 밀린 구간이 수천 분일 수 있는데, 그걸 한 틱에 처리하면 우리가 만든
+        # 밀린 구간이 수천 개일 수 있는데, 그걸 한 틱에 처리하면 우리가 만든
         # 디스크 IO 가 관측 대상을 오염시킨다.
-        max_end = start + self.settings.max_buckets_per_run * BUCKET_S
+        max_end = start + self.settings.max_buckets_per_run * self.bucket_s
         return start, min(end, max_end)
+
+    def tick(self) -> None:
+        self.run_once()
+
+    def run_once(self, now: float | None = None) -> int:  # pragma: no cover - 서브클래스가 구현
+        raise NotImplementedError
+
+
+class Rollup(_RollupBase):
+    """완결된 1분 버킷을 `metrics_1m` 으로 접는다."""
+
+    name = "rollup"
+    state_name = "metrics_1m"
+    bucket_s = BUCKET_S
+
+    def __init__(self, db: Database, settings: RollupSettings) -> None:
+        self.db = db
+        self.settings = settings
+        self.interval_s = settings.interval_s
 
     def _gap_buckets(self, start: int, end: int) -> set[int]:
         """절전·시각변경 공백이 걸친 버킷.
@@ -368,8 +401,143 @@ class Rollup(Component):
             log.debug("롤업", extra={"buckets": len(rows), "watermark": end})
         return len(rows)
 
-    def tick(self) -> None:
-        self.run_once()
+
+# ---------------------------------------------------------------- 프로세스
+
+
+PROCESS_BUCKET_S = 300
+
+PROCESS_COLUMNS: tuple[str, ...] = (
+    "ts_5m",
+    "name",
+    "sample_count",
+    "pid_count",
+    "cpu_mean",
+    "cpu_p50",
+    "cpu_p95",
+    "cpu_p99",
+    "cpu_max",
+    "rss_mean",
+    "rss_p50",
+    "rss_p95",
+    "rss_max",
+    "io_read_bps_mean",
+    "io_write_bps_mean",
+    "io_write_bps_max",
+    "handles_mean",
+    "handles_max",
+    "threads_max",
+    "foreground_ratio",
+)
+
+
+class ProcessRollup(_RollupBase):
+    """프로세스를 프로그램 이름 단위로 5분마다 접는다.
+
+    **PID 가 아니라 이름이 단위다.** PID 는 재시작마다 바뀌므로 지문의 단위가 될 수
+    없다. "크롬은 평소 CPU 6%"가 지문이지 "PID 8812 는"이 아니다.
+
+    **버킷마다 상위 N 개만 남긴다.** `cpu > 0` 같은 조건으로 거르면 프로세스가 500개인
+    PC 에서 저장량이 예측 불가로 늘어난다. 배포 대상의 하드웨어를 가정하지 않으려면
+    행 수에 상한이 있어야 한다. CPU 상위와 메모리 상위를 따로 뽑아 합치는 이유는,
+    메모리만 먹고 CPU 는 안 쓰는 프로세스(누수 후보)를 놓치지 않기 위해서다.
+    """
+
+    name = "process_rollup"
+    state_name = "process_5m"
+    bucket_s = PROCESS_BUCKET_S
+    source_table = "process_metrics"
+
+    def __init__(self, db: Database, settings: RollupSettings, top_n: int = 40) -> None:
+        self.db = db
+        self.settings = settings
+        self.top_n = top_n
+        self.interval_s = settings.interval_s * 5
+
+    def run_once(self, now: float | None = None) -> int:
+        now = now if now is not None else time.time()
+        pending = self._pending_range(now)
+        if pending is None:
+            return 0
+        start, end = pending
+
+        # **시각별로 먼저 합친다.** 같은 이름의 프로세스가 여럿이면 그 합이 그 프로그램의
+        # 사용량이다(크롬 탭 30개는 사용자에게 하나의 크롬이다). 표본을 그냥 모아
+        # 분위수를 내면 "개별 프로세스의 p95"가 되는데, 지문에 필요한 것은
+        # "크롬 전체가 평소 얼마나 쓰나"다. 둘은 30배쯤 다르다.
+        rows = self.db.query(
+            "SELECT ts, name, SUM(cpu_percent) AS cpu, SUM(rss_mb) AS rss, "
+            "SUM(io_read_bps) AS io_read, SUM(io_write_bps) AS io_write, "
+            "SUM(handles) AS handles, SUM(threads) AS threads, "
+            "COUNT(DISTINCT pid) AS pids, MAX(foreground) AS fg "
+            "FROM process_metrics WHERE ts >= ? AND ts < ? AND name IS NOT NULL "
+            "GROUP BY ts, name",
+            (start, end),
+        )
+
+        # 버킷 → 이름 → 시계열
+        buckets: dict[int, dict[str, dict[str, list[float]]]] = {}
+        for row in rows:
+            bucket = bucket_of(row["ts"], self.bucket_s)
+            series = buckets.setdefault(bucket, {}).setdefault(
+                row["name"], {k: [] for k in ("cpu", "rss", "io_read", "io_write", "handles", "threads", "pids", "fg")}
+            )
+            for key in ("cpu", "rss", "io_read", "io_write", "handles", "threads", "pids"):
+                if row[key] is not None:
+                    series[key].append(float(row[key]))
+            series["fg"].append(1.0 if row["fg"] else 0.0)
+
+        out: list[tuple[Any, ...]] = []
+        for bucket, by_name in buckets.items():
+            # 상한을 두되 CPU 상위와 메모리 상위를 따로 뽑는다 — 메모리만 먹고 CPU 는
+            # 안 쓰는 프로세스(누수 후보)를 CPU 순위로만 자르면 놓친다.
+            by_cpu = sorted(by_name.items(), key=lambda kv: _mean(kv[1]["cpu"]) or 0.0, reverse=True)
+            by_rss = sorted(by_name.items(), key=lambda kv: _max(kv[1]["rss"]) or 0.0, reverse=True)
+            keep = {n for n, _ in by_cpu[: self.top_n]} | {n for n, _ in by_rss[: self.top_n]}
+
+            for name in keep:
+                series = by_name[name]
+                cpu, rss, fg = series["cpu"], series["rss"], series["fg"]
+                samples = len(fg)
+                out.append(
+                    (
+                        bucket,
+                        name,
+                        samples,
+                        int(_max(series["pids"]) or 0) or None,
+                        _mean(cpu),
+                        _pct(cpu, 0.50),
+                        _pct(cpu, 0.95),
+                        _pct(cpu, 0.99),
+                        _max(cpu),
+                        _mean(rss),
+                        _pct(rss, 0.50),
+                        _pct(rss, 0.95),
+                        _max(rss),
+                        _mean(series["io_read"]),
+                        _mean(series["io_write"]),
+                        _max(series["io_write"]),
+                        _mean(series["handles"]),
+                        int(_max(series["handles"]) or 0) or None,
+                        int(_max(series["threads"]) or 0) or None,
+                        round(sum(fg) / samples, 3) if samples else None,
+                    )
+                )
+
+        if out:
+            placeholders = ", ".join("?" * len(PROCESS_COLUMNS))
+            with self.db._lock:  # noqa: SLF001
+                self.db.conn.executemany(
+                    f"INSERT OR REPLACE INTO process_5m ({', '.join(PROCESS_COLUMNS)}) "
+                    f"VALUES ({placeholders})",
+                    out,
+                )
+                self.db.conn.commit()
+
+        self._set_watermark(end)
+        if out:
+            log.debug("프로세스 롤업", extra={"rows": len(out), "watermark": end})
+        return len(out)
 
 
 if __name__ == "__main__":  # 스모크: python -m argus.storage.rollup
@@ -425,4 +593,22 @@ if __name__ == "__main__":  # 스모크: python -m argus.storage.rollup
         if after == 0:
             print("[FAIL] 접힌 버킷이 없다 — 원본이 있는데 롤업이 비었다면 버그다")
             raise SystemExit(1)
+
+        # 프로세스 롤업 (5분)
+        proc = ProcessRollup(db, settings.rollup, top_n=settings.rollup.process_top_n)
+        started = time.perf_counter()
+        proc_rows = proc.run_once()
+        proc_ms = (time.perf_counter() - started) * 1000
+        total = db.query("SELECT COUNT(*) AS c FROM process_5m")[0]["c"]
+        print(f"\n  프로세스 롤업: {proc_rows}행 ({proc_ms:.0f}ms), 누적 {total}행")
+        print(f"  워터마크     : {proc.watermark()}")
+        for row in db.query(
+            "SELECT * FROM process_5m ORDER BY ts_5m DESC, cpu_mean DESC LIMIT 5"
+        ):
+            stamp = time.strftime("%H:%M", time.localtime(row["ts_5m"]))
+            print(
+                f"    {stamp}  {row['name']:<22} n={row['sample_count']:<4} "
+                f"pids={row['pid_count']:<3} cpu p50={row['cpu_p50']} p95={row['cpu_p95']} "
+                f"p99={row['cpu_p99']}  rss p95={row['rss_p95']}MB"
+            )
     print("[OK] storage.rollup")

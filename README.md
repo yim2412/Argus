@@ -76,11 +76,16 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 ### 저장 구조
 
 ```
-metrics_raw(초, 24시간) → metrics_1m(SQLite, 최근 며칠) → warm/date=YYYY-MM-DD/metrics.parquet
+metrics_raw(초, 24시간)     → metrics_1m(1분)  → warm/date=YYYY-MM-DD/metrics.parquet
+process_metrics(초, 24시간) → process_5m(5분)  → warm/date=YYYY-MM-DD/process.parquet
 ```
 
 초 단위 원본은 하루 292MB 라 오래 둘 수 없고, 레짐·ML 단계는 며칠~2주치를 요구합니다.
-1분으로 접으면 **하루 434KB(압축비 59:1)** 라 몇 년을 둬도 무해합니다.
+접으면 **지표 하루 434KB(압축비 59:1), 프로세스 하루 705KB** 라 몇 년을 둬도 무해합니다.
+
+프로세스는 프로그램 이름 단위로 `p50/p95/p99` 를 남깁니다 — 이게 Phase 6 지문의 입력입니다.
+**시각별로 먼저 합친 뒤 분위수를 냅니다**: 크롬 탭 30개를 그냥 모으면 "개별 프로세스의
+p95"가 되어 "크롬 전체"와 30배 어긋납니다.
 
 **삭제는 롤업 워터마크를 넘지 못합니다.** 접히기 전에 지워진 원본은 어디에도 남지 않기
 때문입니다. 롤업이 멈추면 삭제도 멈추고 DB 가 커지는데, 그게 맞는 선택입니다 — 디스크가
