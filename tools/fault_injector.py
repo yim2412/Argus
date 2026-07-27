@@ -553,8 +553,51 @@ class HandleLeak(Scenario):
         return "handles", min(500.0, self.limits.handles * 0.5)
 
 
+class ManualLabel(Scenario):
+    """부하를 만들지 않는다. **지금 벌어지는 일에 라벨만 붙인다.**
+
+    GPU 점유 시나리오를 만들려다 방향을 바꾼 결과다. GPU 를 실제로 태우려면 torch
+    (약 2.5GB)나 D3D/OpenGL 직접 호출이 필요한데, 시나리오 하나 늘리자고 치를 비용이
+    아니다. 그리고 **인위로 만든 부하보다 진짜 게임이 더 나은 데이터다** — 실제
+    사용에서 나오는 열·클럭·프레임 패턴을 흉내로는 못 만든다.
+
+    사용자가 게임·빌드·인코딩을 시작할 때 이걸 켜 두면 그 구간이 정답 라벨이 된다.
+    Phase 4 레짐 인식이 요구하는 것도 정확히 이 데이터다.
+
+        python tools/fault_injector.py manual --label GAME --duration 1800
+
+    효과 검증은 하지 않는다(무엇이 움직일지 미리 알 수 없다). 대신 관측된 변화를
+    라벨에 기록해 나중에 무엇이 실제로 달라졌는지 볼 수 있게 한다.
+    """
+
+    name = "manual"
+    description = "부하를 만들지 않고 지금 하는 일에 라벨만 붙인다 (게임·빌드 등)"
+
+    def __init__(self, limits: Limits, label: str = "manual") -> None:
+        super().__init__(limits)
+        self.label = label
+        self._elapsed = 0.0
+
+    def step(self, intensity: float, dt: float) -> None:
+        # 아무것도 하지 않는다. `psutil.cpu_percent(interval=None)` 을 여기서 부르면
+        # EffectMonitor 와 서로 표본을 훔쳐 둘 다 0 을 읽는다(직전 호출 이후의 값을
+        # 주는 API 라 호출자가 둘이면 나눠 갖는다).
+        self._elapsed += dt
+
+    def status(self) -> str:
+        return f"'{self.label}' 라벨링 중 ({self._elapsed:.0f}초 경과)"
+
+    def params(self) -> dict[str, Any]:
+        return {"label": self.label, "kind": "observation_only"}
+
+    def expected_effect(self) -> tuple[str, float]:
+        # 무엇이 얼마나 움직일지 미리 알 수 없으므로 문턱을 두지 않는다.
+        # 사용자가 "지금 이걸 하고 있다"고 말한 것 자체가 근거다.
+        return "cpu_percent", 0.0
+
+
 SCENARIOS: dict[str, type[Scenario]] = {
-    s.name: s for s in (MemoryLeak, CpuSpin, DiskThrash, HandleLeak)
+    s.name: s for s in (MemoryLeak, CpuSpin, DiskThrash, HandleLeak, ManualLabel)
 }
 
 
@@ -577,6 +620,10 @@ class Effect:
 
     @property
     def observable(self) -> bool:
+        # 문턱이 0 이하면 검증하지 않는다는 뜻이다(수동 라벨링). 사용자가 "지금 이걸
+        # 하고 있다"고 말한 것 자체가 근거이므로 변화량으로 반려하지 않는다.
+        if self.required_delta <= 0:
+            return True
         return self.delta >= self.required_delta
 
 
@@ -838,6 +885,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--disk-load", type=float, default=1.2,
                         help="실측 순차쓰기 대비 목표 속도 배수 (기본 1.2 — 장치가 못 따라오게)")
     parser.add_argument("--handles", type=int, default=2000, help="핸들 시나리오 상한")
+    parser.add_argument("--label", default="manual",
+                        help="manual 시나리오의 라벨 이름 (예: GAME, BUILD, ENCODE)")
     parser.add_argument("--dry-run", action="store_true", help="상한만 보여주고 실행하지 않는다")
     args = parser.parse_args(argv)
 
@@ -852,7 +901,12 @@ def main(argv: list[str] | None = None) -> int:
 
     setup(level="INFO", console=False)  # 콘솔은 진행 표시가 쓰므로 파일 로그만
     limits = resolve_limits(args)
-    scenario = SCENARIOS[args.scenario](limits)
+    scenario_class = SCENARIOS[args.scenario]
+    scenario = (
+        scenario_class(limits, label=args.label)
+        if scenario_class is ManualLabel
+        else scenario_class(limits)
+    )
     injector = Injector(
         scenario, ramp=args.ramp, duration_s=limits.duration_s, dry_run=args.dry_run
     )

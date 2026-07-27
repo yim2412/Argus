@@ -14,7 +14,14 @@
 python tools\fault_injector.py --list
 python tools\fault_injector.py cpu_spin --duration 120 --ramp
 python tools\fault_injector.py memory_leak --duration 300 --mem-load 0.3
+
+# 부하를 만들지 않고 지금 하는 일에 라벨만 붙인다 (게임·빌드·인코딩)
+python tools\fault_injector.py manual --label GAME --duration 1800
 ```
+
+**`--ramp` 는 30분 이상으로 걸어야 의미가 있다.** 계획서가 말하는 점진적 열화는
+30~90분짜리다. 90초 램프는 임계 위에 22초만 머물러 "느린 열화를 잡는가"라는 질문에
+답하지 못한다 — 실제로 그 때문에 룰 엔진이 기준선을 못 넘는 것처럼 보였다.
 
 **강도는 전부 이 PC 능력 대비 비율이다** (`--cpu-load` / `--mem-load` / `--disk-load`).
 절대량을 쓰면 PC 마다 전혀 다른 세기의 이상이 되고, 빠른 PC 에서는 아무 일도 일어나지
