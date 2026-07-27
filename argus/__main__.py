@@ -212,12 +212,13 @@ def run(args: argparse.Namespace) -> int:
         # 롤업은 보존 정리보다 **먼저** 등록한다. 순서가 동작을 정하지는 않지만
         # (보존이 워터마크로 스스로 막는다), 읽는 사람에게 의존 방향을 보여 준다.
         if settings.rollup.enabled:
-            from .storage.rollup import ProcessRollup, Rollup
+            from .storage.rollup import NetworkRollup, ProcessRollup, Rollup
 
             sup.add(Rollup(db, settings.rollup))
-            # 프로세스는 5분 단위로 따로 접는다. 워터마크도 따로 두어야
+            # 프로세스·네트워크는 5분 단위로 따로 접는다. 워터마크도 따로 두어야
             # 보존 정리가 "자기를 접은 롤업"을 보게 된다.
             sup.add(ProcessRollup(db, settings.rollup, top_n=settings.rollup.process_top_n))
+            sup.add(NetworkRollup(db, settings.rollup))
         if settings.warm.enabled:
             from .storage.warm import WarmExporter
 

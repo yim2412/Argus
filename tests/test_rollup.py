@@ -276,6 +276,65 @@ def test_process_rollup_caps_rows_per_bucket(db: Database) -> None:
     assert 10 <= kept <= 20, f"상한이 지켜지지 않았다: {kept}행"
 
 
+def test_network_rollup_counts_without_storing_addresses(db: Database) -> None:
+    """개별 원격 주소를 저장하지 않는다.
+
+    두 이유가 겹친다. 신호가 되지 않고(신규 주소가 시간당 87건 — 소음이다),
+    개인정보다(원본은 72시간 뒤 사라지는데 집계가 영구 보관하면 보존 정책을 우회한다).
+    필요한 신호인 "단시간 다수 신규 대상"은 개수만으로 잡힌다.
+    """
+    from argus.storage.rollup import NetworkRollup
+
+    start = bucket_of(time.time() - 7200, 300)
+    rows = []
+    for tick in range(0, 300, 30):
+        for octet in range(5):
+            rows.append((start + tick, 10, "chrome", "10.0.0.1", 1000, f"93.184.{octet}.1", 443, "ESTABLISHED", 2))
+        rows.append((start + tick, 20, "server", "0.0.0.0", 8080, None, None, "LISTEN", 2))
+    db.insert_many(
+        "net_connections",
+        ("ts", "pid", "name", "laddr", "lport", "raddr", "rport", "status", "family"),
+        rows,
+    )
+
+    assert NetworkRollup(db, RollupSettings()).run_once() > 0
+
+    # 컬럼 이름이 아니라 **저장된 값**을 본다. 이름은 바꿀 수 있어도 값은 못 속인다.
+    stored = " ".join(
+        str(value)
+        for row in db.query("SELECT * FROM net_activity_5m")
+        for value in dict(row).values()
+    )
+    assert "93.184." not in stored, "집계에 원격 주소가 새어 들어갔다"
+
+    chrome = db.query("SELECT * FROM net_activity_5m WHERE name='chrome'")[0]
+    assert chrome["distinct_remotes"] == 5
+    assert chrome["distinct_ports"] == 1
+
+    server = db.query("SELECT * FROM net_activity_5m WHERE name='server'")[0]
+    assert server["listen_count"] > 0, "LISTEN 은 서비스를 새로 여는 신호라 세어야 한다"
+
+
+def test_retention_waits_for_network_rollup(db: Database) -> None:
+    from argus.storage.rollup import NetworkRollup
+
+    old = bucket_of(time.time() - 100 * 3600, 300)  # network_hours(72) 를 넘긴 시각
+    db.insert_many(
+        "net_connections",
+        ("ts", "pid", "name", "laddr", "lport", "raddr", "rport", "status", "family"),
+        [(old + i, 10, "chrome", "10.0.0.1", 1000, "93.184.0.1", 443, "ESTABLISHED", 2)
+         for i in range(0, 300, 30)],
+    )
+
+    Retention(db, RetentionSettings()).purge_once()
+    assert db.query("SELECT COUNT(*) AS c FROM net_connections")[0]["c"] > 0
+
+    NetworkRollup(db, RollupSettings()).run_once()
+    Retention(db, RetentionSettings()).purge_once()
+    assert db.query("SELECT COUNT(*) AS c FROM net_connections")[0]["c"] == 0
+    assert db.query("SELECT COUNT(*) AS c FROM net_activity_5m")[0]["c"] > 0
+
+
 def test_retention_uses_the_rollup_that_folds_it(db: Database) -> None:
     """`process_metrics` 는 **프로세스 롤업의** 워터마크를 봐야 한다.
 

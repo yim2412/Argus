@@ -540,6 +540,100 @@ class ProcessRollup(_RollupBase):
         return len(out)
 
 
+# ---------------------------------------------------------------- 네트워크
+
+
+NET_COLUMNS: tuple[str, ...] = (
+    "ts_5m",
+    "name",
+    "sample_count",
+    "conn_count",
+    "distinct_remotes",
+    "distinct_ports",
+    "listen_count",
+)
+
+
+class NetworkRollup(_RollupBase):
+    """네트워크 활동을 프로그램 단위로 5분마다 접는다.
+
+    **개별 원격 주소를 저장하지 않는다.** 신호가 되지 않기 때문이고(실측: 신규 주소가
+    시간당 87건 — 알림이 아니라 소음이다), 동시에 개인정보이기 때문이다. 원본이
+    72시간 뒤 사라지는데 집계가 주소를 영구 보관하면 보존 정책을 우회하는 셈이 된다.
+
+    계획서가 원하는 "단시간 다수 신규 원격 IP"는 **개수만으로** 잡힌다.
+    """
+
+    name = "net_rollup"
+    state_name = "net_activity_5m"
+    bucket_s = PROCESS_BUCKET_S
+    source_table = "net_connections"
+
+    def __init__(self, db: Database, settings: RollupSettings) -> None:
+        self.db = db
+        self.settings = settings
+        self.interval_s = settings.interval_s * 5
+
+    def run_once(self, now: float | None = None) -> int:
+        now = now if now is not None else time.time()
+        pending = self._pending_range(now)
+        if pending is None:
+            return 0
+        start, end = pending
+
+        rows = self.db.query(
+            "SELECT ts, name, raddr, rport, status FROM net_connections "
+            "WHERE ts >= ? AND ts < ? AND name IS NOT NULL",
+            (start, end),
+        )
+
+        buckets: dict[tuple[int, str], dict] = {}
+        for row in rows:
+            key = (bucket_of(row["ts"], self.bucket_s), row["name"])
+            entry = buckets.setdefault(
+                key,
+                {"ticks": set(), "remotes": set(), "ports": set(), "conns": 0, "listen": 0},
+            )
+            entry["ticks"].add(row["ts"])
+            entry["conns"] += 1
+            if row["raddr"]:
+                entry["remotes"].add(row["raddr"])
+            if row["rport"]:
+                entry["ports"].add(row["rport"])
+            if (row["status"] or "").upper() == "LISTEN":
+                entry["listen"] += 1
+
+        out = []
+        for (bucket, program), entry in buckets.items():
+            samples = max(1, len(entry["ticks"]))
+            out.append(
+                (
+                    bucket,
+                    program,
+                    samples,
+                    round(entry["conns"] / samples, 2),
+                    len(entry["remotes"]),
+                    len(entry["ports"]),
+                    entry["listen"],
+                )
+            )
+
+        if out:
+            placeholders = ", ".join("?" * len(NET_COLUMNS))
+            with self.db._lock:  # noqa: SLF001
+                self.db.conn.executemany(
+                    f"INSERT OR REPLACE INTO net_activity_5m ({', '.join(NET_COLUMNS)}) "
+                    f"VALUES ({placeholders})",
+                    out,
+                )
+                self.db.conn.commit()
+
+        self._set_watermark(end)
+        if out:
+            log.debug("네트워크 롤업", extra={"rows": len(out), "watermark": end})
+        return len(out)
+
+
 if __name__ == "__main__":  # 스모크: python -m argus.storage.rollup
     from ..config.loader import load_settings
     from ..logging_setup import setup
@@ -593,6 +687,20 @@ if __name__ == "__main__":  # 스모크: python -m argus.storage.rollup
         if after == 0:
             print("[FAIL] 접힌 버킷이 없다 — 원본이 있는데 롤업이 비었다면 버그다")
             raise SystemExit(1)
+
+        # 네트워크 롤업 (5분) — 개별 주소는 저장하지 않는다
+        net = NetworkRollup(db, settings.rollup)
+        net_rows = net.run_once()
+        net_total = db.query("SELECT COUNT(*) AS c FROM net_activity_5m")[0]["c"]
+        print(f"\n  네트워크 롤업: {net_rows}행, 누적 {net_total}행")
+        for row in db.query(
+            "SELECT * FROM net_activity_5m ORDER BY ts_5m DESC, distinct_remotes DESC LIMIT 4"
+        ):
+            stamp = time.strftime("%H:%M", time.localtime(row["ts_5m"]))
+            print(
+                f"    {stamp}  {row['name']:<22} 대상 {row['distinct_remotes']:>4}개 "
+                f"포트 {row['distinct_ports']:>3}개  연결 {row['conn_count']}"
+            )
 
         # 프로세스 롤업 (5분)
         proc = ProcessRollup(db, settings.rollup, top_n=settings.rollup.process_top_n)

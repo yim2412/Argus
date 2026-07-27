@@ -49,7 +49,7 @@ class Retention(Component):
             ("metrics_raw", s.raw_hours * 3600, "metrics_1m"),
             ("gpu_metrics", s.raw_hours * 3600, "metrics_1m"),
             ("process_metrics", s.process_hours * 3600, "process_5m"),
-            ("net_connections", s.network_hours * 3600, None),
+            ("net_connections", s.network_hours * 3600, "net_activity_5m"),
             ("process_events", s.events_days * 86400, None),
             ("self_telemetry", s.self_telemetry_days * 86400, None),
             # 시스템 사건은 양이 적고(하루 몇 건) 진단 가치가 커서 오래 남긴다.
