@@ -26,6 +26,9 @@ _COLUMNS = [
     "ts",
     "cpu_percent",
     "rss_mb",
+    "private_mb",
+    "peak_wset_mb",
+    "page_faults",
     "threads",
     "handles",
     "queue_depth",
@@ -51,6 +54,7 @@ class SelfTelemetry(Component):
 
     def tick(self) -> None:
         cpu, rss_mb = self.guard.last()
+        memory = self.guard.last_memory()
         snapshot = STATS.snapshot()
 
         try:
@@ -71,6 +75,9 @@ class SelfTelemetry(Component):
                     time.time(),
                     round(cpu, 3),
                     round(rss_mb, 2),
+                    round(memory.private_mb, 2) if memory.private_mb is not None else None,
+                    round(memory.peak_wset_mb, 2) if memory.peak_wset_mb is not None else None,
+                    memory.page_faults,
                     threads,
                     handles,
                     snapshot.queue_depth,
@@ -121,10 +128,15 @@ if __name__ == "__main__":  # 스모크: python -m argus.runtime.selftel
         for row in rows:
             print(
                 f"    cpu={row['cpu_percent']}%  rss={row['rss_mb']}MB  "
-                f"threads={row['threads']}  handles={row['handles']}  "
-                f"level={row['throttle_level']}"
+                f"private={row['private_mb']}MB  peak_wset={row['peak_wset_mb']}MB  "
+                f"faults={row['page_faults']}  threads={row['threads']}  "
+                f"handles={row['handles']}  level={row['throttle_level']}"
             )
         if after <= before:
             print("[FAIL] 자기 계측이 기록되지 않았다")
+            raise SystemExit(1)
+        # 누수 판정의 정본이 될 컬럼이므로, 비어 있으면 실패로 본다(Windows 기준).
+        if os.name == "nt" and rows and rows[0]["private_mb"] is None:
+            print("[FAIL] private_mb 가 기록되지 않았다 — 누수 추세를 판정할 수 없다")
             raise SystemExit(1)
     print("[OK] runtime.selftel")

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import threading
+from dataclasses import dataclass
 
 import psutil
 
@@ -23,6 +24,23 @@ from ..config.loader import BudgetSettings
 from ..logging_setup import get_logger
 
 log = get_logger(__name__)
+
+_MB = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class MemorySample:
+    """한 번의 `memory_info()` 에서 뽑아낸 메모리 지표들.
+
+    RSS 를 예산 판정에 계속 쓰는 이유: 예산 "RSS 300MB" 는 *지금 물리 메모리를 얼마나
+    붙들고 있는가* 라는 뜻이고, 그건 트림된 뒤라면 실제로 줄어든 게 맞다.
+    반면 **누수 판정은 `private_mb` 로 한다** — 트림이 가리지 못하는 값이라서다.
+    """
+
+    rss_mb: float
+    private_mb: float | None
+    peak_wset_mb: float | None
+    page_faults: int | None
 
 
 class BudgetGuard:
@@ -38,20 +56,40 @@ class BudgetGuard:
         self._calm_streak = 0
         self._last_cpu = 0.0
         self._last_rss_mb = 0.0
+        self._last_memory = MemorySample(0.0, None, None, None)
         # 첫 호출은 항상 0.0 을 돌려주므로(직전 호출과의 델타로 계산) 미리 한 번 버린다.
         self._proc.cpu_percent(interval=None)
 
     # ------------------------------------------------------------------ 측정
 
+    def _memory(self) -> MemorySample:
+        """`memory_info()` 한 번으로 메모리 지표를 모두 뽑는다.
+
+        `private`·`peak_wset`·`num_page_faults` 는 psutil 의 Windows 전용 필드다.
+        다른 플랫폼에서는 없으므로 `getattr` 로 받아 None 을 남긴다 — 개발/CI 가
+        비Windows 에서 돌 때 자기 계측이 통째로 죽으면 안 된다.
+        """
+        info = self._proc.memory_info()
+        private = getattr(info, "private", None)
+        peak_wset = getattr(info, "peak_wset", None)
+        faults = getattr(info, "num_page_faults", None)
+        return MemorySample(
+            rss_mb=info.rss / _MB,
+            private_mb=private / _MB if private is not None else None,
+            peak_wset_mb=peak_wset / _MB if peak_wset is not None else None,
+            page_faults=int(faults) if faults is not None else None,
+        )
+
     def measure(self) -> tuple[float, float]:
         """(정규화 CPU %, RSS MB). 프로세스가 사라지는 경우는 여기선 없다."""
         raw_cpu = self._proc.cpu_percent(interval=None)
         cpu = raw_cpu / self._cpu_count
-        rss_mb = self._proc.memory_info().rss / (1024 * 1024)
+        memory = self._memory()
         with self._lock:
             self._last_cpu = cpu
-            self._last_rss_mb = rss_mb
-        return cpu, rss_mb
+            self._last_rss_mb = memory.rss_mb
+            self._last_memory = memory
+        return cpu, memory.rss_mb
 
     def update(self) -> int:
         """한 주기 평가하고 현재 스로틀 레벨을 돌려준다."""
@@ -103,6 +141,10 @@ class BudgetGuard:
     def last(self) -> tuple[float, float]:
         with self._lock:
             return self._last_cpu, self._last_rss_mb
+
+    def last_memory(self) -> MemorySample:
+        with self._lock:
+            return self._last_memory
 
 
 if __name__ == "__main__":  # 스모크: python -m argus.runtime.budget
