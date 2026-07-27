@@ -3,10 +3,11 @@
 Windows PC 성능 이상 탐지 프로그램. 리소스 사용 패턴을 학습해 **"평소와 다른" 상태를 감지하고,
 느려진 원인 프로세스를 지목**한다.
 
-> **상태: Phase 1 완료** — 실행하면 **실제 메트릭이 SQLite에 쌓입니다.**
+> **상태: Phase 2 완료** — 실제 메트릭이 SQLite에 쌓이고, **탐지기를 숫자로 채점할 수 있습니다.**
 > 아직 이상 탐지는 하지 않습니다(Phase 3부터). 진행 상황은 [`CHANGELOG.md`](CHANGELOG.md) 참조.
 >
 > 실측(300초 기준): 자체 CPU 평균 0.22% · RSS 76MB · DB 292MB/일 · 유실 0건
+> 리플레이 17만~27만 배속 (6시간 구간을 0.1초에 재생)
 
 ---
 
@@ -77,6 +78,19 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 ```
 
 각 모듈은 단독 실행하면 자기 점검 결과를 출력합니다.
+
+### 탐지기 채점 (Phase 2)
+
+이상 탐지에는 정답이 없어서, 결함을 인위로 주입해 **정답 구간을 만듭니다.**
+
+```powershell
+python tools\fault_injector.py cpu_spin --duration 120 --ramp   # 결함 주입 (정답 라벨 생성)
+.venv\Scripts\python.exe -m argus.eval --detector all --save    # 리플레이 + 채점
+```
+
+저장된 데이터를 17만 배속으로 재생하므로 "며칠 돌려봐야 아는" 것을 몇 초에 확인합니다.
+탐지기별 정밀도·재현율·F1·탐지 지연·오탐률이 나오고, 이력은 `eval_runs` 에 쌓여
+회귀 감시에 쓰입니다. 자세한 내용은 [`tools/README.md`](tools/README.md).
 
 ---
 
