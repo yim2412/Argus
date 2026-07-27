@@ -137,8 +137,8 @@ class _PidFileLock:
         self._path.unlink(missing_ok=True)
 
 
-def _make_lock() -> _MutexLock | _PidFileLock:
-    key = _key()
+def _make_lock(key: str | None = None) -> _MutexLock | _PidFileLock:
+    key = key or _key()
     try:
         import win32event  # noqa: F401
     except ImportError:
@@ -158,8 +158,11 @@ class InstanceLock:
     실수가 아니라 흔한 일이다.
     """
 
-    def __init__(self) -> None:
-        self._lock = _make_lock()
+    def __init__(self, key: str | None = None) -> None:
+        # `key` 는 스모크 전용이다. 기본값(데이터 디렉터리 해시)을 쓰면 상주 인스턴스가
+        # 이미 잠금을 쥐고 있어 스모크가 늘 [FAIL] 로 끝난다 — 정상 동작인데 고장으로
+        # 보이는 출력이 가장 나쁘다.
+        self._lock = _make_lock(key)
         self.kind = self._lock.kind
 
     def acquire(self) -> InstanceLock:
@@ -181,18 +184,30 @@ if __name__ == "__main__":  # 스모크: python -m argus.runtime.singleton
     print(f"  데이터 디렉터리 : {data_dir()}")
     print(f"  잠금 키         : {_key()}")
 
-    first = InstanceLock()
+    # 상주 인스턴스와 부딪히지 않도록 스모크 전용 키를 쓴다. 실제 잠금이 잡혀 있는지는
+    # 따로 확인해 **정보로** 보여 준다 — 그건 고장이 아니라 정상 동작이다.
+    resident = InstanceLock()
+    try:
+        resident.acquire()
+    except AlreadyRunning as e:
+        print(f"  상주 인스턴스   : 실행 중 ({e.detail})")
+    else:
+        resident.release()
+        print("  상주 인스턴스   : 없음")
+
+    smoke_key = _key() + "-smoke"
+    first = InstanceLock(smoke_key)
     try:
         first.acquire()
     except AlreadyRunning as e:
-        print(f"[FAIL] 첫 획득이 막혔다 — Argus 가 이미 실행 중인가? ({e.detail})")
+        print(f"[FAIL] 첫 획득이 막혔다 — 이전 스모크가 잠금을 남겼나? ({e.detail})")
         raise SystemExit(1)
     print(f"  1차 획득        : OK ({first.kind})")
 
     # 같은 프로세스 안에서도 두 번째 획득은 막혀야 한다. 뮤텍스는 재진입 가능하지만
     # ERROR_ALREADY_EXISTS 로 판정하므로 소유자 자신도 걸린다 — 그게 의도다.
     try:
-        InstanceLock().acquire()
+        InstanceLock(smoke_key).acquire()
     except AlreadyRunning as e:
         print(f"  2차 획득 차단   : OK ({e.detail})")
     else:
@@ -201,7 +216,7 @@ if __name__ == "__main__":  # 스모크: python -m argus.runtime.singleton
 
     first.release()
     print("  해제 후 재획득  : ", end="")
-    again = InstanceLock()
+    again = InstanceLock(smoke_key)
     try:
         again.acquire()
     except AlreadyRunning as e:
