@@ -321,8 +321,17 @@ class Fusion(Component):
         value = self.db.get_meta(WATERMARK_KEY)
         if value is not None:
             return float(value)
+
         # 첫 실행: 과거 전체를 사건으로 만들지 않는다. 지금부터 본다.
-        return time.time()
+        #
+        # **반드시 저장하고 돌려준다.** 저장하지 않으면 `run_once` 가 매번
+        # `end = now - lag <= start = now` 로 0 을 반환하고, 다음 틱에서 다시 새 `now`
+        # 를 받아 영원히 제자리가 된다. 실측에서 6분 동안 신호 3건이 쌓이는 사이
+        # 융합이 한 번도 진행하지 못했다. 리플레이 테스트는 워터마크를 명시적으로
+        # 넣고 시작해서 이 경로를 타지 않았다.
+        now = time.time()
+        self._set_watermark(now)
+        return now
 
     def _set_watermark(self, ts: float) -> None:
         self.db.set_meta(WATERMARK_KEY, str(ts))

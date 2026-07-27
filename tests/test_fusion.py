@@ -60,6 +60,44 @@ def test_many_signals_become_one_incident(db: Database) -> None:
     assert linked == 30, "어떤 신호로 만들어졌는지 추적할 수 있어야 한다"
 
 
+def test_first_run_persists_watermark(db: Database) -> None:
+    """첫 실행에서 워터마크를 저장하지 않으면 융합이 영원히 제자리가 된다.
+
+    `run_once` 는 `end = now - lag` 가 `start` 보다 커야 진행하는데, 첫 실행이
+    `time.time()` 을 반환만 하고 저장하지 않으면 다음 틱에서 또 새 `now` 를 받는다.
+    실측에서 6분 동안 신호 3건이 쌓이는 사이 한 번도 진행하지 못했다.
+
+    리플레이 테스트가 이 경로를 못 잡은 이유: 전부 `_set_watermark()` 로 시작점을
+    명시하고 시작했다. **실시간에만 있는 경로였다.**
+    """
+    from argus.decide.fusion import WATERMARK_KEY
+
+    fusion = Fusion(db)
+    assert db.get_meta(WATERMARK_KEY) is None
+
+    first = fusion.watermark()
+    stored = db.get_meta(WATERMARK_KEY)
+    assert stored is not None, "첫 호출이 워터마크를 저장하지 않았다"
+    assert float(stored) == first
+
+    # 두 번째 호출은 저장된 값을 그대로 돌려줘야 한다(새 now 가 아니라)
+    assert fusion.watermark() == first
+
+
+def test_fusion_advances_across_ticks(db: Database) -> None:
+    """틱을 거듭하면 워터마크가 실제로 전진해야 한다."""
+    fusion = Fusion(db)
+    base = time.time() - 600
+    fusion._set_watermark(base)
+
+    fusion.run_once(now=base + 100)
+    after_first = fusion.watermark()
+    assert after_first > base
+
+    fusion.run_once(now=base + 200)
+    assert fusion.watermark() > after_first
+
+
 def test_gap_splits_incidents(db: Database) -> None:
     """신호가 끊기면 다른 사건이다."""
     now = time.time()
