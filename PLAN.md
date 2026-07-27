@@ -249,9 +249,10 @@ self_telemetry(ts, cpu, rss, queue_depth, drop_count, write_latency_ms)
 >
 > ⚠️ **남은 것은 RSS 장기 추세뿐이다.** 40분 시점 78MB 로 거의 평탄하나 완만한 상승이
 > 남아 있고, 압축 테스트가 자기 계측까지 10분만 남겨 전체 곡선을 못 봤다.
-> **6시간 소크 진행 중** (2026-07-27 13:31:21 시작, PID 35140, 작업 스케줄러 `ArgusSoakTest`).
-> 첫 시도(07:33:50)는 `Start-Process` 로 띄운 탓에 세션 종료와 함께 16분 만에 죽었다 —
-> 장시간 실행은 세션이 아니라 스케줄러에 매달아야 한다(`tools/run_soak.cmd`).
+> **6시간 소크 진행 중** (2026-07-27 14:13:37 시작, 작업 스케줄러 `ArgusSoak`).
+> 그날 앞선 시도 네 번이 전부 죽었고 원인이 매번 달랐다 — 세션 종속, 콘솔 Ctrl+C,
+> job object 상속, uv 트램폴린이 만든 콘솔. 해법은 스케줄러가 base `pythonw.exe` 를
+> 직접 실행하는 것이다(`tools/soak_entry.py`, 원인 정리는 `tools/README.md`).
 >
 > **추가 구현**: 절전 복귀 처리(`runtime/gapmon.py`). PC 가 자는 것은 상주 프로그램이
 > 반드시 겪는데 원안에 없었다. 복귀 시 속도 추적 초기화·PDH 재개방·프로세스 목록 재기준을
