@@ -113,6 +113,31 @@ class CollectorSettings(BaseModel):
     network: NetworkCollectorSettings = NetworkCollectorSettings()
 
 
+class RollupSettings(BaseModel):
+    """1분 롤업. 장기 데이터가 존재할 수 있게 하는 유일한 경로다."""
+
+    enabled: bool = True
+    interval_s: float = Field(default=60.0, gt=0)
+    # 진행 중인 분을 접으면 반쪽이 된다. 배치 writer 가 큐를 비우는 시간까지 감안한 여유.
+    lag_s: float = Field(default=90.0, ge=60.0)
+    # 한 틱에 접을 버킷 상한. 오래 꺼져 있다 켜면 수천 분이 밀려 있는데,
+    # 그걸 한 번에 처리하면 우리가 만든 디스크 IO 가 관측 대상을 오염시킨다.
+    max_buckets_per_run: int = Field(default=720, ge=1)
+
+
+class WarmSettings(BaseModel):
+    """웜 스토어(Parquet + DuckDB). 완전히 끝난 날짜만 내보낸다."""
+
+    enabled: bool = True
+    interval_s: float = Field(default=3600.0, gt=0)
+    # 오늘과 어제는 건드리지 않는다. Parquet 은 append 가 안 되므로 한 번 쓰면
+    # 불변이어야 하고, 그러려면 그 날짜에 더 들어올 데이터가 없어야 한다.
+    export_after_days: int = Field(default=1, ge=1)
+    compression: str = "zstd"
+    # 내보낸 날짜를 metrics_1m 에서 지울지. 끄면 두 곳에 중복 보관된다.
+    purge_after_export: bool = True
+
+
 class RetentionSettings(BaseModel):
     raw_hours: int = Field(default=24, ge=1)
     process_hours: int = Field(default=24, ge=1)
@@ -145,6 +170,8 @@ class Settings(BaseModel):
     gap_monitor: GapMonitorSettings = GapMonitorSettings()
     calibration: CalibrationSettings = CalibrationSettings()
     collector: CollectorSettings = CollectorSettings()
+    rollup: RollupSettings = RollupSettings()
+    warm: WarmSettings = WarmSettings()
     retention: RetentionSettings = RetentionSettings()
     detection: DetectionSettings = DetectionSettings()
 

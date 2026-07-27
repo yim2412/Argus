@@ -1,0 +1,428 @@
+"""1분 롤업 — 초 단위 원본을 접어 장기 보존 가능한 형태로 만든다.
+
+**이것이 없으면 장기 데이터가 존재할 수 없다.** 원본은 24시간 뒤 삭제되는데,
+Phase 4 는 레짐 학습에 며칠치를, Phase 5 는 최근 14일을, Phase 7 은 2주 축적을
+전제한다. 원본을 그대로 오래 두는 것은 답이 아니라(1Hz × 다차원 = 하루 수백 MB),
+1분으로 접는다 — 하루 1,440행이면 몇 년을 둬도 무해하다.
+
+**평균만 남기면 레짐을 구분할 수 없다.** 게임과 빌드는 평균 CPU 가 같아도 분포가
+다르다. 게임은 고르게 눌려 있고 빌드는 코어별로 튄다. 그래서 표준편차·최대·p95 를
+함께 접는다. 접고 나면 원본이 없으므로, **여기서 안 남긴 것은 영원히 못 본다.**
+
+집계를 SQL 이 아니라 파이썬에서 하는 이유: SQLite 에 백분위 함수가 없다.
+p95 를 근사하려고 SQL 을 비틀기보다 1분 60행을 읽어 정확히 계산하는 편이 싸고 명확하다.
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Any, Iterable, Sequence
+
+from ..config.loader import RollupSettings
+from ..logging_setup import get_logger
+from ..runtime.supervisor import Component
+from .hot import Database
+
+log = get_logger(__name__)
+
+BUCKET_S = 60
+
+# metrics_1m 컬럼 순서. INSERT 와 집계 결과 조립이 같은 순서를 봐야 한다.
+COLUMNS: tuple[str, ...] = (
+    "ts_min",
+    "sample_count",
+    "has_gap",
+    "cpu_mean",
+    "cpu_max",
+    "cpu_p95",
+    "cpu_std",
+    "cpu_core_max_mean",
+    "cpu_imbalance_mean",
+    "cpu_freq_mean",
+    "cpu_perf_mean",
+    "mem_percent_mean",
+    "mem_percent_max",
+    "mem_used_mb_mean",
+    "swap_used_mb_max",
+    "disk_read_bps_mean",
+    "disk_read_bps_max",
+    "disk_write_bps_mean",
+    "disk_write_bps_max",
+    "disk_read_iops_mean",
+    "disk_write_iops_mean",
+    "disk_queue_mean",
+    "disk_queue_max",
+    "disk_resp_ms_mean",
+    "disk_resp_ms_p95",
+    "net_rx_bps_mean",
+    "net_rx_bps_max",
+    "net_tx_bps_mean",
+    "net_tx_bps_max",
+    "ctx_switches_mean",
+    "ctx_switches_max",
+    "proc_count_mean",
+    "thread_count_mean",
+    "gpu_util_mean",
+    "gpu_util_max",
+    "gpu_vram_mb_mean",
+    "gpu_vram_mb_max",
+    "gpu_temp_max",
+    "gpu_power_mean",
+    "foreground_proc",
+    "foreground_ratio",
+    "top_cpu_proc",
+    "top_cpu_share",
+)
+
+
+# ---------------------------------------------------------------- 집계 보조
+
+def _clean(values: Iterable[Any]) -> list[float]:
+    """NULL 을 걸러낸 실수 목록.
+
+    수집기가 개별 지표를 못 얻는 것은 정상 상황이다(PDH 미가용, GPU 없음).
+    한 지표가 비었다고 그 1분 전체를 버리면 안 되므로 지표별로 따로 거른다.
+    """
+    return [float(v) for v in values if v is not None]
+
+
+def _mean(values: Sequence[float]) -> float | None:
+    return round(sum(values) / len(values), 3) if values else None
+
+
+def _max(values: Sequence[float]) -> float | None:
+    return round(max(values), 3) if values else None
+
+
+def _p95(values: Sequence[float]) -> float | None:
+    """표본 백분위. 60개 남짓이라 보간 없이 최근접 순위로 충분하다."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, int(round(0.95 * (len(ordered) - 1))))
+    return round(ordered[index], 3)
+
+
+def _std(values: Sequence[float]) -> float | None:
+    """모표준편차. 1분 안의 흔들림 크기를 재는 것이지 모집단 추정이 아니다."""
+    if len(values) < 2:
+        return 0.0 if values else None
+    mean = sum(values) / len(values)
+    variance = sum((v - mean) ** 2 for v in values) / len(values)
+    return round(variance**0.5, 3)
+
+
+def bucket_of(ts: float) -> int:
+    return int(ts // BUCKET_S) * BUCKET_S
+
+
+# ---------------------------------------------------------------- 컴포넌트
+
+
+class Rollup(Component):
+    """완결된 1분 버킷을 `metrics_1m` 으로 접는다."""
+
+    name = "rollup"
+
+    def __init__(self, db: Database, settings: RollupSettings) -> None:
+        self.db = db
+        self.settings = settings
+        self.interval_s = settings.interval_s
+
+    # ------------------------------------------------------------ 워터마크
+
+    def watermark(self) -> float | None:
+        rows = self.db.query("SELECT watermark_ts FROM rollup_state WHERE name='metrics_1m'")
+        return float(rows[0]["watermark_ts"]) if rows else None
+
+    def _set_watermark(self, ts: float) -> None:
+        with self.db._lock:  # noqa: SLF001 - 같은 커넥션을 쓰는 내부 협력
+            self.db.conn.execute(
+                "INSERT INTO rollup_state (name, watermark_ts, updated_at) VALUES ('metrics_1m', ?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET watermark_ts=excluded.watermark_ts, "
+                "updated_at=excluded.updated_at",
+                (ts, time.time()),
+            )
+            self.db.conn.commit()
+
+    # ------------------------------------------------------------ 집계
+
+    def _pending_range(self, now: float) -> tuple[int, int] | None:
+        """접어야 할 [start, end) 버킷 구간. 없으면 None.
+
+        진행 중인 분은 접지 않는다 — 아직 데이터가 들어오는 중이라 반쪽짜리가 된다.
+        `lag_s` 는 배치 writer 가 큐를 비우는 시간까지 감안한 여유다.
+        """
+        start_ts = self.watermark()
+        if start_ts is None:
+            rows = self.db.query("SELECT MIN(ts) AS lo FROM metrics_raw")
+            if not rows or rows[0]["lo"] is None:
+                return None
+            start_ts = float(rows[0]["lo"])
+
+        start = bucket_of(start_ts)
+        end = bucket_of(now - self.settings.lag_s)
+        if end <= start:
+            return None
+
+        # 한 번에 처리할 버킷 수를 제한한다. 첫 실행이나 오래 꺼져 있던 뒤에는
+        # 밀린 구간이 수천 분일 수 있는데, 그걸 한 틱에 처리하면 우리가 만든
+        # 디스크 IO 가 관측 대상을 오염시킨다.
+        max_end = start + self.settings.max_buckets_per_run * BUCKET_S
+        return start, min(end, max_end)
+
+    def _gap_buckets(self, start: int, end: int) -> set[int]:
+        """절전·시각변경 공백이 걸친 버킷.
+
+        이 구간의 통계는 신뢰할 수 없다. 지우지 않고 표시만 하는 이유는, 나중에
+        레짐·베이스라인이 "제외"를 스스로 판단할 수 있어야 하기 때문이다.
+        """
+        rows = self.db.query(
+            "SELECT ts, gap_seconds FROM system_events "
+            "WHERE ts >= ? AND ts < ? AND gap_seconds IS NOT NULL",
+            (start - 86400, end),
+        )
+        marked: set[int] = set()
+        for row in rows:
+            gap = float(row["gap_seconds"] or 0)
+            gap_start = float(row["ts"]) - gap
+            b = bucket_of(gap_start)
+            while b <= bucket_of(float(row["ts"])):
+                if start <= b < end:
+                    marked.add(b)
+                b += BUCKET_S
+        return marked
+
+    def _system_buckets(self, start: int, end: int) -> dict[int, dict[str, list[float]]]:
+        rows = self.db.query(
+            "SELECT ts, cpu_total, cpu_max_core, cpu_freq_mhz, cpu_perf_percent, "
+            "mem_percent, mem_used_mb, swap_used_mb, "
+            "disk_read_bps, disk_write_bps, disk_read_iops, disk_write_iops, "
+            "disk_queue, disk_resp_ms, net_rx_bps, net_tx_bps, "
+            "ctx_switches_ps, proc_count, thread_count "
+            "FROM metrics_raw WHERE ts >= ? AND ts < ? ORDER BY ts",
+            (start, end),
+        )
+        buckets: dict[int, dict[str, list[float]]] = {}
+        for row in rows:
+            b = buckets.setdefault(bucket_of(row["ts"]), {})
+            for key in row.keys():
+                if key == "ts":
+                    continue
+                if row[key] is not None:
+                    b.setdefault(key, []).append(float(row[key]))
+            # 코어 불균형 = 가장 바쁜 코어와 전체 평균의 차이.
+            # 단일 스레드 부하(게임 루프)와 전 코어 부하(빌드)를 가르는 지문이다.
+            if row["cpu_max_core"] is not None and row["cpu_total"] is not None:
+                b.setdefault("cpu_imbalance", []).append(
+                    float(row["cpu_max_core"]) - float(row["cpu_total"])
+                )
+        return buckets
+
+    def _gpu_buckets(self, start: int, end: int) -> dict[int, dict[str, list[float]]]:
+        """GPU 는 여러 장일 수 있다. 지금은 0번만 접는다 — 다중 GPU 는 레짐에
+        필요하지 않고, 필요해지면 그때 컬럼이 아니라 별도 테이블로 가야 한다."""
+        rows = self.db.query(
+            "SELECT ts, util_percent, vram_used_mb, temp_c, power_w FROM gpu_metrics "
+            "WHERE ts >= ? AND ts < ? AND gpu_index = 0 ORDER BY ts",
+            (start, end),
+        )
+        buckets: dict[int, dict[str, list[float]]] = {}
+        for row in rows:
+            b = buckets.setdefault(bucket_of(row["ts"]), {})
+            for key in ("util_percent", "vram_used_mb", "temp_c", "power_w"):
+                if row[key] is not None:
+                    b.setdefault(key, []).append(float(row[key]))
+        return buckets
+
+    def _process_buckets(self, start: int, end: int) -> dict[int, tuple[Any, ...]]:
+        """버킷별 (최빈 포어그라운드, 비율, CPU 1위 프로세스, 그 CPU).
+
+        레짐 추론이 요구하는 "무엇을 하는 중인가"는 리소스 수치만으로 알 수 없다.
+        포어그라운드 프로세스가 그 질문에 답하는 유일한 신호다.
+        """
+        rows = self.db.query(
+            "SELECT ts, name, cpu_percent, foreground FROM process_metrics "
+            "WHERE ts >= ? AND ts < ? AND (foreground = 1 OR cpu_percent > 0)",
+            (start, end),
+        )
+        fg_counts: dict[int, dict[str, int]] = {}
+        cpu_sums: dict[int, dict[str, float]] = {}
+        # 버킷별 고유 타임스탬프 수. 프로세스 CPU 합을 이걸로 나눠야 버킷 간 비교가 된다
+        # (같은 1분이라도 스로틀·드롭으로 표본 수가 다를 수 있다).
+        tick_sets: dict[int, set[float]] = {}
+        for row in rows:
+            b = bucket_of(row["ts"])
+            tick_sets.setdefault(b, set()).add(row["ts"])
+            if row["foreground"]:
+                fg_counts.setdefault(b, {})
+                fg_counts[b][row["name"]] = fg_counts[b].get(row["name"], 0) + 1
+            if row["cpu_percent"]:
+                cpu_sums.setdefault(b, {})
+                name = row["name"]
+                cpu_sums[b][name] = cpu_sums[b].get(name, 0.0) + float(row["cpu_percent"])
+
+        out: dict[int, tuple[Any, ...]] = {}
+        for b in set(fg_counts) | set(cpu_sums):
+            counts = fg_counts.get(b, {})
+            total = sum(counts.values())
+            if counts:
+                proc, hits = max(counts.items(), key=lambda kv: kv[1])
+                fg_proc, fg_ratio = proc, round(hits / total, 3)
+            else:
+                fg_proc, fg_ratio = None, None
+
+            sums = cpu_sums.get(b, {})
+            if sums:
+                samples = max(1, len(tick_sets.get(b, ())))
+                top_name, top_sum = max(sums.items(), key=lambda kv: kv[1])
+                top_proc, top_share = top_name, round(top_sum / samples, 2)
+            else:
+                top_proc, top_share = None, None
+            out[b] = (fg_proc, fg_ratio, top_proc, top_share)
+        return out
+
+    def run_once(self, now: float | None = None) -> int:
+        """밀린 버킷을 접는다. 접은 버킷 수를 돌려준다."""
+        now = now if now is not None else time.time()
+        pending = self._pending_range(now)
+        if pending is None:
+            return 0
+        start, end = pending
+
+        system = self._system_buckets(start, end)
+        gpu = self._gpu_buckets(start, end)
+        process = self._process_buckets(start, end)
+        gaps = self._gap_buckets(start, end)
+
+        rows: list[tuple[Any, ...]] = []
+        for bucket in sorted(system):
+            s = system[bucket]
+            g = gpu.get(bucket, {})
+            fg_proc, fg_ratio, top_proc, top_share = process.get(bucket, (None, None, None, None))
+
+            cpu = _clean(s.get("cpu_total", []))
+            rows.append(
+                (
+                    bucket,
+                    len(cpu),
+                    1 if bucket in gaps else 0,
+                    _mean(cpu),
+                    _max(cpu),
+                    _p95(cpu),
+                    _std(cpu),
+                    _mean(s.get("cpu_max_core", [])),
+                    _mean(s.get("cpu_imbalance", [])),
+                    _mean(s.get("cpu_freq_mhz", [])),
+                    _mean(s.get("cpu_perf_percent", [])),
+                    _mean(s.get("mem_percent", [])),
+                    _max(s.get("mem_percent", [])),
+                    _mean(s.get("mem_used_mb", [])),
+                    _max(s.get("swap_used_mb", [])),
+                    _mean(s.get("disk_read_bps", [])),
+                    _max(s.get("disk_read_bps", [])),
+                    _mean(s.get("disk_write_bps", [])),
+                    _max(s.get("disk_write_bps", [])),
+                    _mean(s.get("disk_read_iops", [])),
+                    _mean(s.get("disk_write_iops", [])),
+                    _mean(s.get("disk_queue", [])),
+                    _max(s.get("disk_queue", [])),
+                    _mean(s.get("disk_resp_ms", [])),
+                    _p95(s.get("disk_resp_ms", [])),
+                    _mean(s.get("net_rx_bps", [])),
+                    _max(s.get("net_rx_bps", [])),
+                    _mean(s.get("net_tx_bps", [])),
+                    _max(s.get("net_tx_bps", [])),
+                    _mean(s.get("ctx_switches_ps", [])),
+                    _max(s.get("ctx_switches_ps", [])),
+                    _mean(s.get("proc_count", [])),
+                    _mean(s.get("thread_count", [])),
+                    _mean(g.get("util_percent", [])),
+                    _max(g.get("util_percent", [])),
+                    _mean(g.get("vram_used_mb", [])),
+                    _max(g.get("vram_used_mb", [])),
+                    _max(g.get("temp_c", [])),
+                    _mean(g.get("power_w", [])),
+                    fg_proc,
+                    fg_ratio,
+                    top_proc,
+                    top_share,
+                )
+            )
+
+        if rows:
+            placeholders = ", ".join("?" * len(COLUMNS))
+            with self.db._lock:  # noqa: SLF001
+                # REPLACE 인 이유: 같은 버킷을 다시 접어도 결과가 같아야 한다(멱등).
+                # 크래시로 워터마크가 뒤로 갔을 때 중복 키로 죽으면 안 된다.
+                self.db.conn.executemany(
+                    f"INSERT OR REPLACE INTO metrics_1m ({', '.join(COLUMNS)}) "
+                    f"VALUES ({placeholders})",
+                    rows,
+                )
+                self.db.conn.commit()
+
+        # 원본이 없는 구간(수집 중단 등)도 지나가야 워터마크가 멈추지 않는다.
+        self._set_watermark(end)
+        if rows:
+            log.debug("롤업", extra={"buckets": len(rows), "watermark": end})
+        return len(rows)
+
+    def tick(self) -> None:
+        self.run_once()
+
+
+if __name__ == "__main__":  # 스모크: python -m argus.storage.rollup
+    from ..config.loader import load_settings
+    from ..logging_setup import setup
+
+    setup(level="INFO")
+    settings = load_settings()
+
+    with Database() as db:
+        rollup = Rollup(db, settings.rollup)
+
+        # 원본이 없는 DB(새 설치·테스트 환경)에서도 스모크가 성립해야 한다.
+        # 접을 것이 없다는 이유로 [FAIL] 이 나면 진짜 고장과 구분되지 않는다.
+        pending = rollup._pending_range(time.time())
+        synthetic = pending is None
+        if synthetic:
+            base = bucket_of(time.time() - 600)
+            db.insert_many(
+                "metrics_raw",
+                ("ts", "cpu_total", "cpu_max_core", "mem_percent", "disk_resp_ms"),
+                [(base + i, 10.0 + i % 7, 40.0 + i % 11, 30.0, 0.1) for i in range(60)],
+            )
+            # 워터마크가 이미 앞서 있으면 합성 구간을 건너뛴다. 스모크가 검증하려는
+            # 것은 집계 로직이므로 시작점을 명시적으로 맞춘다.
+            rollup._set_watermark(base)
+            print("  (원본이 없어 합성 1분을 넣고 검증한다)")
+
+        before = db.query("SELECT COUNT(*) AS c FROM metrics_1m")[0]["c"]
+        started = time.perf_counter()
+        made = rollup.run_once()
+        elapsed = (time.perf_counter() - started) * 1000
+        after = db.query("SELECT COUNT(*) AS c FROM metrics_1m")[0]["c"]
+
+        print(f"  접은 버킷 : {made} ({elapsed:.0f}ms)")
+        print(f"  metrics_1m: {before} -> {after}행")
+        print(f"  워터마크  : {rollup.watermark()}")
+
+        sample = db.query(
+            "SELECT ts_min, sample_count, cpu_mean, cpu_max, cpu_std, cpu_imbalance_mean, "
+            "gpu_util_mean, foreground_proc, foreground_ratio, top_cpu_proc "
+            "FROM metrics_1m ORDER BY ts_min DESC LIMIT 5"
+        )
+        for row in sample:
+            stamp = time.strftime("%H:%M", time.localtime(row["ts_min"]))
+            print(
+                f"    {stamp}  n={row['sample_count']:<3} cpu={row['cpu_mean']}"
+                f"/{row['cpu_max']} σ={row['cpu_std']} imb={row['cpu_imbalance_mean']} "
+                f"gpu={row['gpu_util_mean']}  fg={row['foreground_proc']}"
+                f"({row['foreground_ratio']})  top={row['top_cpu_proc']}"
+            )
+
+        if after == 0:
+            print("[FAIL] 접힌 버킷이 없다 — 원본이 있는데 롤업이 비었다면 버그다")
+            raise SystemExit(1)
+    print("[OK] storage.rollup")

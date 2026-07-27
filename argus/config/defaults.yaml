@@ -71,8 +71,28 @@ collector:
     # 연결 스냅샷은 개인정보가 짙다. 필요 없으면 여기서 끄면 된다.
     max_rows_per_snapshot: 500
 
+rollup:
+  # 초 단위 원본을 1분으로 접는다. **이게 없으면 장기 데이터가 존재할 수 없다** —
+  # 원본은 24시간 뒤 지워지는데 레짐·ML 단계는 며칠~2주치를 전제한다.
+  enabled: true
+  interval_s: 60.0
+  # 진행 중인 분은 접지 않는다(반쪽이 된다). 배치 writer 여유까지 감안한 지연.
+  lag_s: 90.0
+  # 한 틱에 접을 버킷 상한. 오래 꺼져 있다 켜면 밀린 구간이 수천 분일 수 있다.
+  max_buckets_per_run: 720
+
+warm:
+  # 웜 스토어 — 끝난 날짜를 Parquet 일별 파티션으로 내보낸다.
+  enabled: true
+  interval_s: 3600.0
+  # 오늘·어제는 건드리지 않는다. Parquet 은 append 가 안 되므로 한 번 쓰면 불변이어야 한다.
+  export_after_days: 1
+  compression: zstd
+  purge_after_export: true
+
 retention:
-  # 원본(초 단위) 보존 시간. 이후 단계에서 1분 집계로 다운샘플하면 더 줄일 수 있다.
+  # 원본(초 단위) 보존 시간. 1분 집계는 롤업이 따로 장기 보존한다.
+  # **삭제는 롤업 워터마크를 넘지 못한다** — 접기 전에 지우면 영구 손실이다.
   raw_hours: 24
   process_hours: 24
   network_hours: 72

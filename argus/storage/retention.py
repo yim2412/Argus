@@ -6,8 +6,10 @@
 일정 수준에서 안정된다. VACUUM 은 DB 전체를 다시 쓰는 무거운 작업이라, 우리가 관측
 대상인 디스크에 큰 IO 를 만들어 스스로 이상을 유발한다.
 
-Phase 1 은 "오래되면 삭제"까지만 한다. 1분 집계로 다운샘플해 장기 보존하는 것은
-웜 스토어(Parquet)와 함께 이후 단계에서 붙인다.
+**삭제는 롤업 워터마크를 넘지 못한다.** 원본이 1분 집계로 접히기 전에 지워지면 그
+데이터는 영구히 사라진다 — 삭제는 되돌릴 수 없고, 장기 데이터는 이 경로로만 남는다.
+롤업이 멈춰 있으면(예외·설정 오류) 삭제도 함께 멈추고 DB 가 커지는데, **그게 맞다.**
+디스크가 차는 것은 눈에 보이고 고칠 수 있지만, 지워진 2주치는 되돌릴 방법이 없다.
 """
 
 from __future__ import annotations
@@ -32,27 +34,51 @@ class Retention(Component):
         self.settings = settings
         self.interval_s = settings.interval_s
 
-    def _rules(self) -> list[tuple[str, float]]:
-        """(테이블, 보존 초) 목록."""
+    def _rules(self) -> list[tuple[str, float, bool]]:
+        """(테이블, 보존 초, 롤업 워터마크에 묶이는가) 목록.
+
+        세 번째 값이 True 인 테이블은 롤업이 접기 전에는 지우지 않는다. 1분 집계의
+        입력이 되는 원본들이다.
+        """
         s = self.settings
         return [
-            ("metrics_raw", s.raw_hours * 3600),
-            ("gpu_metrics", s.raw_hours * 3600),
-            ("process_metrics", s.process_hours * 3600),
-            ("net_connections", s.network_hours * 3600),
-            ("process_events", s.events_days * 86400),
-            ("self_telemetry", s.self_telemetry_days * 86400),
+            ("metrics_raw", s.raw_hours * 3600, True),
+            ("gpu_metrics", s.raw_hours * 3600, True),
+            ("process_metrics", s.process_hours * 3600, True),
+            ("net_connections", s.network_hours * 3600, False),
+            ("process_events", s.events_days * 86400, False),
+            ("self_telemetry", s.self_telemetry_days * 86400, False),
             # 시스템 사건은 양이 적고(하루 몇 건) 진단 가치가 커서 오래 남긴다.
             # 절전 공백 기록은 나중에 베이스라인이 그 구간을 제외하는 근거가 된다.
-            ("system_events", s.events_days * 86400),
+            ("system_events", s.events_days * 86400, False),
         ]
+
+    def _rollup_watermark(self) -> float | None:
+        """롤업이 접기를 마친 시각. 롤업이 없거나 아직 안 돌았으면 None."""
+        try:
+            rows = self.db.query("SELECT watermark_ts FROM rollup_state WHERE name='metrics_1m'")
+        except Exception:
+            # 마이그레이션 이전 DB. 이 경우 원본을 지키는 쪽이 안전하다.
+            return None
+        return float(rows[0]["watermark_ts"]) if rows else None
 
     def purge_once(self) -> dict[str, int]:
         """한 번 정리하고 테이블별 삭제 행 수를 돌려준다."""
         now = time.time()
         deleted: dict[str, int] = {}
-        for table, keep_seconds in self._rules():
+        watermark = self._rollup_watermark()
+        if watermark is None:
+            # 롤업이 아직 한 번도 돌지 않았다. 첫 기동 직후에는 정상이지만,
+            # 계속 이 상태면 롤업이 죽은 것이고 DB 가 무한히 자란다.
+            held = [t for t, _, needs in self._rules() if needs]
+            log.warning("롤업 워터마크가 없어 원본 정리를 건너뛴다", extra={"tables": held})
+
+        for table, keep_seconds, needs_rollup in self._rules():
             cutoff = now - keep_seconds
+            if needs_rollup:
+                if watermark is None:
+                    continue
+                cutoff = min(cutoff, watermark)
             try:
                 with self.db._lock:  # noqa: SLF001 - 같은 커넥션을 쓰는 내부 협력
                     cursor = self.db.conn.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
@@ -76,18 +102,51 @@ if __name__ == "__main__":  # 스모크: python -m argus.storage.retention
 
     setup(level="INFO")
     with Database() as db:
-        old_ts = time.time() - 400 * 86400  # 확실히 기한이 지난 시각
-        db.insert_many("metrics_raw", ("ts", "cpu_total"), [(old_ts, 1.0)])
-        before = db.query("SELECT COUNT(*) AS c FROM metrics_raw WHERE ts < ?", (old_ts + 1,))[0]["c"]
-
         retention = Retention(db, load_settings().retention)
-        deleted = retention.purge_once()
+        old_ts = time.time() - 400 * 86400  # 확실히 기한이 지난 시각
 
+        # 1) 롤업이 아직 그 구간을 접지 않았으면 지우면 안 된다.
+        db.insert_many("metrics_raw", ("ts", "cpu_total"), [(old_ts, 1.0)])
+        saved = db.query("SELECT watermark_ts FROM rollup_state WHERE name='metrics_1m'")
+        with db._lock:  # noqa: SLF001
+            db.conn.execute(
+                "INSERT INTO rollup_state (name, watermark_ts, updated_at) "
+                "VALUES ('metrics_1m', ?, ?) ON CONFLICT(name) DO UPDATE SET "
+                "watermark_ts=excluded.watermark_ts",
+                (old_ts - 1, time.time()),
+            )
+            db.conn.commit()
+        retention.purge_once()
+        held = db.query("SELECT COUNT(*) AS c FROM metrics_raw WHERE ts < ?", (old_ts + 1,))[0]["c"]
+        print(f"  워터마크 이전(미집계) 행 보존: {held}행 남음")
+
+        # 2) 롤업이 지나간 뒤에는 지운다.
+        with db._lock:  # noqa: SLF001
+            db.conn.execute(
+                "UPDATE rollup_state SET watermark_ts=? WHERE name='metrics_1m'", (time.time(),)
+            )
+            db.conn.commit()
+        deleted = retention.purge_once()
         after = db.query("SELECT COUNT(*) AS c FROM metrics_raw WHERE ts < ?", (old_ts + 1,))[0]["c"]
-        print(f"  기한 지난 행: {before} -> {after}")
+
+        # 실제 워터마크를 되돌려 놓는다. 스모크가 운영 상태를 바꾸면 안 된다 —
+        # 워터마크를 현재 시각으로 남기고 나가면 그 뒤로 롤업이 과거를 영영 건너뛴다.
+        with db._lock:  # noqa: SLF001
+            if saved:
+                db.conn.execute(
+                    "UPDATE rollup_state SET watermark_ts=? WHERE name='metrics_1m'",
+                    (saved[0]["watermark_ts"],),
+                )
+            else:
+                db.conn.execute("DELETE FROM rollup_state WHERE name='metrics_1m'")
+            db.conn.commit()
+
         print(f"  삭제 내역: {deleted or '(없음)'}")
         print(f"  DB 크기: {db.size_bytes():,} bytes")
+        if held != 1:
+            print("[FAIL] 롤업 전 원본이 삭제됐다 — 장기 데이터가 영구 손실되는 경로다")
+            raise SystemExit(1)
         if after != 0:
-            print("[FAIL] 기한이 지난 행이 남아 있다")
+            print("[FAIL] 기한이 지나고 롤업도 끝난 행이 남아 있다")
             raise SystemExit(1)
     print("[OK] storage.retention")

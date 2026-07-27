@@ -7,9 +7,9 @@ requires-python = ">=3.12,<3.13"
 license = { file = "LICENSE" }
 authors = [{ name = "yim2412" }]
 
-# Phase 0 의존성만. 각 Phase 착수 시 필요한 것을 추가한다.
+# 각 Phase 착수 시 필요한 것을 추가한다.
 #   Phase 1  : (없음 — psutil/pywin32/pynvml 이미 포함)
-#   Phase 2+ : numpy, scipy, pyarrow, duckdb
+#   Phase 4-A: pyarrow, duckdb (웜 스토어)
 #   Phase 5+ : scikit-learn, river
 #   Phase 7  : torch, onnxruntime
 #   Phase 10 : streamlit, plotly
@@ -19,6 +19,9 @@ dependencies = [
     "PyYAML>=6.0",
     "pydantic>=2.7",
     "nvidia-ml-py>=12.560",
+    # 웜 스토어. pyarrow 가 쓰기, duckdb 가 파티션 조회를 맡는다.
+    "pyarrow>=17.0",
+    "duckdb>=1.0",
 ]
 
 [project.optional-dependencies]

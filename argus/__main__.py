@@ -208,6 +208,17 @@ def run(args: argparse.Namespace) -> int:
         )
         if settings.self_telemetry.enabled:
             sup.add(SelfTelemetry(db, guard, interval_s=settings.self_telemetry.interval_s))
+
+        # 롤업은 보존 정리보다 **먼저** 등록한다. 순서가 동작을 정하지는 않지만
+        # (보존이 워터마크로 스스로 막는다), 읽는 사람에게 의존 방향을 보여 준다.
+        if settings.rollup.enabled:
+            from .storage.rollup import Rollup
+
+            sup.add(Rollup(db, settings.rollup))
+        if settings.warm.enabled:
+            from .storage.warm import WarmExporter
+
+            sup.add(WarmExporter(db, settings.warm))
         sup.add(Retention(db, settings.retention))
 
         # 수집기 — 예산이 빠듯해지면 스로틀 대상이 된다
