@@ -3,8 +3,11 @@
   상시 자동 시작용 작업 정의. 소크 검증용 soak_task.xml 과 목적이 다르다
   (저쪽은 수동 트리거 전용). 콘솔 없는 pythonw 로 띄우는 이유는 tools/README.md 참조.
 
-  {{...}} 자리는 tools\install_autostart.ps1 이 채운다. 경로를 파일에 박아 두면
-  다른 PC 나 다른 파이썬 설치에서 조용히 깨진다.
+  이중 중괄호로 감싼 자리는 tools\install_autostart.ps1 이 채운다. 경로를 파일에 박아
+  두면 다른 PC 나 다른 파이썬 설치에서 조용히 깨진다.
+
+  주석에도 자리표시자를 그대로 쓰지 않는다 — 스크립트의 미치환 검사가 주석까지 훑기
+  때문에, 설명하려고 적어 둔 예시가 등록을 막는다. 2026-07-28 에 실제로 그랬다.
 -->
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>

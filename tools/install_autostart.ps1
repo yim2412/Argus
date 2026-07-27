@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Argus 를 로그온 시 자동 시작하도록 작업 스케줄러에 등록한다.
 
@@ -8,6 +8,12 @@
     파이썬 경로는 `.venv\pyvenv.cfg` 의 `home` 에서 읽어 낸다. XML 에 박아 두면 다른 PC·
     다른 파이썬 설치에서 조용히 깨지기 때문이다. venv 의 `pythonw.exe` 를 쓰지 않는
     이유(uv 트램폴린이 콘솔 창을 만든다)는 tools\README.md 에 정리돼 있다.
+
+.NOTES
+    **이 파일은 UTF-8 BOM 으로 저장해야 한다.** PowerShell 5.1 은 BOM 이 없으면 시스템
+    ANSI 로 읽는다. 그러면 한글 문자열의 바이트가 깨지면서 파서가 따옴표 경계를 잘못
+    잡아, 아래쪽 `Write-Host` 줄들이 코드가 아니라 **문자열로 삼켜져 그대로 출력된다.**
+    2026-07-28 에 실제로 그랬다. 등록은 성공했으므로 오류로 보이지도 않는다.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File tools\install_autostart.ps1

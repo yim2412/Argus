@@ -33,6 +33,14 @@ powershell -ExecutionPolicy Bypass -File tools\install_autostart.ps1 -Uninstall
 3. **네이티브 exe 에 `2>&1` 을 붙이지 않는다.** PowerShell 5.1 은 stderr 한 줄을
    ErrorRecord 로 감싸며 종료 코드 0 에도 `$?` 를 false 로 만든다. 판정은 `$LASTEXITCODE` 로만.
 
+**`.ps1` 은 UTF-8 BOM 으로 저장한다.** BOM 이 없으면 PowerShell 5.1 이 시스템 ANSI 로 읽어
+한글 문자열의 바이트가 깨지고, **파서가 따옴표 경계를 잘못 잡아 뒤쪽 `Write-Host` 줄들이
+코드가 아니라 문자열로 삼켜진 채 그대로 출력된다.** 등록은 성공하므로 오류로 보이지 않는다.
+편집기가 BOM 을 떼면 조용히 재발한다.
+
+**작업 정의 XML 의 주석에 자리표시자를 예시로 적지 않는다.** 스크립트의 미치환 검사는
+주석까지 훑기 때문에, 설명하려고 적어 둔 `{{ }}` 가 등록을 막는다.
+
 ## 중복 실행
 
 `argus/runtime/singleton.py` 가 named mutex 로 막는다. 이름에 데이터 디렉터리 해시를 섞어
