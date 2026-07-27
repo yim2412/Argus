@@ -12,11 +12,12 @@ from __future__ import annotations
 import argparse
 import sys
 
+from ..detection import registry
 from ..detection.base import run_detector
 from ..logging_setup import setup
 from ..storage.hot import Database
-from . import baselines, scoring
-from .replay import Replayer, Window
+from . import scoring
+from .replay import Replayer
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -41,11 +42,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.list:
-        for name in sorted(baselines.REGISTRY):
+        for name in registry.names():
             print(f"  {name}")
         return 0
 
-    names = sorted(baselines.REGISTRY) if args.detector == "all" else [
+    names = registry.names() if args.detector == "all" else [
         n.strip() for n in args.detector.split(",") if n.strip()
     ]
     scenarios = [s.strip() for s in args.scenario.split(",")] if args.scenario else None
@@ -89,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         results = []
         for name in names:
             try:
-                detector = baselines.build(name)
+                detector = registry.build(name)
             except KeyError as exc:
                 print(f"[FAIL] {exc}")
                 return 1

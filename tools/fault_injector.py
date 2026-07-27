@@ -491,8 +491,10 @@ class DiskThrash(Scenario):
         }
 
     def expected_effect(self) -> tuple[str, float]:
-        # 이 PC 순차 쓰기 실측치의 20% 만큼은 실제로 장치까지 내려가야 한다.
-        return "disk_write_mbps", max(20.0, self.limits.scale.seq_write_mbps * 0.2)
+        # 쓰기 한 건당 평균 2ms 는 늘어야 사람이 느끼는 병목이다. 빠른 NVMe 에서는
+        # 이 조건을 못 채울 수 있고, 그때는 **이 PC 에서 디스크 병목을 만들 수 없다**는
+        # 사실이 드러나는 것이다. 라벨은 completed=0 이 되어 채점에서 빠진다.
+        return "disk_resp_ms", 2.0
 
 
 class HandleLeak(Scenario):
@@ -595,21 +597,42 @@ class EffectMonitor:
         self._baseline = 0.0
         self._last_disk = psutil.disk_io_counters()
         self._last_at = time.monotonic()
+        self._pdh: Any = None
+        if self.metric == "disk_resp_ms":
+            from argus.collector.pdh import PdhCounters
+
+            pdh = PdhCounters().open()
+            if pdh.available:
+                pdh.collect()   # 속도형 카운터는 첫 표본이 버려진다
+                self._pdh = pdh
+            else:
+                log.warning("PDH 없음 — 디스크 효과를 검증할 수 없다", extra={"failures": pdh.failures})
+
+    def close(self) -> None:
+        if self._pdh is not None:
+            self._pdh.close()
+            self._pdh = None
 
     def _read(self) -> float:
         if self.metric == "cpu_percent":
             return psutil.cpu_percent(interval=None)
         if self.metric == "mem_percent":
             return psutil.virtual_memory().percent
-        if self.metric == "disk_write_mbps":
-            now = time.monotonic()
-            counters = psutil.disk_io_counters()
-            elapsed = now - self._last_at
-            if counters is None or self._last_disk is None or elapsed <= 0:
+        if self.metric == "disk_resp_ms":
+            # **처리량이 아니라 응답시간을 본다.** 600MB/s 를 퍼부어도 NVMe 가 그대로
+            # 삼키면 사용자는 아무것도 못 느끼고, 탐지기가 그걸 안 잡는 게 맞다
+            # (CLAUDE.md: 증상 없는 원인은 알릴 가치가 없다).
+            #
+            # psutil 의 `write_time` 을 쓰려다 실패했다 — Windows 에서 사실상 0 만
+            # 준다(2초에 96회 쓰기, 델타 0ms). 그걸 근거로 "이 PC 는 디스크 병목을
+            # 만들 수 없다"고 결론 낼 뻔했다. Argus 가 이미 PDH 로 읽는 값을 쓴다.
+            if self._pdh is None:
                 return 0.0
-            rate = (counters.write_bytes - self._last_disk.write_bytes) / elapsed / (1024 * 1024)
-            self._last_disk, self._last_at = counters, now
-            return max(0.0, rate)
+            try:
+                # CounterSpec 이 scale=1000 을 이미 적용하므로 값은 ms 단위다.
+                return float(self._pdh.collect().get("disk_resp_ms") or 0.0)
+            except Exception:
+                return 0.0
         if self.metric == "handles":
             try:
                 return float(psutil.Process().num_handles())
@@ -769,6 +792,7 @@ class Injector:
             # 어느 경로로 빠져나가든 반드시 정리한다. 실제 PC 에서 도는 도구다.
             self.scenario.cleanup()
             effect = monitor.result()
+            monitor.close()
             self._end_label(completed=completed, effect=effect)
             print(f"  정리 완료 (정상 종료: {completed})")
 

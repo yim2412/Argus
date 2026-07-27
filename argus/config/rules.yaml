@@ -1,0 +1,132 @@
+# Argus 기본 룰 — 패키지 동봉본. 이 파일을 직접 고치지 말 것.
+# 사용자 룰은 %APPDATA%\Argus\rules.yaml 에 두면 이 파일을 대체한다.
+#
+# ---------------------------------------------------------------------------
+# 왜 모든 룰이 상대 조건과 절대 조건을 **함께** 갖는가
+#
+# 상대값만 쓰면 조용한 PC 에서 오탐이 쏟아진다. 하루 종일 CPU 5% 인 사무용 PC 는
+# 중앙값 5 / σ 0.5 라서 "평소 대비 5σ"가 겨우 7.5% 다. 8% 를 이상이라고 알리면
+# 그건 오탐이다 — 사용자는 아무것도 느끼지 않는다.
+#
+# 절대값만 쓰면 하드웨어를 가정하게 된다. "디스크 응답 50ms 이상은 병목"은 HDD
+# 사용자에게 평소이고, "CPU 85%"는 12코어 PC 에서 좀처럼 닿지 않는다.
+#
+# 그래서 둘 다 요구한다: **평소와 다르고(상대), 실제로 아플 만큼 높다(절대).**
+# 절대 조건은 "이 정도면 사람이 느낀다"의 하한이지 탐지 임계값이 아니다.
+# ---------------------------------------------------------------------------
+#
+# for      : 이만큼 지속되어야 발화. 순간 스파이크는 이상이 아니다.
+# cooldown : 한 번 울리면 이만큼 조용히. 오탐 3번이면 사용자는 알림을 끈다.
+# value    : 숫자 또는 식. 식에서 median / sigma / mad / baseline 을 쓸 수 있다.
+
+version: 1
+
+rules:
+  - name: CPU 과부하
+    when:
+      all:
+        - {metric: cpu_total, op: ">", value: "median + 5 * sigma"}
+        - {metric: cpu_total, op: ">", value: 60}
+    # 45초로 잡았더니 90초 램프 주입(임계 초과 42초)을 3초 차이로 놓쳤다.
+    # 점진적 열화는 임계를 넘은 뒤 오래 머무르지 않고 계속 올라가는 중이라,
+    # 지속 조건이 길면 "천천히 나빠지는 것"만 골라서 못 잡게 된다.
+    for: 30s
+    cooldown: 10m
+    severity: warning
+    explain: "CPU {cpu_total}% 로 45초 이상 지속 (평소 {cpu_total.median}%)"
+
+  - name: 단일 코어 병목
+    # 전체 CPU 는 여유로운데 코어 하나가 붙어 있는 상태. 게임·구형 프로그램에서
+    # 체감 렉의 흔한 원인인데 전체 사용률만 보면 절대 안 보인다.
+    when:
+      all:
+        - {metric: cpu_max_core, op: ">", value: 90}
+        - {metric: cpu_total, op: "<", value: 50}
+    for: 60s
+    cooldown: 15m
+    severity: info
+    explain: "코어 하나가 {cpu_max_core}% 인데 전체는 {cpu_total}% — 단일 스레드 병목으로 보임"
+
+  - name: 메모리 압박
+    when:
+      all:
+        - {metric: mem_percent, op: ">", value: "median + 4 * sigma"}
+        - {metric: mem_percent, op: ">", value: 80}
+    for: 60s
+    cooldown: 15m
+    severity: warning
+    explain: "메모리 {mem_percent}% 사용 (평소 {mem_percent.median}%), 여유 {mem_avail_mb}MB"
+
+  - name: 메모리 이상 증가
+    # "압박"과 다른 룰이다. 64GB PC 에서 메모리 누수가 18%p 를 먹어도 사용률은
+    # 46% 라 압박 룰(80%)에 걸리지 않는다. 아직 아프지 않지만 **평소가 아니다** —
+    # 누수는 아파지기 전에 잡아야 의미가 있다(Phase 7 의 주 타깃).
+    #
+    # 절대 조건을 사용률이 아니라 **평소 대비 증가폭(%p)** 으로 둔다. σ 만 쓰면
+    # 메모리가 아주 평탄한 PC 에서 1%p 변동에도 울린다.
+    when:
+      all:
+        - {metric: mem_percent, op: ">", value: "median + 5 * sigma"}
+        - {metric: mem_percent, op: ">", value: "median + 5"}
+    for: 90s
+    cooldown: 20m
+    severity: info
+    explain: "메모리가 평소 {mem_percent.median}% 에서 {mem_percent}% 로 올라 지속 중"
+
+  - name: 디스크 응답 저하
+    # 사용률이 아니라 **응답시간**을 본다. 디스크가 바쁜 것은 문제가 아니고,
+    # 요청이 밀려 오래 걸리는 것이 문제다. 증상 없는 원인은 알릴 가치가 없다.
+    when:
+      all:
+        - {metric: disk_resp_ms, op: ">", value: "median + 6 * sigma"}
+        - {metric: disk_resp_ms, op: ">", value: 3}
+    for: 30s
+    cooldown: 10m
+    severity: warning
+    explain: "디스크 응답 {disk_resp_ms}ms (평소 {disk_resp_ms.median}ms)"
+
+  - name: 디스크 큐 적체
+    # 큐 길이는 단위 자체가 하드웨어에 독립적이라 절대값이 의미를 갖는다.
+    # 대부분의 PC 에서 이 값은 내내 0 이라 상대 통계가 서지 않는다(degenerate).
+    when:
+      all:
+        - {metric: disk_queue, op: ">", value: 4}
+    for: 30s
+    cooldown: 10m
+    severity: warning
+    explain: "디스크 대기 요청 {disk_queue}개 — I/O 가 밀리고 있다"
+
+  - name: 컨텍스트 스위치 급증
+    # 경합 신호. 프로세스들이 서로를 밀어내며 실제 일을 못 하는 상태.
+    when:
+      all:
+        - {metric: ctx_switches_ps, op: ">", value: "median + 8 * sigma"}
+        - {metric: ctx_switches_ps, op: ">", value: 50000}
+    for: 60s
+    cooldown: 20m
+    severity: info
+    explain: "컨텍스트 스위치 {ctx_switches_ps}/초 (평소 {ctx_switches_ps.median}/초)"
+
+  - name: GPU 온도 스로틀링
+    # 온도가 높은 것만으로는 문제가 아니다. 스로틀 사유에 THERMAL 이 떠야
+    # 성능이 실제로 깎이고 있다는 뜻이다.
+    when:
+      all:
+        - {metric: gpu_temp_c, op: ">", value: 80}
+        - {metric: gpu_throttle_reasons, op: "contains", value: "THERMAL"}
+    for: 60s
+    cooldown: 30m
+    severity: critical
+    explain: "GPU {gpu_temp_c}도에서 열 스로틀링 — 성능이 깎이고 있다"
+
+  - name: 스왑 사용
+    # 스왑이 도는 순간 체감 속도가 무너진다. 평소 0 인 PC 가 많아 상대 조건을
+    # 걸지 않는다(0 은 산포가 없어 상대 판정이 성립하지 않는다).
+    when:
+      all:
+        - {metric: swap_used_mb, op: ">", value: 512}
+        - {metric: mem_percent, op: ">", value: 75}
+    for: 120s
+    cooldown: 30m
+    severity: warning
+    explain: "스왑 {swap_used_mb}MB 사용 중 (메모리 {mem_percent}%) — 디스크를 메모리처럼 쓰고 있다"
