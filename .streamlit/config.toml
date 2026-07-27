@@ -1,0 +1,19 @@
+# 대시보드 테마. 색은 dataviz 검증기를 통과한 다크 서피스 기준 값이다
+# (argus/dashboard/theme.py 의 주석에 검증 명령과 결과가 있다).
+# 라이트 모드를 쓰지 않는 이유: 같은 팔레트가 라이트 서피스에서 3:1 대비를 못 넘는
+# 슬롯이 생겨 별도 완화가 필요해진다.
+
+[theme]
+base = "dark"
+primaryColor = "#3987e5"
+backgroundColor = "#0d0d0d"
+secondaryBackgroundColor = "#1a1a19"
+textColor = "#ffffff"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+# 대시보드가 파일을 감시하며 재실행하면 그 자체가 디스크 IO 다. 우리가 관측 대상이다.
+fileWatcherType = "none"

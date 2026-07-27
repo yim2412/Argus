@@ -86,11 +86,30 @@ metrics_raw(초, 24시간) → metrics_1m(SQLite, 최근 며칠) → warm/date=Y
 때문입니다. 롤업이 멈추면 삭제도 멈추고 DB 가 커지는데, 그게 맞는 선택입니다 — 디스크가
 차는 건 눈에 보이지만 지워진 2주치는 되돌릴 수 없습니다.
 
+### 대시보드 (Phase 10)
+
+```powershell
+.venv\Scripts\python.exe -m argus.dashboard      # http://localhost:8501
+```
+
+| 페이지 | 내용 |
+|---|---|
+| **Live** | 지금 이 순간과 최근 10분 |
+| **Timeline** | 1분 집계 시간축 · 결함 주입 구간(정답)과 탐지 신호가 겹쳐 보인다 |
+| **Processes** | 프로세스별 사용량 랭킹, 포어그라운드, 개별 추이 |
+| **Health** | Argus 자신의 상태 — 관측자가 병목이 되고 있지 않은지 |
+
+준비 중: Regimes(Phase 4-B) · Incidents(Phase 9) · Models(학습 후). 데이터가 없는
+페이지를 미리 만들어 두지 않는 이유는 "아직 없음"과 "고장남"이 구분되지 않기 때문입니다.
+
+대시보드는 **읽기 전용 연결**로 붙고 조회 결과를 캐시합니다. "PC 가 느린 이유"를 찾는
+프로그램의 화면이 CPU 를 먹으면 자기가 만든 이상을 자기가 관측하게 됩니다.
+
 ### 검증
 
 ```powershell
 .venv\Scripts\python.exe -m argus.collector.process   # 모듈별 스모크 ([OK]/[FAIL])
-.venv\Scripts\python.exe -m pytest tests -q           # 정상 종료·DB 무결성
+.venv\Scripts\python.exe -m pytest tests -q           # 정상 종료·DB 무결성·대시보드 렌더
 ```
 
 각 모듈은 단독 실행하면 자기 점검 결과를 출력합니다.
