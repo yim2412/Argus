@@ -1,4 +1,4 @@
-"""Processes — 무엇이 리소스를 쓰고 있나.
+"""프로세스 — 무엇이 리소스를 쓰고 있나.
 
 PID 가 아니라 **프로그램 이름으로 합친다.** chrome 은 탭마다 프로세스를 만들어
 PID 단위로 보면 30개가 각각 3% 인데, 사용자가 알고 싶은 것은 "크롬이 90%"다.
@@ -29,8 +29,8 @@ from argus.dashboard.common import (  # noqa: E402
     timestamps,
 )
 
-st.set_page_config(page_title="Argus · Processes", page_icon="👁", layout="wide")
-page_header("Processes", "프로세스별 사용량 — 지금 무엇이 쓰고 있나")
+st.set_page_config(page_title="Argus · 프로세스", page_icon="👁", layout="wide")
+page_header("프로세스", "프로세스별 사용량 — 지금 무엇이 쓰고 있나")
 sidebar_status()
 
 window = st.select_slider(

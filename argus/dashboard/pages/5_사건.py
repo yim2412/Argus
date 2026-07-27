@@ -1,4 +1,4 @@
-"""Incidents — "어제 몇 시에 왜 느렸는지".
+"""사건 — "어제 몇 시에 왜 느렸는지".
 
 **이 페이지가 Phase 10 DoD 다.** 나머지 화면은 무슨 일이 있었는지 보여 주지만
 *왜* 에는 답하지 못한다. 사건 하나를 열면 병목·원인 후보·근거가 한 화면에 있어야 한다.
@@ -24,8 +24,8 @@ if str(_ROOT) not in sys.path:
 from argus.dashboard import data, theme  # noqa: E402
 from argus.dashboard.common import empty, page_header, sidebar_status  # noqa: E402
 
-st.set_page_config(page_title="Argus · Incidents", page_icon="👁", layout="wide")
-page_header("Incidents", "무슨 일이 있었고, 왜 그랬는가")
+st.set_page_config(page_title="Argus · 사건", page_icon="👁", layout="wide")
+page_header("사건", "무슨 일이 있었고, 왜 그랬는가")
 sidebar_status()
 
 days = st.select_slider("구간", options=[1, 3, 7, 30], value=7, format_func=lambda d: f"{d}일")

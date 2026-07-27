@@ -1,4 +1,4 @@
-"""Live — 지금 이 순간과 최근 10분.
+"""실시간 — 지금 이 순간과 최근 10분.
 
 **축이 다른 지표를 한 차트에 겹치지 않는다.** CPU %(0~100)와 디스크 MB/s 를 한 그림에
 넣으면 두 y 축이 생기고, 그 순간 "어느 선이 어느 축인가"를 읽는 비용이 데이터를 읽는
@@ -29,8 +29,8 @@ from argus.dashboard.common import (  # noqa: E402
     timestamps,
 )
 
-st.set_page_config(page_title="Argus · Live", page_icon="👁", layout="wide")
-page_header("Live", "지금 이 순간의 상태와 최근 10분")
+st.set_page_config(page_title="Argus · 실시간", page_icon="👁", layout="wide")
+page_header("실시간", "지금 이 순간의 상태와 최근 10분")
 sidebar_status()
 
 latest = data.latest_metrics()

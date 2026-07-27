@@ -1,4 +1,4 @@
-"""Health — Argus 자신의 상태.
+"""자기 상태 — Argus 자신의 상태.
 
 모니터링 도구의 1순위 실패 모드는 관측 행위가 관측 대상을 오염시키는 것이다.
 그래서 이 페이지가 다른 어떤 화면보다 먼저 필요하다.
@@ -33,8 +33,8 @@ from argus.dashboard.common import (  # noqa: E402
     timestamps,
 )
 
-st.set_page_config(page_title="Argus · Health", page_icon="👁", layout="wide")
-page_header("Health", "관측자가 병목이 되고 있지 않은가")
+st.set_page_config(page_title="Argus · 자기 상태", page_icon="👁", layout="wide")
+page_header("자기 상태", "관측자가 병목이 되고 있지 않은가")
 sidebar_status()
 
 hours = st.select_slider("구간", options=[1, 2, 4, 8, 24, 72], value=8, format_func=lambda h: f"{h}시간")

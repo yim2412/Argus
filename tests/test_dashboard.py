@@ -21,13 +21,19 @@ DASHBOARD = ROOT / "argus" / "dashboard"
 
 
 def test_pages_exist() -> None:
+    """페이지 파일명이 곧 사이드바에 보이는 이름이다.
+
+    Streamlit 은 `pages/` 의 파일명에서 메뉴 항목을 만든다. 그래서 한국어 UI 를
+    위해서는 파일명 자체가 한국어여야 한다 — 파일 안의 제목만 바꾸면 메뉴는
+    영어로 남는다.
+    """
     pages = sorted(p.name for p in (DASHBOARD / "pages").glob("*.py"))
     assert pages == [
-        "1_Live.py",
-        "2_Timeline.py",
-        "3_Processes.py",
-        "4_Health.py",
-        "5_Incidents.py",
+        "1_실시간.py",
+        "2_타임라인.py",
+        "3_프로세스.py",
+        "4_자기상태.py",
+        "5_사건.py",
     ]
 
 
@@ -103,11 +109,11 @@ def test_missing_table_returns_empty(tmp_path: Path, monkeypatch) -> None:
     "page",
     [
         "app.py",
-        "pages/1_Live.py",
-        "pages/2_Timeline.py",
-        "pages/3_Processes.py",
-        "pages/4_Health.py",
-        "pages/5_Incidents.py",
+        "pages/1_실시간.py",
+        "pages/2_타임라인.py",
+        "pages/3_프로세스.py",
+        "pages/4_자기상태.py",
+        "pages/5_사건.py",
     ],
 )
 def test_pages_run_without_exception(page: str, tmp_path: Path, monkeypatch) -> None:

@@ -1,4 +1,4 @@
-"""Timeline — 1분 집계 시간축에 결함 주입 구간과 탐지 신호를 겹친다.
+"""타임라인 — 1분 집계 시간축에 결함 주입 구간과 탐지 신호를 겹친다.
 
 이 화면의 목적은 하나다. **탐지기가 잡아야 할 곳을 잡았는지 눈으로 확인하는 것.**
 주입 구간(정답)과 탐지 신호(판정)가 같은 축 위에 있어야 정탐·미탐·오탐이 보인다.
@@ -30,8 +30,8 @@ from argus.dashboard.common import (  # noqa: E402
     sidebar_status,
 )
 
-st.set_page_config(page_title="Argus · Timeline", page_icon="👁", layout="wide")
-page_header("Timeline", "1분 집계 · 결함 주입 구간과 탐지 신호")
+st.set_page_config(page_title="Argus · 타임라인", page_icon="👁", layout="wide")
+page_header("타임라인", "1분 집계 · 결함 주입 구간과 탐지 신호")
 sidebar_status()
 
 hours = st.select_slider(
