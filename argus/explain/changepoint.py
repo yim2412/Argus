@@ -97,6 +97,42 @@ def find_onset(
     )
 
 
+def find_recovery(
+    samples: list[tuple[float, float | None]],
+    stats: Stats,
+    signal_ts: float,
+    *,
+    k: float = 2.0,
+    min_run: int = 5,
+) -> float | None:
+    """신호 시각 **이후** 지표가 평소로 돌아온 시각.
+
+    사건의 끝을 "마지막 신호 시각"으로 잡으면 안 된다. 룰은 쿨다운(기본 10분) 때문에
+    지속되는 문제에도 신호를 한 번만 내므로, **5분짜리 문제가 '0초'로 기록된다.**
+    실측에서 정확히 그랬고, 그러면 사용자는 순간 스파이크로 읽는다. 비교 창 길이도
+    0 이 되어 원인 후보가 통째로 비어 버린다.
+
+    `min_run` 이 시작점 탐색(3)보다 큰 이유: 끝은 보수적으로 잡아야 한다. 잠깐
+    내려갔다 다시 오르는 것을 종료로 보면 한 사건이 여러 개로 쪼개진다.
+    """
+    if stats.degenerate or not samples:
+        return None
+    threshold = stats.threshold(k)
+    if threshold is None:
+        return None
+
+    ordered = [(ts, v) for ts, v in samples if v is not None and ts >= signal_ts]
+    calm = 0
+    for ts, value in ordered:
+        if value < threshold:
+            calm += 1
+            if calm >= min_run:
+                return ts
+        else:
+            calm = 0
+    return None
+
+
 def find_onset_from_db(
     db,
     metric: str,

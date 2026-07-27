@@ -233,6 +233,7 @@ def run(args: argparse.Namespace) -> int:
         # 않는 이유는 평가와 운영이 같은 코드를 타게 하기 위해서다(detection/live.py).
         # 기본값은 기록만 — 알림은 Phase 9 이고, 오탐률이 검증되기 전에는 붙이지 않는다.
         if settings.detection.enabled:
+            from .decide.fusion import Fusion
             from .detection.live import DetectionComponent
 
             sup.add(
@@ -243,6 +244,9 @@ def run(args: argparse.Namespace) -> int:
                     warm_window_s=settings.detection.baseline_window_s,
                 )
             )
+            # 신호를 사건으로 접는다. 여기서 Phase 8 귀인이 붙어 "왜"가 채워진다.
+            # 알림 발송은 아직 없다 — severity 와 notified 판단까지만.
+            sup.add(Fusion(db))
 
         # 절전 복귀 감지. 수집기를 모두 등록한 뒤에 붙여야 브로드캐스트가 전부에 닿는다.
         if settings.gap_monitor.enabled:

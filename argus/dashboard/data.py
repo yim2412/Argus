@@ -217,6 +217,40 @@ def eval_runs(limit: int = 40) -> list[dict]:
     return query("SELECT * FROM eval_runs ORDER BY ts DESC, detector LIMIT ?", (limit,))
 
 
+@st.cache_data(ttl=10.0, show_spinner=False)
+def incidents(days: float = 7.0, limit: int = 200) -> list[dict]:
+    return query(
+        "SELECT * FROM incidents WHERE ts_start > ? ORDER BY ts_start DESC LIMIT ?",
+        (time.time() - days * 86400, limit),
+    )
+
+
+@st.cache_data(ttl=10.0, show_spinner=False)
+def incident_signals(incident_id: int) -> list[dict]:
+    return query(
+        "SELECT * FROM incident_signals WHERE incident_id = ? ORDER BY ts", (incident_id,)
+    )
+
+
+def set_user_label(incident_id: int, label: str | None) -> None:
+    """피드백 저장. **여기만 쓰기를 한다.**
+
+    대시보드는 읽기 전용이라는 규칙의 유일한 예외다. 피드백은 사용자가 화면에서
+    주는 것이라 다른 경로가 없다. 그래서 이 함수만 별도로 쓰기 연결을 열고,
+    닫는다 — 조회 계층(`query`)은 계속 읽기 전용으로 둔다.
+    """
+    conn = sqlite3.connect(str(db_path()), timeout=5.0)
+    try:
+        conn.execute(
+            "UPDATE incidents SET user_label = ?, labeled_at = ? WHERE id = ?",
+            (label, time.time() if label else None, incident_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    incidents.clear()
+
+
 @st.cache_data(ttl=60.0, show_spinner=False)
 def system_events(hours: float = 24.0) -> list[dict]:
     return query(

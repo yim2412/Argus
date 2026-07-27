@@ -22,7 +22,13 @@ DASHBOARD = ROOT / "argus" / "dashboard"
 
 def test_pages_exist() -> None:
     pages = sorted(p.name for p in (DASHBOARD / "pages").glob("*.py"))
-    assert pages == ["1_Live.py", "2_Timeline.py", "3_Processes.py", "4_Health.py"]
+    assert pages == [
+        "1_Live.py",
+        "2_Timeline.py",
+        "3_Processes.py",
+        "4_Health.py",
+        "5_Incidents.py",
+    ]
 
 
 def test_modules_import() -> None:
@@ -94,7 +100,15 @@ def test_missing_table_returns_empty(tmp_path: Path, monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
-    "page", ["app.py", "pages/1_Live.py", "pages/2_Timeline.py", "pages/3_Processes.py", "pages/4_Health.py"]
+    "page",
+    [
+        "app.py",
+        "pages/1_Live.py",
+        "pages/2_Timeline.py",
+        "pages/3_Processes.py",
+        "pages/4_Health.py",
+        "pages/5_Incidents.py",
+    ],
 )
 def test_pages_run_without_exception(page: str, tmp_path: Path, monkeypatch) -> None:
     """페이지를 **실제로 실행**해 예외가 없는지 본다.
