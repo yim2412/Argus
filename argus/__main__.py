@@ -215,6 +215,21 @@ def run(args: argparse.Namespace) -> int:
         for collector in collectors:
             sup.add(collector)
 
+        # 탐지 — 저장된 관측을 몇 초 늦게 따라 읽는다. 수집 경로에서 직접 조립하지
+        # 않는 이유는 평가와 운영이 같은 코드를 타게 하기 위해서다(detection/live.py).
+        # 기본값은 기록만 — 알림은 Phase 9 이고, 오탐률이 검증되기 전에는 붙이지 않는다.
+        if settings.detection.enabled:
+            from .detection.live import DetectionComponent
+
+            sup.add(
+                DetectionComponent(
+                    db,
+                    detector_name=settings.detection.detector,
+                    interval_s=settings.detection.interval_s,
+                    warm_window_s=settings.detection.baseline_window_s,
+                )
+            )
+
         # 절전 복귀 감지. 수집기를 모두 등록한 뒤에 붙여야 브로드캐스트가 전부에 닿는다.
         if settings.gap_monitor.enabled:
             def handle_gap(gap_s: float, detail: dict) -> None:

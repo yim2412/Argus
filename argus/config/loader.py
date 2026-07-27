@@ -122,6 +122,21 @@ class RetentionSettings(BaseModel):
     interval_s: float = Field(default=300.0, gt=0)
 
 
+class DetectionSettings(BaseModel):
+    """탐지 엔진. 임계값은 여기가 아니라 `rules.yaml` 에 있다 — 이건 엔진 설정이다."""
+
+    enabled: bool = True
+    detector: str = "rules"
+    # 저장된 관측을 따라 읽는 주기. 룰의 지속 조건이 30초 이상이라 촘촘할 필요가 없다.
+    interval_s: float = Field(default=10.0, gt=0)
+    # "평소"를 계산할 창. 길수록 안정적이지만 최근 변화에 둔해진다.
+    baseline_window_s: float = Field(default=1800.0, gt=0)
+    # 이만큼 표본이 모여야 판정한다. 표본 3개의 중앙값은 중앙값이 아니라 우연이다.
+    min_samples: int = Field(default=60, ge=2)
+    # 알림 발송. Phase 9 까지는 꺼 둔다 — 오탐률이 검증되기 전에 알리면 되돌릴 수 없다.
+    notify: bool = False
+
+
 class Settings(BaseModel):
     general: GeneralSettings = GeneralSettings()
     storage: StorageSettings = StorageSettings()
@@ -131,6 +146,7 @@ class Settings(BaseModel):
     calibration: CalibrationSettings = CalibrationSettings()
     collector: CollectorSettings = CollectorSettings()
     retention: RetentionSettings = RetentionSettings()
+    detection: DetectionSettings = DetectionSettings()
 
 
 class ConfigError(Exception):
