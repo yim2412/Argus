@@ -145,10 +145,23 @@ p95"가 되어 "크롬 전체"와 30배 어긋납니다.
 
 ```powershell
 .venv\Scripts\python.exe -m argus.collector.process   # 모듈별 스모크 ([OK]/[FAIL])
+.venv\Scripts\python.exe -m argus.storage.history     # 핫+웜 병합 조회 (중복 계상 검출)
 .venv\Scripts\python.exe -m pytest tests -q           # 정상 종료·DB 무결성·대시보드 렌더
 ```
 
 각 모듈은 단독 실행하면 자기 점검 결과를 출력합니다.
+
+### 다음 작업 판정
+
+데이터가 쌓여야 시작할 수 있는 작업들이 있습니다. **날짜를 세지 않고 표본을 셉니다** —
+2시간 켜 둔 날과 12시간 켜 둔 날은 같은 "1일"이 아닙니다.
+
+```powershell
+.venv\Scripts\python.exe tools\readiness.py
+```
+
+가상환경으로 실행해야 합니다. 롤업은 이틀이 지나면 Parquet(웜 스토어)으로 옮겨가고
+SQLite 에서는 지워지므로, 판정하려면 두 계층을 합쳐 읽어야 하고 거기에 DuckDB 가 쓰입니다.
 
 ### 탐지기 채점 (Phase 2)
 

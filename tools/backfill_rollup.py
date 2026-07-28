@@ -27,7 +27,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -45,9 +45,37 @@ TARGETS = {
     "network": (NetworkRollup, "net_connections", "ts", "net_activity_5m", "ts_5m"),
 }
 
+# 백필 대상 → 웜 스토어의 종류. network 은 아직 내보내지 않으므로 없다.
+WARM_KIND = {"metrics": "metrics", "process": "process"}
+
 
 def _stamp(ts: float | None) -> str:
     return f"{datetime.fromtimestamp(ts):%m-%d %H:%M}" if ts else "-"
+
+
+def _export_floor(db: Database, key: str) -> float | None:
+    """이 롤업을 되돌릴 수 있는 하한. 이미 웜으로 내보낸 구간은 건드리지 않는다.
+
+    **왜 필요한가** — 백필은 워터마크를 원본 최소 시각까지 되돌린 뒤 끝까지 접는다.
+    그런데 이미 Parquet 으로 내보내고 SQLite 에서 지운 날짜까지 되돌리면, 그 날짜가
+    SQLite 에 **되살아난다.** 웜에는 이미 같은 날짜가 있으므로 한 날짜가 두 곳에
+    존재하게 되고, `warm_exports` 에는 '완료'로 찍혀 있어 다시 내보내지지도 지워지지도
+    않는다. 2026-07-27 이 실제로 그렇게 남았다.
+
+    지금은 `argus.storage.history` 가 날짜 단위로 웜을 정본 삼아 중복을 걸러 주지만,
+    애초에 만들지 않는 편이 낫다 — 걸러 주는 쪽을 모르는 코드가 언제든 다시 생긴다.
+    """
+    kind = WARM_KIND.get(key)
+    if kind is None:
+        return None
+    rows = db.query(
+        "SELECT MAX(date_key) AS d FROM warm_exports WHERE kind = ?", (kind,)
+    )
+    if not rows or not rows[0]["d"]:
+        return None
+    last = date.fromisoformat(rows[0]["d"])
+    # 내보낸 마지막 날의 다음 날 00:00 부터가 백필 가능 구간이다.
+    return datetime(last.year, last.month, last.day).timestamp() + 86400
 
 
 def _make(cls, db: Database, settings) -> object:
@@ -81,12 +109,22 @@ def survey(db: Database, settings, which: list[str], now: float) -> dict[str, di
         # 세야 "접힐 기회를 잃은 구간"이 나온다.
         size = rollup.bucket_s
         cutoff = bucket_of(now - settings.rollup.lag_s, size)  # 진행 중 버킷 제외
+        # **워터마크 이후는 누락이 아니다.** 아직 접힐 차례가 오지 않았을 뿐이고, 다음
+        # 틱이면 접힌다. 이걸 빼지 않으면 정상 가동 중에도 항상 "누락 1개"가 떠서
+        # --apply 를 권하게 된다 — 늘 켜져 있는 경고는 아무도 안 읽는다.
+        if wm is not None:
+            cutoff = min(cutoff, bucket_of(float(wm), size))
+
+        # 이미 웜으로 내보낸 구간은 누락이 아니다 — 집계는 Parquet 에 있고 SQLite 에서만
+        # 지워진 것이다. 빼지 않으면 그 구간이 영원히 "누락"으로 보고되어, 고칠 수 없는
+        # 경고를 보고 --apply 를 반복하게 된다(그럴수록 되살아난 날짜만 늘어난다).
+        floor = _export_floor(db, key)
         missing = db.query(
             f"SELECT COUNT(*) AS c FROM ("
             f"  SELECT DISTINCT CAST({src_ts} / {size} AS INT) * {size} AS b FROM {src}"
-            f"  WHERE {src_ts} < ?"
+            f"  WHERE {src_ts} < ? AND {src_ts} >= ?"
             f") WHERE b NOT IN (SELECT DISTINCT {dst_ts} FROM {dst})",
-            (cutoff,),
+            (cutoff, floor or 0.0),
         )[0]["c"]
 
         report[key] = {
@@ -96,19 +134,26 @@ def survey(db: Database, settings, which: list[str], now: float) -> dict[str, di
             "dst": (dst, dst_lo, dst_hi, dst_n),
             "missing": missing,
             "bucket_s": size,
+            "floor": floor,
         }
     return report
 
 
-def backfill(rollup, db: Database, src: str, src_ts: str) -> tuple[int, int]:
+def backfill(
+    rollup, db: Database, src: str, src_ts: str, floor: float | None = None
+) -> tuple[int, int]:
     """원본 최소 시각까지 워터마크를 되돌리고 끝까지 접는다.
 
     저장이 `INSERT OR REPLACE` 라 이미 접힌 버킷과 겹쳐도 결과가 같다(멱등).
     한 번의 `run_once` 는 `max_buckets_per_run` 만큼만 처리하므로 반복해야 한다.
+
+    `floor` 아래로는 되돌리지 않는다 — 이미 웜으로 내보낸 날짜를 되살리지 않기 위해서다.
     """
     lo = db.query(f"SELECT MIN({src_ts}) AS lo FROM {src}")[0]["lo"]
     if lo is None:
         return 0, 0
+    if floor is not None:
+        lo = max(float(lo), floor)
 
     rollup._set_watermark(float(lo))  # noqa: SLF001 - 백필이 이 도구의 목적이다
 
@@ -156,6 +201,11 @@ def main() -> int:
                 print(f"    원본 {src:16} {_stamp(s_lo)} ~ {_stamp(s_hi)}")
                 print(f"    집계 {dst:16} {_stamp(d_lo)} ~ {_stamp(d_hi)}  {d_n}행")
                 print(f"    워터마크  {_stamp(r['watermark'])}")
+                if r["floor"] is not None:
+                    print(
+                        f"    웜 경계   {_stamp(r['floor'])} 이전은 내보내기 완료 — "
+                        "되돌리지 않는다"
+                    )
                 verdict = (
                     f"누락 버킷 {r['missing']}개"
                     f" (≈{r['missing'] * r['bucket_s'] / 3600:.1f}시간)"
@@ -179,7 +229,7 @@ def main() -> int:
                     continue
                 _, src, src_ts, dst, dst_ts = TARGETS[key]
                 started = time.perf_counter()
-                rounds, written = backfill(r["rollup"], db, src, src_ts)
+                rounds, written = backfill(r["rollup"], db, src, src_ts, r["floor"])
                 elapsed = time.perf_counter() - started
                 n = db.query(f"SELECT COUNT(*) AS c FROM {dst}")[0]["c"]
                 buckets = db.query(f"SELECT COUNT(DISTINCT {dst_ts}) AS c FROM {dst}")[0]["c"]

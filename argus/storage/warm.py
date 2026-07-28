@@ -63,6 +63,58 @@ def partition_path(date_key: str, kind: str = "metrics") -> Path:
     return warm_dir() / f"date={date_key}" / f"{kind}.parquet"
 
 
+def has_partitions(kind: str = "metrics") -> bool:
+    return any(warm_dir().glob(f"date=*/{kind}.parquet"))
+
+
+def partition_days(kind: str = "metrics") -> list[str]:
+    """웜에 파티션이 있는 날짜들 (`YYYY-MM-DD`).
+
+    파일명에서 읽는다 — 내용을 열지 않으므로 날짜 목록만 필요한 쪽이 DuckDB 를
+    켜지 않아도 된다. 관측자를 무겁게 만들지 않기 위한 것이다.
+    """
+    days = []
+    for path in warm_dir().glob(f"date=*/{kind}.parquet"):
+        key = path.parent.name.removeprefix("date=")
+        try:
+            date.fromisoformat(key)
+        except ValueError:
+            continue  # 사람이 만든 디렉터리일 수 있다. 조용히 건너뛴다.
+        days.append(key)
+    return sorted(days)
+
+
+def query(sql: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]:
+    """DuckDB 로 웜 스토어를 조회한다.
+
+    SQL 안에서 `warm`(1분 지표)과 `warm_process`(5분 프로세스)를 테이블처럼 쓴다.
+    **종류별로 뷰를 나누는 이유**: 두 Parquet 은 스키마가 다르다. 한 뷰로 묶으면
+    컬럼이 맞지 않아 조회 자체가 실패한다. 나눠 두면 필요할 때 조인하면 된다.
+
+    존재하지 않는 종류의 뷰는 만들지 않는다 — 파티션이 하나도 없는 경로를
+    `read_parquet` 에 주면 오류가 난다.
+
+    **`Database` 를 받지 않는다.** 웜 조회는 SQLite 를 전혀 건드리지 않는데 메서드로
+    두면 호출자가 쓰지도 않을 커넥션을 열어야 했다. 대시보드·도구가 웜만 읽는 경우가
+    실제로 생겨 모듈 함수로 옮겼다.
+    """
+    import duckdb
+
+    con = duckdb.connect(":memory:")
+    try:
+        for kind, view in (("metrics", "warm"), ("process", "warm_process")):
+            if not has_partitions(kind):
+                continue
+            pattern = str(warm_dir() / "**" / f"{kind}.parquet").replace("\\", "/")
+            con.execute(
+                f"CREATE VIEW {view} AS SELECT * FROM read_parquet('{pattern}', "
+                "hive_partitioning = true)"
+            )
+        return con.execute(sql, params or []).fetchall()
+    finally:
+        con.close()
+
+
 def _day_bounds(day: date) -> tuple[float, float]:
     """로컬 시각 기준 하루의 [시작, 끝) epoch.
 
@@ -191,33 +243,10 @@ class WarmStore:
     # ------------------------------------------------------------ 조회
 
     def query(self, sql: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]:
-        """DuckDB 로 웜 스토어를 조회한다.
-
-        SQL 안에서 `warm`(1분 지표)과 `warm_process`(5분 프로세스)를 테이블처럼 쓴다.
-        **종류별로 뷰를 나누는 이유**: 두 Parquet 은 스키마가 다르다. 한 뷰로 묶으면
-        컬럼이 맞지 않아 조회 자체가 실패한다. 나눠 두면 필요할 때 조인하면 된다.
-
-        존재하지 않는 종류의 뷰는 만들지 않는다 — 파티션이 하나도 없는 경로를
-        `read_parquet` 에 주면 오류가 난다.
-        """
-        import duckdb
-
-        con = duckdb.connect(":memory:")
-        try:
-            for kind, view in (("metrics", "warm"), ("process", "warm_process")):
-                if not self.has_partitions(kind):
-                    continue
-                pattern = str(warm_dir() / "**" / f"{kind}.parquet").replace("\\", "/")
-                con.execute(
-                    f"CREATE VIEW {view} AS SELECT * FROM read_parquet('{pattern}', "
-                    "hive_partitioning = true)"
-                )
-            return con.execute(sql, params or []).fetchall()
-        finally:
-            con.close()
+        return query(sql, params)
 
     def has_partitions(self, kind: str = "metrics") -> bool:
-        return any(warm_dir().glob(f"date=*/{kind}.parquet"))
+        return has_partitions(kind)
 
 
 class WarmExporter(Component):

@@ -21,6 +21,7 @@ from typing import Any, Sequence
 import streamlit as st
 
 from ..paths import data_dir, db_path
+from ..storage import history
 
 
 def _connect() -> sqlite3.Connection:
@@ -89,16 +90,21 @@ def recent_gpu(seconds: int = 600) -> list[dict]:
 
 @st.cache_data(ttl=30.0, show_spinner=False)
 def rollup(hours: float = 24.0) -> list[dict]:
-    return query(
-        "SELECT * FROM metrics_1m WHERE ts_min > ? ORDER BY ts_min",
-        (time.time() - hours * 3600,),
-    )
+    """장기 지표. **웜(Parquet)까지 읽는다.**
+
+    `metrics_1m` 만 보면 이틀 지난 날짜가 통째로 빈다 — 내보낸 뒤 SQLite 에서 지워지기
+    때문이다. 2026-07-29 에 타임라인에서 07-28 이 실제로 빈 채 그려지고 있었다.
+    """
+    return history.rollup_range(time.time() - hours * 3600)
 
 
 @st.cache_data(ttl=60.0, show_spinner=False)
 def rollup_span() -> dict | None:
-    rows = query("SELECT MIN(ts_min) AS lo, MAX(ts_min) AS hi, COUNT(*) AS n FROM metrics_1m")
-    return rows[0] if rows and rows[0]["n"] else None
+    result = history.span("metrics")
+    if result is None:
+        return None
+    lo, hi, buckets = result
+    return {"lo": lo, "hi": hi, "n": buckets}
 
 
 @st.cache_data(ttl=60.0, show_spinner=False)
@@ -164,9 +170,15 @@ def table_counts() -> list[dict]:
         "process_events",
         "self_telemetry",
         "metrics_1m",
+        "process_5m",
+        "net_activity_5m",
         "anomaly_signals",
     ):
-        column = "ts_min" if table == "metrics_1m" else "ts"
+        # 여기 보이는 것은 **핫(SQLite) 보유분**이다. 롤업은 이틀 지나면 웜으로 옮겨가며
+        # 여기서 사라지는데, 그게 정상 동작이다(사라진 만큼은 Parquet 에 있다).
+        column = {"metrics_1m": "ts_min", "process_5m": "ts_5m", "net_activity_5m": "ts_5m"}.get(
+            table, "ts"
+        )
         rows = query(f"SELECT MIN({column}) AS lo, MAX({column}) AS hi, COUNT(*) AS n FROM {table}")
         if rows and rows[0]["n"]:
             row = dict(rows[0])
