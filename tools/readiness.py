@@ -24,8 +24,6 @@ from __future__ import annotations
 
 import sqlite3
 import sys
-import time
-from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -107,10 +105,6 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def _day(ts: float) -> str:
-    return time.strftime("%Y-%m-%d", time.localtime(ts))
-
-
 @dataclass
 class Day:
     """관측된 하루."""
@@ -124,23 +118,21 @@ class Day:
         return self.hours >= MIN_DAY_HOURS
 
 
-def _days(rows: list[dict]) -> dict[str, Day]:
+def _days() -> dict[str, Day]:
     """관측된 날짜별 성격과 관측 시간.
 
     고부하/유휴를 GPU 로 가르는 이유는 이 PC 에서 부하 있는 날을 가장 잘 가르는 신호이기
     때문이다. GPU 가 없는 PC 에서는 이 판정이 전부 '유휴'가 되는데, 그때는 사용 패턴
     다양성을 다른 축으로 봐야 한다 — 지금은 그 경우를 만나면 그렇게 말하고 넘어간다.
-    """
-    busy_minutes: dict[str, int] = defaultdict(int)
-    for row in rows:
-        if (row.get("gpu_util_mean") or 0.0) >= BUSY_GPU_UTIL:
-            busy_minutes[_day(row["ts_min"])] += 1
 
-    out: dict[str, Day] = {}
-    for day, cov in history.coverage("metrics").items():
-        kind = "고부하" if busy_minutes[day] >= BUSY_MINUTES else "유휴 위주"
-        out[day] = Day(kind, cov.hours)
-    return out
+    세는 일은 저장소가 한다. 롤업 전 구간을 파이썬으로 올리면 데이터가 쌓일수록 느려지고,
+    여기서 필요한 것은 날짜별 카운트뿐이다.
+    """
+    busy = history.busy_minutes("gpu_util_mean", BUSY_GPU_UTIL)
+    return {
+        day: Day("고부하" if busy.get(day, 0) >= BUSY_MINUTES else "유휴 위주", cov.hours)
+        for day, cov in history.coverage("metrics").items()
+    }
 
 
 def _counted(days: dict[str, Day]) -> list[str]:
@@ -155,8 +147,8 @@ def _day_summary(days: dict[str, Day]) -> str:
     return ", ".join(parts)
 
 
-def _has_gpu(rows: list[dict]) -> bool:
-    return any(row.get("gpu_util_mean") is not None for row in rows)
+def _has_gpu() -> bool:
+    return history.has_column_data("gpu_util_mean")
 
 
 def check_alarm_quality(conn: sqlite3.Connection, days: dict[str, Day]) -> Readiness:
@@ -247,13 +239,12 @@ def check_regime(days: dict[str, Day]) -> Readiness:
 def main() -> int:
     conn = _connect()
     try:
-        rollup = history.rollup_range(0.0)
-        days = _days(rollup)
+        days = _days()
         if not days:
             print("[대기] 롤업 데이터가 아직 없다. 상주 인스턴스가 도는지 먼저 확인할 것.")
             return 0
 
-        if not _has_gpu(rollup):
+        if not _has_gpu():
             print("  참고: GPU 지표가 없어 '고부하/유휴' 구분이 성립하지 않는다.")
             print("        사용 패턴 다양성은 사람이 판단할 것.\n")
 

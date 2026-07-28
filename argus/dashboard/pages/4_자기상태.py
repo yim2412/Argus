@@ -143,7 +143,13 @@ with scol[0]:
     st.metric("DB", f"{data.db_size_bytes() / 1048576:.1f} MB")
 with scol[1]:
     warm_bytes = data.warm_size_bytes()
-    st.metric("웜 스토어", f"{warm_bytes / 1024:.0f} KB" if warm_bytes else "—")
+    span = data.warm_span()
+    st.metric("웜 스토어", f"{span['days']}일치" if span else "—")
+    if span:
+        size = f"{warm_bytes / 1024:.0f} KB" if warm_bytes < 1048576 else f"{warm_bytes / 1048576:.1f} MB"
+        st.caption(f"{span['lo'][5:]}~{span['hi'][5:]} · {size}")
+    else:
+        st.caption("아직 내보낸 날짜가 없습니다")
 with scol[2]:
     if state:
         lag_min = (time.time() - state["watermark_ts"]) / 60
@@ -162,6 +168,12 @@ if state is None:
         "접히기 전에 지우면 그 구간은 어디에도 남지 않기 때문입니다."
     )
 
+st.caption(
+    "이 표는 **핫 저장소(SQLite) 보유분**입니다. 롤업(`metrics_1m`·`process_5m`·"
+    "`net_activity_5m`)은 이틀이 지나면 웜 스토어(Parquet)로 옮겨가므로 여기서는 "
+    "보유 시간이 줄어듭니다 — 사라지는 것이 아니라 위 '웜 스토어'로 이동합니다. "
+    "대시보드와 착수 판정은 두 계층을 합쳐 읽습니다."
+)
 st.dataframe(
     [
         {

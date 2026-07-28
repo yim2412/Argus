@@ -77,40 +77,108 @@ def _day_bounds(day: str) -> tuple[float, float]:
     return start.timestamp(), (start + timedelta(days=1)).timestamp()
 
 
-def coverage(kind: str = "metrics") -> dict[str, DayCoverage]:
-    """관측된 날짜별 커버리지. 웜 + 핫, 날짜 단위로 웜 우선."""
-    bucket_s = BUCKET_S[kind]
-    out: dict[str, DayCoverage] = {}
+def _by_day(
+    kind: str,
+    warm_sql: str,
+    hot_sql: str,
+    params: list[Any] | None = None,
+) -> list[tuple[Any, ...]]:
+    """날짜별 집계를 두 계층에서 모아 합친다. **첫 컬럼이 날짜여야 한다.**
+
+    합치는 규칙(웜이 정본)이 여기 한 번만 있다. 소비자마다 각자 합치면 규칙이 제각각이
+    되고, 한 곳을 고쳐도 나머지에 같은 버그가 남는다.
+
+    **집계는 저장소가 한다.** 행을 전부 파이썬으로 올려 세면 데이터가 쌓일수록 느려진다 —
+    날짜별 카운트만 필요한 판정에 30일치 4만 행을 메모리에 올릴 이유가 없다.
+
+    반환에는 웜/핫 구분이 없다. 필요하면 `warm.partition_days(kind)` 로 되묻는다.
+    """
+    params = params or []
+    rows: list[tuple[Any, ...]] = []
 
     warm_days = set(warm.partition_days(kind))
     if warm_days:
-        view = "warm" if kind == "metrics" else "warm_process"
-        ts = "ts_min" if kind == "metrics" else "ts_5m"
-        rows = warm.query(
-            f"SELECT strftime(to_timestamp({ts}), '%Y-%m-%d'), COUNT(DISTINCT {ts}) "
-            f"FROM {view} GROUP BY 1"
-        )
-        for day, buckets in rows:
-            out[day] = DayCoverage(day, int(buckets), "warm", bucket_s)
+        rows += [tuple(r) for r in warm.query(warm_sql, list(params))]
 
     conn = _hot()
     if conn is not None:
-        table, ts = _TABLE[kind]
         try:
-            rows = conn.execute(
-                f"SELECT strftime('%Y-%m-%d', {ts}, 'unixepoch', 'localtime') AS d, "
-                f"COUNT(DISTINCT {ts}) AS n FROM {table} GROUP BY 1"
-            ).fetchall()
+            hot_rows = conn.execute(hot_sql, tuple(params)).fetchall()
         except sqlite3.OperationalError:
-            rows = []
+            hot_rows = []
         finally:
             conn.close()
-        for row in rows:
-            if row["d"] in warm_days:
-                continue  # 웜이 정본. 백필로 되살아난 잔여물일 수 있다.
-            out[row["d"]] = DayCoverage(row["d"], int(row["n"]), "hot", bucket_s)
+        # 웜이 정본. 핫에 같은 날짜가 남아 있으면 백필로 되살아난 잔여물일 수 있다.
+        rows += [tuple(r) for r in hot_rows if r[0] not in warm_days]
 
+    return rows
+
+
+def coverage(kind: str = "metrics") -> dict[str, DayCoverage]:
+    """관측된 날짜별 커버리지. 웜 + 핫, 날짜 단위로 웜 우선."""
+    bucket_s = BUCKET_S[kind]
+    view = "warm" if kind == "metrics" else "warm_process"
+    table, ts = _TABLE[kind]
+
+    warm_days = set(warm.partition_days(kind))
+    rows = _by_day(
+        kind,
+        f"SELECT strftime(to_timestamp({ts}), '%Y-%m-%d'), COUNT(DISTINCT {ts}) "
+        f"FROM {view} GROUP BY 1",
+        f"SELECT strftime('%Y-%m-%d', {ts}, 'unixepoch', 'localtime'), "
+        f"COUNT(DISTINCT {ts}) FROM {table} GROUP BY 1",
+    )
+    out = {
+        day: DayCoverage(day, int(buckets), "warm" if day in warm_days else "hot", bucket_s)
+        for day, buckets in rows
+    }
     return dict(sorted(out.items()))
+
+
+def busy_minutes(column: str, threshold: float, kind: str = "metrics") -> dict[str, int]:
+    """날짜별로 `column` 이 `threshold` 이상이었던 버킷 수.
+
+    "고부하 날 / 유휴 위주 날"을 가르는 데 쓴다. 컬럼명은 호출자가 주지만 롤업 스키마에
+    있는 것만 받는다 — 문자열을 그대로 SQL 에 넣기 때문이다.
+    """
+    if column not in ROLLUP_COLUMNS:
+        raise ValueError(f"롤업 컬럼이 아니다: {column}")
+    view = "warm" if kind == "metrics" else "warm_process"
+    table, ts = _TABLE[kind]
+
+    rows = _by_day(
+        kind,
+        f"SELECT strftime(to_timestamp({ts}), '%Y-%m-%d'), COUNT(*) FROM {view} "
+        f"WHERE {column} >= ? GROUP BY 1",
+        f"SELECT strftime('%Y-%m-%d', {ts}, 'unixepoch', 'localtime'), COUNT(*) "
+        f"FROM {table} WHERE {column} >= ? GROUP BY 1",
+        [threshold],
+    )
+    return {day: int(n) for day, n in rows}
+
+
+def has_column_data(column: str, kind: str = "metrics") -> bool:
+    """그 지표가 한 번이라도 관측됐는지. GPU 없는 PC 를 가려내는 데 쓴다."""
+    if column not in ROLLUP_COLUMNS:
+        raise ValueError(f"롤업 컬럼이 아니다: {column}")
+    view = "warm" if kind == "metrics" else "warm_process"
+    table, _ = _TABLE[kind]
+
+    if warm.partition_days(kind):
+        rows = warm.query(f"SELECT COUNT({column}) FROM {view}")
+        if rows and rows[0][0]:
+            return True
+
+    conn = _hot()
+    if conn is None:
+        return False
+    try:
+        row = conn.execute(f"SELECT COUNT({column}) FROM {table}").fetchone()
+        return bool(row and row[0])
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        conn.close()
 
 
 def observed_days(kind: str = "metrics", min_hours: float = 0.0) -> list[str]:
@@ -124,33 +192,17 @@ def process_day_index() -> dict[str, dict[str, int]]:
     버킷 수까지 돌려주는 이유: "며칠 보였나"만으로는 지문을 세울 수 있는지 알 수 없다.
     3일에 걸쳐 보였어도 매번 5분씩이면 p99 를 세울 표본이 못 된다.
     """
+    # 날짜를 첫 컬럼으로 두어 병합 규칙(`_by_day`)을 그대로 쓴다.
+    rows = _by_day(
+        "process",
+        "SELECT strftime(to_timestamp(ts_5m), '%Y-%m-%d'), name, COUNT(DISTINCT ts_5m) "
+        "FROM warm_process GROUP BY 1, 2",
+        "SELECT strftime('%Y-%m-%d', ts_5m, 'unixepoch', 'localtime'), name, "
+        "COUNT(DISTINCT ts_5m) FROM process_5m GROUP BY 1, 2",
+    )
     out: dict[str, dict[str, int]] = {}
-    warm_days = set(warm.partition_days("process"))
-
-    if warm_days:
-        rows = warm.query(
-            "SELECT name, strftime(to_timestamp(ts_5m), '%Y-%m-%d'), COUNT(DISTINCT ts_5m) "
-            "FROM warm_process GROUP BY 1, 2"
-        )
-        for name, day, buckets in rows:
-            out.setdefault(name, {})[day] = int(buckets)
-
-    conn = _hot()
-    if conn is not None:
-        try:
-            rows = conn.execute(
-                "SELECT name, strftime('%Y-%m-%d', ts_5m, 'unixepoch', 'localtime') AS d, "
-                "COUNT(DISTINCT ts_5m) AS n FROM process_5m GROUP BY 1, 2"
-            ).fetchall()
-        except sqlite3.OperationalError:
-            rows = []
-        finally:
-            conn.close()
-        for row in rows:
-            if row["d"] in warm_days:
-                continue
-            out.setdefault(row["name"], {})[row["d"]] = int(row["n"])
-
+    for day, name, buckets in rows:
+        out.setdefault(name, {})[day] = int(buckets)
     return out
 
 

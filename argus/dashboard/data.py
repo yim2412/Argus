@@ -112,6 +112,21 @@ def warm_exports() -> list[dict]:
     return query("SELECT * FROM warm_exports ORDER BY date_key DESC LIMIT 30")
 
 
+@st.cache_data(ttl=60.0, show_spinner=False)
+def warm_span() -> dict | None:
+    """웜에 며칠치가 들어 있는지 `{days, lo, hi}`.
+
+    **크기(KB)만 보여주면 안 되는 이유**: 저장소 화면의 테이블 목록은 핫 보유분이라
+    이틀 지난 롤업이 빠져나가면 보유 시간이 줄어든다. 어디로 갔는지 화면에 없으면
+    사용자는 데이터가 사라진다고 읽는다.
+    """
+    rows = warm_exports()
+    days = sorted({row["date_key"] for row in rows})
+    if not days:
+        return None
+    return {"days": len(days), "lo": days[0], "hi": days[-1]}
+
+
 # ---------------------------------------------------------------- 프로세스
 
 

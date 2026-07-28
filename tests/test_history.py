@@ -124,15 +124,18 @@ def test_duplicate_day_counted_once(wired, db: Database) -> None:
     _export(db)
 
     # 백필이 한 것과 같은 상태를 만든다 — 내보낸 날짜를 SQLite 에 되살린다.
-    Rollup(db, RollupSettings())._set_watermark(float(start))  # noqa: SLF001
-    _fold(db)
-    assert db.query("SELECT COUNT(*) AS c FROM metrics_1m")[0]["c"] > 0, "되살리지 못했다"
+    # **웜(10버킷)과 다른 개수(5버킷)로 되살리는 것이 핵심이다.** 같은 개수면 어느 쪽이
+    # 채택됐는지 값으로 구분되지 않아, 규칙이 깨져도 테스트가 통과한다.
+    db.insert_many(
+        "metrics_1m", ("ts_min", "sample_count"), [(start + i * 60, 60) for i in range(5)]
+    )
+    assert db.query("SELECT COUNT(*) AS c FROM metrics_1m")[0]["c"] == 5
 
     cov = history.coverage("metrics")
     assert len(cov) == 1
     day = next(iter(cov.values()))
-    assert day.buckets == 10, f"중복 계상됐다: {day.buckets}"
-    assert day.source == "warm", "핫이 웜을 이겼다 — 정본 규칙이 뒤집혔다"
+    assert day.buckets == 10, f"핫이 웜을 이겼다 — 정본 규칙이 뒤집혔다 ({day.buckets}버킷)"
+    assert day.source == "warm"
 
 
 def test_rollup_range_joins_both_without_overlap(wired, db: Database) -> None:
@@ -218,6 +221,73 @@ def test_process_index_sums_buckets_per_day(wired, db: Database) -> None:
     assert len(index["chrome"]) == 1
 
 
+def test_busy_minutes_also_dedupes(wired, db: Database) -> None:
+    """고부하 판정도 같은 병합 규칙을 탄다.
+
+    `coverage` 만 중복을 걸러도 소용없다 — 고부하 분 수가 두 배로 세어지면 유휴 위주의
+    날이 '고부하'로 뒤집힌다.
+    """
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("duckdb")
+
+    start = _day_start(2) + 3600
+    rows = []
+    for minute in range(10):
+        for second in range(60):
+            # gpu_util 은 롤업이 평균을 내므로 전 초를 같은 값으로 채운다.
+            rows.append((start + minute * 60 + second, 20.0, 50.0, 30.0, 0.1))
+    db.insert_many(
+        "metrics_raw", ("ts", "cpu_total", "cpu_max_core", "mem_percent", "disk_resp_ms"), rows
+    )
+    db.insert_many(
+        "gpu_metrics",
+        ("ts", "gpu_index", "util_percent", "temp_c"),
+        [(start + m * 60 + s, 0, 80.0, 60.0) for m in range(10) for s in range(60)],
+    )
+    _fold(db)
+    _export(db)
+
+    # 백필이 되살린 상태. 웜(고부하 10분)과 다른 개수로 넣어 어느 쪽이 채택됐는지 본다.
+    db.insert_many(
+        "metrics_1m",
+        ("ts_min", "sample_count", "gpu_util_mean"),
+        [(start + i * 60, 60, 80.0) for i in range(3)],
+    )
+
+    busy = history.busy_minutes("gpu_util_mean", 50.0)
+    assert sum(busy.values()) == 10, f"핫이 웜을 이겼다 — 고부하 판정이 뒤집힌다: {busy}"
+
+
+def test_busy_minutes_rejects_unknown_column(wired, db: Database) -> None:
+    """컬럼명이 SQL 에 그대로 들어가므로 스키마에 있는 것만 받는다."""
+    with pytest.raises(ValueError):
+        history.busy_minutes("1=1; DROP TABLE metrics_1m", 0.0)
+    with pytest.raises(ValueError):
+        history.has_column_data("nope")
+
+
+def test_has_column_data_sees_warm(wired, db: Database) -> None:
+    """웜에만 남은 지표도 '관측됐다'로 답한다.
+
+    GPU 없는 PC 를 가려내는 판정이라, 핫만 보면 이틀 뒤 GPU 가 사라진 것처럼 보인다.
+    """
+    pytest.importorskip("pyarrow")
+    pytest.importorskip("duckdb")
+
+    start = _day_start(2) + 3600
+    _seed_minutes(db, start, 5)
+    db.insert_many(
+        "gpu_metrics",
+        ("ts", "gpu_index", "util_percent", "temp_c"),
+        [(start + m * 60 + s, 0, 80.0, 60.0) for m in range(5) for s in range(60)],
+    )
+    _fold(db)
+    _export(db)
+    assert db.query("SELECT COUNT(*) AS c FROM metrics_1m")[0]["c"] == 0
+
+    assert history.has_column_data("gpu_util_mean") is True
+
+
 def test_empty_stores_do_not_raise(wired, db: Database) -> None:
     """데이터가 없어도 답한다. 첫 실행 직후가 가장 잘 깨진다."""
     assert history.coverage("metrics") == {}
@@ -225,3 +295,5 @@ def test_empty_stores_do_not_raise(wired, db: Database) -> None:
     assert history.process_day_index() == {}
     assert history.rollup_range(0.0) == []
     assert history.span("metrics") is None
+    assert history.busy_minutes("gpu_util_mean", 50.0) == {}
+    assert history.has_column_data("gpu_util_mean") is False
