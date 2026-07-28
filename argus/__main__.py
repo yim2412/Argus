@@ -343,16 +343,26 @@ def run(args: argparse.Namespace) -> int:
         started = time.time()
         sup.wait()
 
-        # 종료 표시를 큐에 넣고서 멈춘다. writer 의 teardown 이 잔여분을 비우므로
-        # 이 순서여야 실제로 기록된다.
-        queue.put(
-            Sample(
-                "system_events",
-                SYSTEM_EVENT_COLUMNS,
+        # **종료 표시는 큐가 아니라 DB 에 직접 쓴다.**
+        #
+        # 큐에 넣는 방식은 경합이었다. 종료 이벤트가 서는 순간 writer 스레드도 함께
+        # 루프를 빠져나가 잔여분을 비우고 끝내므로, 메인 스레드가 큐에 넣기 전에 flush 가
+        # 끝나면 그 샘플은 아무도 쓰지 않는다. 시그널로 끄면 사람이 누르는 타이밍이라
+        # 우연히 이길 때가 있었고(`shutdown` 3건 / `startup` 17건), 종료 신호 파일로
+        # 끄자 감시자가 즉시 요청하면서 매번 졌다.
+        #
+        # 그래서 모든 스레드를 정리한 **뒤에** 직접 쓴다. 이 시점엔 writer 가 이미 끝나
+        # DB 를 두고 다툴 상대도 없다. 직전 세션 판정이 같은 이유로 직접 쓰고 있다.
+        sup.stop()
+        try:
+            db.conn.execute(
+                f"INSERT INTO system_events ({','.join(SYSTEM_EVENT_COLUMNS)}) VALUES (?,?,?,?)",
                 (time.time(), "shutdown", None, json.dumps({"uptime_s": round(time.time() - started, 1)})),
             )
-        )
-        sup.stop()
+            db.conn.commit()
+        except Exception:
+            # 종료 기록 실패가 종료 자체를 막지는 않는다. 다음 기동이 미종결로 판정할 뿐이다.
+            log.exception("종료 이벤트 기록 실패")
 
         snapshot = STATS.snapshot()
         log.info(
