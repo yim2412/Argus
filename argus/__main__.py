@@ -30,6 +30,7 @@ from .runtime.budget import BudgetGuard
 from .runtime.gapmon import GapMonitor, gap_event_row
 from .runtime.selftel import BudgetMonitor, SelfTelemetry
 from .runtime.session import detect_unclean_shutdown
+from .runtime.stopfile import StopFileMonitor, clear_stale, request_stop
 from .runtime.singleton import AlreadyRunning, InstanceLock
 from .runtime.stats import STATS
 from .runtime.supervisor import Supervisor
@@ -69,6 +70,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         metavar="SECONDS",
         help="지정한 초만큼 돌고 자동 종료한다 (테스트용)",
+    )
+    parser.add_argument(
+        "--stop",
+        action="store_true",
+        help="돌고 있는 상주 인스턴스에 정상 종료를 요청하고 나간다",
     )
     parser.add_argument(
         "--allow-multi",
@@ -184,6 +190,14 @@ def run(args: argparse.Namespace) -> int:
     setup(level=level, console=settings.general.console_log)
     log.info("Argus 시작", extra={"version": __version__, "data_dir": str(data_dir())})
 
+    # 종료 요청은 신호 파일 하나로 끝난다. 락도 DB 도 필요 없다 — 상주 인스턴스가
+    # 그것을 보고 스스로 정상 경로로 내려간다.
+    if args.stop:
+        path = request_stop()
+        print(f"  종료를 요청했습니다: {path}")
+        print("  상주 인스턴스가 몇 초 안에 스스로 종료합니다. 없으면 다음 기동이 이 신호를 치웁니다.")
+        return 0
+
     # 같은 DB 를 두 프로세스가 쓰면 수집이 두 배로 들어가고 융합 워터마크·예산 가드가
     # 서로 덮어쓴다. `--check` 는 아무것도 쓰지 않으므로 상주 인스턴스와 함께 돌 수 있다.
     lock: InstanceLock | None = None
@@ -216,8 +230,13 @@ def run(args: argparse.Namespace) -> int:
         queue = SampleQueue(maxsize=settings.storage.queue_max_rows)
         sup = Supervisor(multiplier_fn=lambda: guard.multiplier)
 
+        # 직전 세션이 소비하지 못하고 남긴 종료 신호를 먼저 치운다. 그대로 두면 뜨자마자
+        # 다시 죽어 사용자는 "실행이 안 된다"만 보게 된다.
+        clear_stale()
+
         # 런타임 — 스로틀을 받지 않는다(부하가 클 때야말로 제때 돌아야 하는 것들)
         sup.add(BudgetMonitor(guard))
+        sup.add(StopFileMonitor(sup.request_stop))
         sup.add(
             BatchWriter(
                 db,

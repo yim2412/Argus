@@ -86,6 +86,20 @@ def capabilities_path() -> Path:
     return data_dir() / "capabilities.json"
 
 
+def stop_file_path() -> Path:
+    """이 파일이 생기면 상주 인스턴스가 스스로 정상 종료한다.
+
+    **Windows 에는 남의 프로세스에 "곱게 죽어라"를 전할 방법이 없다.** SIGTERM 은
+    존재하지 않고, `pythonw` 로 콘솔 없이 도는 프로세스에는 Ctrl 이벤트도 닿지 않으며,
+    창이 없으니 `taskkill` 의 WM_CLOSE 도 무의미하다. 남는 것은 강제 종료뿐인데,
+    그러면 정상적으로 끈 것까지 전부 `unclean_shutdown` 으로 기록된다 —
+    사후 진단이 크래시와 사용자 의도를 구분하지 못하게 된다.
+
+    그래서 파일 하나를 신호로 쓴다. 권한도, 창도, 콘솔도 필요 없다.
+    """
+    return data_dir() / "STOP"
+
+
 def describe() -> dict[str, str]:
     """진단·스모크 출력용."""
     return {

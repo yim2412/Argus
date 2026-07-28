@@ -127,6 +127,15 @@ class Supervisor:
             self._threads.append(thread)
         log.info("수퍼바이저 시작", extra={"components": [c.name for c in self._components]})
 
+    def request_stop(self) -> None:
+        """종료를 요청만 하고 기다리지 않는다.
+
+        `stop()` 은 모든 스레드를 join 하므로 **컴포넌트 스레드 안에서 부르면 자기
+        자신을 기다리게 된다.** 컴포넌트가 종료를 트리거하는 경로(종료 신호 파일 등)는
+        이쪽을 쓴다. 실제 정리는 `wait()` 에서 풀려난 메인 스레드가 한다.
+        """
+        self._stop.set()
+
     def stop(self, timeout: float = 10.0) -> None:
         """종료를 요청하고 모든 스레드가 정리될 때까지 기다린다. 여러 번 불러도 안전하다."""
         with self._join_lock:

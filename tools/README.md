@@ -138,3 +138,18 @@ Get-Content "$env:APPDATA\Argus\logs\argus.jsonl" -Encoding UTF8 -Tail 5
 
 프로세스가 사라졌는데 `argus.jsonl` 에 종료 기록이 없으면 **강제 종료된 것**이다
 (정상 종료·예외는 로그를 남긴다). 위 표의 세 가지를 먼저 의심할 것.
+
+## 정상적으로 끄기
+
+```powershell
+.venv\Scripts\python.exe -m argus --stop
+```
+
+`%APPDATA%\Argus\STOP` 을 만들 뿐이다. 상주 인스턴스가 2초 주기로 그것을 보고, 파일을
+지운 뒤 시그널을 받은 것과 같은 경로로 내려간다. 상주 인스턴스가 없으면 파일만 남고
+**다음 기동이 그것을 치운다** — 그러지 않으면 새 인스턴스가 뜨자마자 다시 죽는다.
+
+`schtasks /end` 는 강제 종료다. DB 는 WAL 이라 안전하지만 `shutdown` 이벤트가 남지 않아
+다음 기동이 `unclean_shutdown` / `process_killed_or_crash` 로 판정한다. **정상 종료를
+크래시로 기록하면 사후 진단의 근거가 오염된다** — 남의 PC 에서 "17건 중 몇 건이 진짜
+크래시였나"를 볼 때 우리가 넣은 잡음이 섞인다.

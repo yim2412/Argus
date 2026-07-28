@@ -75,9 +75,15 @@ powershell -ExecutionPolicy Bypass -File tools\install_autostart.ps1 -Start
 
 ```powershell
 schtasks /query /tn "Argus" /fo LIST     # 상태
-schtasks /end   /tn "Argus"              # 중지
+.venv\Scripts\python.exe -m argus --stop # 중지 (권장 — 정상 종료)
 powershell -ExecutionPolicy Bypass -File tools\install_autostart.ps1 -Uninstall
 ```
+
+**중지는 `--stop` 으로 합니다.** `%APPDATA%\Argus\STOP` 파일을 만들면 상주 인스턴스가
+몇 초 안에 그것을 보고 스스로 정리하고 내려갑니다(파일을 직접 만들어도 동일합니다).
+`schtasks /end` 는 강제 종료라 DB 는 안전하지만 **정상 종료가 `unclean_shutdown` 으로
+기록되어** 사후 진단이 크래시와 구분되지 않습니다. Windows 에는 콘솔 없이 도는
+프로세스에 종료를 곱게 전할 방법이 없어서 파일을 신호로 씁니다.
 
 ### 수집 중인 것
 
