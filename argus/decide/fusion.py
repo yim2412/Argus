@@ -75,11 +75,15 @@ def open_incident(db: Database, signal: dict, severity: str) -> int:
         return int(cursor.lastrowid)
 
 
-def _trigger_rules(db: Database, incident_id: int) -> list[str]:
-    """이 사건에 묶인 신호들이 어떤 룰에서 나왔는지.
+def _trigger_rules(db: Database, incident_id: int) -> tuple[list[str], list[str]]:
+    """이 사건에 묶인 신호들이 **어떤 룰**에서 나왔고 **어떤 지표**를 봤는지.
 
     `detectors` 에 `["rules"]` 만 남기면 아무것도 말해 주지 않는다 — 룰 엔진이라는
     사실은 이미 알고 있다. 알아야 할 것은 **어느 룰이** 울렸는가다.
+
+    지표를 함께 뽑는 이유는 병목 분류가 그것을 필요로 하기 때문이다. 룰 이름은 사용자가
+    바꿀 수 있어 분류의 입력으로 쓸 수 없지만, `evidence` 의 지표 이름은 룰 정의에서
+    그대로 따라온다.
     """
     rows = db.query(
         "SELECT s.features FROM anomaly_signals s "
@@ -88,6 +92,7 @@ def _trigger_rules(db: Database, incident_id: int) -> list[str]:
         (incident_id,),
     )
     names: list[str] = []
+    metrics: list[str] = []
     for row in rows:
         try:
             features = json.loads(row["features"] or "{}")
@@ -96,7 +101,10 @@ def _trigger_rules(db: Database, incident_id: int) -> list[str]:
         for name in features.get("rules") or ([features["rule"]] if "rule" in features else []):
             if name not in names:
                 names.append(name)
-    return names
+        for metric in features.get("evidence") or {}:
+            if metric not in metrics:
+                metrics.append(metric)
+    return names, metrics
 
 
 def _attach_signal(db: Database, incident_id: int, signal: dict) -> None:
@@ -140,7 +148,9 @@ def close_incident(
         _finish(db, incident_id, ts_end, None, [], "", "관측 없음", ts_start=ts_start)
         return
 
-    bottleneck = classify(peak, baselines)
+    # 방아쇠를 병목 판정 **앞에서** 읽는다. 무엇이 울렸는지가 무엇에 막혔는지의 입력이다.
+    triggers, trigger_metrics = _trigger_rules(db, incident_id)
+    bottleneck = classify(peak, baselines, trigger_metrics=trigger_metrics)
     before = (
         ts_start - settings.before_margin_s - settings.before_window_s,
         ts_start - settings.before_margin_s,
@@ -150,7 +160,6 @@ def close_incident(
         contributor.lead_s = lead_time(db, contributor, bottleneck.resource, ts_start)
 
     symptom = _symptom(peak, baselines)
-    triggers = _trigger_rules(db, incident_id)
     report = build_incident(
         ts_start, ts_end, bottleneck, contributors, symptom=symptom, triggers=triggers
     )

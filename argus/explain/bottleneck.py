@@ -16,7 +16,7 @@ IO 병목이었다"고 말해 줄 사람이 없다. 규칙으로 시작해 결�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Iterable, Mapping
 
 from ..detection.baseline import BaselineSet
 from ..logging_setup import get_logger
@@ -45,17 +45,35 @@ class Bottleneck:
     GPU 를 태운 것은 게임이었다. 모르는 것을 아는 척하는 답이 가장 나쁘다.
     """
 
+    trigger_kinds: tuple[str, ...] = ()
+    """이 사건을 연 룰이 지목한 자원들. 비어 있으면 방아쇠 정보 없이 판정한 것이다."""
+
+    overridden_from: str | None = None
+    """방아쇠가 지목한 자원을 지표 근거가 뒤집었을 때, 그 원래 자원.
+
+    뒤집는 것 자체는 정당할 수 있다(메모리 룰이 열었지만 실제로는 디스크가 막힌 경우).
+    다만 **말없이 뒤집으면 안 된다** — 사용자는 GPU 온도 알림을 기다렸는데 CPU 이야기를
+    듣게 된다. 뒤집었으면 리포트가 그 사실을 밝힌다.
+    """
+
     @property
     def label(self) -> str:
-        return {
-            "CPU": "CPU 병목",
-            "IO": "디스크 IO 병목",
-            "MEMORY": "메모리 압박",
-            "GPU": "GPU 병목",
-            "THERMAL": "발열 스로틀링",
-            "CONTENTION": "경합 (자원 포화 없이 지연)",
-            "NONE": "병목 없음",
-        }.get(self.kind, self.kind)
+        return label_for(self.kind)
+
+
+_LABELS = {
+    "CPU": "CPU 병목",
+    "IO": "디스크 IO 병목",
+    "MEMORY": "메모리 압박",
+    "GPU": "GPU 병목",
+    "THERMAL": "발열 스로틀링",
+    "CONTENTION": "경합 (자원 포화 없이 지연)",
+    "NONE": "병목 없음",
+}
+
+
+def label_for(kind: str) -> str:
+    return _LABELS.get(kind, kind)
 
 
 def _z(baselines: BaselineSet, metric: str, value: float | None) -> float | None:
@@ -91,17 +109,68 @@ _RESOURCE_BY_KIND: dict[str, tuple[str, bool]] = {
 }
 
 
+# 룰이 참조한 지표 → 그 지표가 지목하는 병목 종류.
+#
+# **룰 이름이 아니라 지표로 매핑한다.** 룰 이름은 사용자가 `%APPDATA%\Argus\rules.yaml`
+# 에서 자유롭게 바꿀 수 있어서, "GPU 고온 지속" 같은 문자열을 코드에 박으면 사용자 룰에서
+# 조용히 깨진다. 지표 이름은 룰 정의에서 그대로 따라오고 로케일·작명에 독립적이다.
+#
+# 키는 룰이 쓰는 이름(`rules.yaml`)과 원본 테이블 컬럼명을 **둘 다** 받는다. 신호의
+# evidence 는 전자를, 스냅샷은 후자를 쓰는데 어느 쪽이 들어와도 같은 답이 나와야 한다.
+_KIND_BY_METRIC: dict[str, str] = {
+    "cpu_total": "CPU",
+    "cpu_max_core": "CPU",
+    "mem_percent": "MEMORY",
+    "mem_avail_mb": "MEMORY",
+    "swap_used_mb": "MEMORY",
+    "disk_resp_ms": "IO",
+    "disk_queue": "IO",
+    "ctx_switches_ps": "CONTENTION",
+    "gpu_util": "GPU",
+    "gpu_temp_c": "THERMAL",
+    "gpu_temp": "THERMAL",
+    "gpu_throttle_reasons": "THERMAL",
+    "gpu_throttle_reason": "THERMAL",
+    "cpu_perf_percent": "THERMAL",
+}
+
+
+# 방아쇠가 지목한 자원을 뒤집으려면 다른 자원의 근거가 이만큼 더 강해야 한다.
+#
+# 실측에서 GPU 온도 룰이 연 사건이 "CPU 병목 — deltaforce 53%" 로 나갔다. 게임 중에는
+# CPU 가 늘 70% 를 넘어 CPU 점수(0.8)가 THERMAL(0.7)을 상시 근소하게 앞선다. **근소한
+# 우위는 뒤집을 근거가 못 된다** — 방아쇠는 "평소와 다르다"를 확인하고 울린 것이고,
+# 병목 점수는 "지금 값이 높다"만 본다. 후자가 전자를 이기려면 큰 차이가 필요하다.
+_OVERRIDE_RATIO = 1.5
+_OVERRIDE_MARGIN = 0.3
+
+
+def kinds_for_metrics(metrics: Iterable[str]) -> tuple[str, ...]:
+    """지표 이름들이 지목하는 병목 종류. 순서를 유지하고 중복을 없앤다."""
+    kinds: list[str] = []
+    for metric in metrics:
+        kind = _KIND_BY_METRIC.get(metric)
+        if kind and kind not in kinds:
+            kinds.append(kind)
+    return tuple(kinds)
+
+
 def classify(
     metrics: Mapping[str, float | None],
     baselines: BaselineSet,
     *,
     z_high: float = 3.0,
     disk_resp_floor_ms: float = DISK_RESP_FLOOR_MS,
+    trigger_metrics: Iterable[str] = (),
 ) -> Bottleneck:
     """한 시점의 지표로 병목을 판정한다.
 
     절대 임계값을 최소한으로만 쓴다. `disk_queue`·`cpu_perf_percent` 처럼 단위 자체가
     하드웨어에 독립적인 지표만 절대값으로 다루고, 나머지는 이 PC 의 평소 대비로 본다.
+
+    `trigger_metrics` 는 이 사건을 연 룰이 참조한 지표들이다. 주어지면 **그것이 지목한
+    자원을 우선**한다. 지표만 보고 판정하면 게임 중처럼 여러 자원이 동시에 높은 구간에서
+    늘 CPU 가 이겨, GPU 온도로 열린 사건이 "CPU 병목" 으로 보고된다(실측 3/6).
     """
     # 근거는 **판정별로** 모은다. 한 리스트에 섞으면 "CPU 병목 — 근거: 스왑 220MB"
     # 처럼 판정과 무관한 근거가 붙어, 읽는 사람이 판단을 검증할 수 없게 된다.
@@ -176,10 +245,55 @@ def classify(
     if ctx_z is not None and ctx_z >= z_high and (cpu or 0) < 60.0:
         add("CONTENTION", 0.5, f"컨텍스트 스위치 평소의 {ctx_z:.1f}σ")
 
-    if not scores:
-        return Bottleneck("NONE", 0.0, [], "cpu")
+    trigger_kinds = kinds_for_metrics(trigger_metrics)
 
-    kind = max(scores.items(), key=lambda kv: kv[1])[0]
+    if not scores:
+        return Bottleneck("NONE", 0.0, [], "cpu", trigger_kinds=trigger_kinds)
+
+    top = max(scores.items(), key=lambda kv: kv[1])[0]
+    kind, overridden_from = _choose(scores, top, trigger_kinds)
+
     evidence = evidence_by_kind.get(kind, [])
     resource, attributable = _RESOURCE_BY_KIND[kind]
-    return Bottleneck(kind, min(1.0, scores[kind]), evidence, resource, attributable)
+    return Bottleneck(
+        kind,
+        min(1.0, scores[kind]),
+        evidence,
+        resource,
+        attributable,
+        trigger_kinds=trigger_kinds,
+        overridden_from=overridden_from,
+    )
+
+
+def _choose(
+    scores: Mapping[str, float], top: str, trigger_kinds: tuple[str, ...]
+) -> tuple[str, str | None]:
+    """방아쇠와 지표 점수를 조정해 최종 병목을 고른다.
+
+    돌려주는 둘째 값은 "방아쇠를 뒤집었다면 그 원래 자원"이다.
+    """
+    if not trigger_kinds:
+        return top, None
+
+    candidates = [(kind, scores[kind]) for kind in trigger_kinds if kind in scores]
+    if not candidates:
+        # 방아쇠가 지목한 자원에서 이 구간의 지표 근거가 하나도 잡히지 않았다. 판정을
+        # 강요할 재료가 없으니 지표를 따르되, **다른 답을 냈다는 사실은 남긴다** —
+        # 사용자가 기다린 것은 방아쇠 쪽 이야기다. (평탄한 지표는 σ가 0 이라 z 가 서지
+        # 않아 점수가 비는데, 실제로 흔하다.)
+        return top, trigger_kinds[0]
+
+    best_trigger = max(candidates, key=lambda kv: kv[1])[0]
+    if best_trigger == top:
+        return top, None
+
+    # 다른 자원이 압도적일 때만 뒤집는다. 압도의 기준은 배수와 절대차를 **둘 다** 넘는 것 —
+    # 배수만 보면 0.1 대 0.2 같은 작은 값에서 쉽게 뒤집히고, 절대차만 보면 근거가 약한
+    # 구간에서 큰 차이가 나오지 않아 영영 뒤집히지 않는다.
+    if (
+        scores[top] >= scores[best_trigger] * _OVERRIDE_RATIO
+        and scores[top] - scores[best_trigger] >= _OVERRIDE_MARGIN
+    ):
+        return top, best_trigger
+    return best_trigger, None

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from .attribution import Contributor
-from .bottleneck import Bottleneck
+from .bottleneck import Bottleneck, label_for
 
 # 자원별 표시 단위. 내부는 전부 원단위(%, MB, B/s)로 다루고 여기서만 사람 단위로 바꾼다.
 _UNITS = {
@@ -115,6 +115,14 @@ def render(incident: Incident, resource: str | None = None) -> str:
         lines.append("근거: " + " · ".join(incident.bottleneck.evidence))
     if incident.triggers:
         lines.append("발화한 룰: " + " · ".join(incident.triggers))
+    if incident.bottleneck.overridden_from:
+        # 방아쇠와 다른 답을 낼 수는 있지만 말없이 그러면 안 된다. 사용자는 자기가 받은
+        # 알림이 왜 다른 이야기를 하는지 알 권리가 있다.
+        origin = label_for(incident.bottleneck.overridden_from)
+        lines.append(
+            f"참고: 이 사건을 연 것은 {origin} 신호였지만, 구간의 지표는 "
+            f"{incident.bottleneck.label}이 더 뚜렷했다"
+        )
 
     if incident.contributors:
         lines.append("")

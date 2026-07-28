@@ -347,3 +347,83 @@ def test_unattributable_report_does_not_name_a_culprit() -> None:
     assert "원인 후보:" not in text
     assert "특정할 수 없습니다" in text
     assert "발화한 룰: GPU 열 스로틀링" in text
+
+
+# ------------------------------------------------------- 방아쇠와 병목의 일치
+
+# 실측 사건 7 (2026-07-28 06:35). GPU 온도 룰이 열었는데 제목이 "CPU 병목 —
+# deltaforceclient 53%" 로 나가 **실제로 발송됐다.** 게임 중에는 CPU 가 늘 70% 를 넘어
+# CPU 점수가 THERMAL 을 근소하게 앞선다.
+_INCIDENT_7_PEAK = {
+    "cpu_total": 73.0,
+    "gpu_temp": 93.0,
+    "gpu_temp_c": 93.0,
+    "gpu_throttle_reason": "SW_THERMAL",
+}
+
+
+def _hot_baselines():
+    """게임 중처럼 CPU 가 평소보다 크게 높은 상태의 베이스라인."""
+    from argus.detection.baseline import BaselineSet
+
+    baselines = BaselineSet(window_s=1800.0, min_samples=10)
+    for i in range(120):
+        baselines.observe(float(i), {"cpu_total": 15.0 + (i % 5)})
+    return baselines
+
+
+def test_trigger_metric_decides_the_bottleneck() -> None:
+    """방아쇠가 GPU 온도였으면 CPU 가 조금 더 높아도 발열로 보고한다."""
+    from argus.explain.bottleneck import classify
+
+    baselines = _hot_baselines()
+
+    blind = classify(_INCIDENT_7_PEAK, baselines)
+    assert blind.kind == "CPU"  # 수정 전 동작 — 이것이 잘못 발송된 알림이었다
+
+    aware = classify(_INCIDENT_7_PEAK, baselines, trigger_metrics=["gpu_temp_c"])
+    assert aware.kind == "THERMAL"
+    assert aware.overridden_from is None
+    assert aware.trigger_kinds == ("THERMAL",)
+
+
+def test_overwhelming_evidence_still_overrides_the_trigger() -> None:
+    """방아쇠 우선이 '방아쇠 절대 복종'은 아니다. 근거가 압도적이면 뒤집되 밝힌다."""
+    from argus.explain.bottleneck import classify
+
+    baselines = _hot_baselines()
+    # 메모리 룰이 열었지만 구간에서 메모리 근거는 약하고 디스크가 확실히 막혔다.
+    peak = {
+        "cpu_total": 20.0,
+        "mem_percent": 62.0,
+        "disk_resp_ms": 40.0,
+        "disk_queue": 6.0,
+    }
+    for i in range(120):
+        baselines.observe(float(200 + i), {"mem_percent": 55.0, "disk_resp_ms": 1.0})
+
+    result = classify(peak, baselines, trigger_metrics=["mem_percent"])
+    assert result.kind == "IO"
+    assert result.overridden_from == "MEMORY"
+
+
+def test_override_is_disclosed_in_the_report() -> None:
+    from argus.explain.bottleneck import Bottleneck
+    from argus.explain.report import build_incident, render
+
+    bottleneck = Bottleneck(
+        "IO", 0.8, ["디스크 응답 40.0ms"], "io_write", overridden_from="MEMORY"
+    )
+    text = render(build_incident(0.0, 60.0, bottleneck, [], triggers=["메모리 이상 증가"]))
+    assert "메모리 압박" in text and "디스크 IO 병목" in text
+
+
+def test_unknown_trigger_metric_falls_back_to_metrics() -> None:
+    """사용자 룰이 우리가 모르는 지표를 보더라도 판정이 죽지 않는다."""
+    from argus.explain.bottleneck import classify
+
+    result = classify(
+        {"cpu_total": 95.0}, _hot_baselines(), trigger_metrics=["뭔가_새로운_지표"]
+    )
+    assert result.kind == "CPU"
+    assert result.trigger_kinds == ()
