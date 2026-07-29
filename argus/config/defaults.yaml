@@ -103,6 +103,9 @@ retention:
   self_telemetry_days: 7
   # 정리 주기
   interval_s: 300.0
+  # 결함 주입 구간은 이 여유를 두고 지운다. 채점의 유일한 근거라 보존 기한만으로
+  # 지우면 스코어보드가 조용히 비어 버린다.
+  fault_guard_s: 900.0
 
 detection:
   # 탐지 엔진 설정. **임계값은 여기가 아니라 rules.yaml 에 있다.**

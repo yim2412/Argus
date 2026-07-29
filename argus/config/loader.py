@@ -149,6 +149,9 @@ class RetentionSettings(BaseModel):
     events_days: int = Field(default=30, ge=1)
     self_telemetry_days: int = Field(default=7, ge=1)
     interval_s: float = Field(default=300.0, gt=0)
+    # 결함 주입 구간 앞뒤로 지키는 여유. 채점이 보는 창이 주입 구간보다 넓다 —
+    # 비교 창(주입 150초 전부터)과 선행성 조회(±300초)가 밖으로 나간다.
+    fault_guard_s: float = Field(default=900.0, ge=0)
 
 
 class DetectionSettings(BaseModel):
