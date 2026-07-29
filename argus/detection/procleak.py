@@ -197,15 +197,31 @@ class ProcessLeakDetector(BaseDetector):
         self.max_tracked = max_tracked
         self.drop_reset_ratio = drop_reset_ratio
         self.eval_interval_s = eval_interval_s
+        # 프로세스 지문(Phase 6-B). 비어 있으면 억제 없이 6-A 그대로 동작한다.
+        self.fingerprints: dict[tuple[str, str], Any] = {}
         self._tracks: dict[tuple[int, str, str], _Track] = {}
         self._last_eval_ts: float | None = None
         self._last_maint_ts: float | None = None
+        self.suppressed = 0
 
     def reset(self) -> None:
         super().reset()
         self._tracks.clear()
         self._last_eval_ts = None
         self._last_maint_ts = None
+        self.suppressed = 0
+        # 지문은 상태가 아니라 학습 결과다. reset 으로 버리면 리플레이를 두 번 돌릴 때
+        # 결과가 달라진다(결정론 위반).
+
+    def warm(self, db, now: float) -> int:
+        """지문을 읽어 둔다. `DetectionComponent` 가 기동 시 불러 준다.
+
+        지문이 없어도 탐지는 그대로 돈다 — 억제만 없을 뿐이다.
+        """
+        from .fingerprint import load
+
+        self.fingerprints = load(db)
+        return len(self.fingerprints)
 
     def _due(self, attr: str, ts: float) -> bool:
         """`ts` 기준으로 주기가 됐는가. **벽시계를 쓰지 않는다**(리플레이 계약)."""
@@ -291,6 +307,37 @@ class ProcessLeakDetector(BaseDetector):
 
     # ------------------------------------------------------------------ 판정
 
+    def _is_normal_for(self, name: str, rule: MetricRule, verdict: LeakVerdict) -> bool:
+        """이 프로그램에게는 평소 수준인가 (Phase 6-B 지문 억제).
+
+        6-A 는 자기 과거만 보므로 "평소에도 핸들을 4천 개씩 쓰는 프로그램"과 "평소
+        200개인데 4천 개가 된 프로그램"을 구분하지 못한다. 실측에서 medal(게임 녹화)이
+        핸들 383 → 1,395 로 늘어 발화했는데 medal 의 평소 p99 는 12,466 이었다.
+
+        **억제는 한쪽으로만 작동한다.** 지문이 없으면(신규·희귀 프로세스) 아무것도 하지
+        않는다 — 모르는 것을 막는 방향으로는 틀지 않는다. 같은 실측에서 주입 프로세스는
+        평소 p99(2,768)를 훌쩍 넘겨 그대로 발화했다.
+        """
+        from .fingerprint import STAT_FOR
+
+        stat = STAT_FOR.get(rule.attr)
+        if not stat:
+            return False
+        fp = self.fingerprints.get((name, stat))
+        if fp is None:
+            return False
+        if not fp.within_normal(verdict.last):
+            return False
+
+        # 조용히 삼키지 않는다. 무엇을 왜 막았는지 남긴다(설계 규칙 4).
+        log.debug(
+            "지문 억제 — 이 프로그램에게는 평소 수준",
+            extra={"process": name, "metric": rule.attr, "reached": round(verdict.last, 1),
+                   "normal_p99": round(fp.p99, 1), "stat": stat},
+        )
+        self.suppressed += 1
+        return True
+
     def evaluate(self, obs: Observation) -> Detection | None:
         # **매 틱 판정하지 않는다.** 누수는 분 단위 현상이라 초당 판정할 이유가 없는데,
         # 판정 한 번은 추적 중인 트랙 전부(수백 개)에 대해 표본 전체의 중앙값을 내는
@@ -318,6 +365,8 @@ class ProcessLeakDetector(BaseDetector):
                 track, rule, min_duration_s=self.min_duration_s, min_samples=self.min_samples
             )
             if not verdict.leaking:
+                continue
+            if self._is_normal_for(name, rule, verdict):
                 continue
             score = min(1.0, verdict.ratio / (rule.growth_ratio * 2.0))
             if best is None or score > best[0]:

@@ -149,14 +149,26 @@ class Database:
             row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return row["value"] if row else default
 
-    def insert_many(self, table: str, columns: Sequence[str], rows: Iterable[Sequence[Any]]) -> int:
-        """배치 삽입. 소요 시간(ms)이 아니라 삽입 행 수를 돌려준다."""
+    def insert_many(
+        self,
+        table: str,
+        columns: Sequence[str],
+        rows: Iterable[Sequence[Any]],
+        *,
+        replace: bool = False,
+    ) -> int:
+        """배치 삽입. 소요 시간(ms)이 아니라 삽입 행 수를 돌려준다.
+
+        `replace=True` 면 기본키가 같은 행을 덮어쓴다. 매번 다시 계산해 통째로 갱신하는
+        표(지문 등)에 쓴다 — 그런 표는 지웠다 넣으면 중간에 조회하는 쪽이 빈 표를 본다.
+        """
         rows = list(rows)
         if not rows:
             return 0
         placeholders = ", ".join("?" * len(columns))
         column_list = ", ".join(columns)
-        sql = f"INSERT INTO {table} ({column_list}) VALUES ({placeholders})"
+        verb = "INSERT OR REPLACE" if replace else "INSERT"
+        sql = f"{verb} INTO {table} ({column_list}) VALUES ({placeholders})"
         with self._lock:
             self.conn.executemany(sql, rows)
             self.conn.commit()

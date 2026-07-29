@@ -276,6 +276,20 @@ def run(args: argparse.Namespace) -> int:
             from .decide.fusion import Fusion
             from .detection.live import DetectionComponent
 
+            if settings.fingerprint.enabled:
+                # 프로세스 지문(Phase 6-B). procleak 의 오탐을 줄이는 데 쓰인다 —
+                # "평소에도 핸들을 4천 개씩 쓰는 프로그램"을 이걸로 가린다.
+                from .detection.fingerprint import FingerprintBuilder
+
+                sup.add(
+                    FingerprintBuilder(
+                        db,
+                        interval_s=settings.fingerprint.interval_s,
+                        min_days=settings.fingerprint.min_days,
+                        min_buckets=settings.fingerprint.min_buckets,
+                    )
+                )
+
             sup.add(
                 DetectionComponent(
                     db,

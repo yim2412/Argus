@@ -169,6 +169,22 @@ class DetectionSettings(BaseModel):
     notify: bool = False
 
 
+class FingerprintSettings(BaseModel):
+    """프로세스 지문(Phase 6-B). "이 프로그램의 평소는 어디까지인가"를 학습한다.
+
+    `procleak` 의 오탐을 줄이는 데 쓴다. 억제는 한쪽으로만 작동한다 — 지문이 없으면
+    아무것도 막지 않는다.
+    """
+
+    enabled: bool = True
+    # 3일 이상 관측된 것만 지문이 되므로 한 시간 사이에 결과가 달라질 일이 없고,
+    # 웜(Parquet)까지 훑는 작업이라 싸지도 않다.
+    interval_s: float = Field(default=21600.0, gt=0)
+    # 자격 조건. 3일에 걸쳐 보였어도 매번 5분씩이면 p99 를 세울 표본이 못 된다.
+    min_days: int = Field(default=3, ge=1)
+    min_buckets: int = Field(default=100, ge=10)
+
+
 class LeakMetricSettings(BaseModel):
     """지표 하나의 누수 판정 기준. 전부 상대값이다.
 
@@ -221,6 +237,7 @@ class Settings(BaseModel):
     retention: RetentionSettings = RetentionSettings()
     detection: DetectionSettings = DetectionSettings()
     process_leak: ProcessLeakSettings = ProcessLeakSettings()
+    fingerprint: FingerprintSettings = FingerprintSettings()
 
 
 class ConfigError(Exception):
