@@ -88,10 +88,13 @@ class Readiness:
     name: str
     note: str
     checks: list[Check] = field(default_factory=list)
+    # 이미 끝난 작업. 조건은 계속 보여 주되 "착수 가능"으로는 세지 않는다 —
+    # 끝난 것을 할 일로 계속 내밀면 다음 세션이 잘못 이어간다.
+    done: str | None = None
 
     @property
     def ok(self) -> bool:
-        return all(c.ok for c in self.checks)
+        return self.done is None and all(c.ok for c in self.checks)
 
 
 def _connect() -> sqlite3.Connection:
@@ -206,6 +209,7 @@ def check_fingerprint(days: dict[str, Day]) -> Readiness:
         "Phase 6 — 프로세스 지문",
         f"프로세스명별 p50/p95/p99 를 세운다. {FINGERPRINT_MIN_DAYS}일 이상 관측되고 "
         f"누적 {FINGERPRINT_MIN_BUCKETS}버킷 이상 쌓인 것만 지문이 된다.",
+        done="2026-07-29 완료 (6-A 누수 탐지 + 6-B 지문). 아래는 지문 자격 현황이다.",
     )
     result.checks.append(
         Check(
@@ -257,9 +261,11 @@ def main() -> int:
         conn.close()
 
     for report in reports:
-        mark = "[OK]" if report.ok else "[대기]"
+        mark = "[완료]" if report.done else ("[OK]" if report.ok else "[대기]")
         print(f"{mark} {report.name}")
         print(f"      {report.note}")
+        if report.done:
+            print(f"      → {report.done}")
         for check in report.checks:
             print(f"      {'v' if check.ok else 'x'} {check.label}")
             print(f"        └ {check.detail}")
