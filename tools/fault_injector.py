@@ -885,6 +885,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--disk-load", type=float, default=1.2,
                         help="실측 순차쓰기 대비 목표 속도 배수 (기본 1.2 — 장치가 못 따라오게)")
     parser.add_argument("--handles", type=int, default=2000, help="핸들 시나리오 상한")
+    # 기본 20/s 는 상한까지 2분이면 닿아 뒤가 평평해진다. 그 모양은 실제 누수와 다르고
+    # (진짜 누수는 시간 단위로 완만히 오른다), 평평한 구간이 길면 "앞 구간 대비 몇 배"로
+    # 판정하는 쪽에서 배수가 오히려 낮아진다. 완만한 누수를 만들려면 이걸 낮춘다.
+    parser.add_argument("--handle-rate", type=float, default=20.0,
+                        help="핸들 시나리오의 초당 개방 속도 (기본 20)")
     parser.add_argument("--label", default="manual",
                         help="manual 시나리오의 라벨 이름 (예: GAME, BUILD, ENCODE)")
     parser.add_argument("--dry-run", action="store_true", help="상한만 보여주고 실행하지 않는다")
@@ -902,11 +907,12 @@ def main(argv: list[str] | None = None) -> int:
     setup(level="INFO", console=False)  # 콘솔은 진행 표시가 쓰므로 파일 로그만
     limits = resolve_limits(args)
     scenario_class = SCENARIOS[args.scenario]
-    scenario = (
-        scenario_class(limits, label=args.label)
-        if scenario_class is ManualLabel
-        else scenario_class(limits)
-    )
+    if scenario_class is ManualLabel:
+        scenario = scenario_class(limits, label=args.label)
+    elif scenario_class is HandleLeak:
+        scenario = scenario_class(limits, rate_per_s=args.handle_rate)
+    else:
+        scenario = scenario_class(limits)
     injector = Injector(
         scenario, ramp=args.ramp, duration_s=limits.duration_s, dry_run=args.dry_run
     )

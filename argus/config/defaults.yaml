@@ -116,6 +116,36 @@ detection:
   # 알림 발송은 Phase 9. 오탐률이 검증되기 전에 켜면 되돌릴 수 없다.
   notify: false
 
+process_leak:
+  # 프로세스별 자원이 "줄지 않고 계속 자라는" 것을 잡는다. 시스템 전역 메트릭에는
+  # 드러나지 않아 룰 엔진으로는 닿지 않는 영역이다 (핸들 누수가 대표적).
+  enabled: true
+  window_s: 900.0          # 추적 창
+  min_duration_s: 300.0    # 이만큼 계속 자라야 발화. 켤 때의 급증은 누수가 아니다.
+  min_samples: 20
+  cooldown_s: 1800.0       # 누수는 고칠 때까지 계속된다 — 없으면 영원히 반복 알림
+  # 동시 추적 상한. **프로세스 수가 아니라 트랙 수다(프로세스 × 지표).** 프로세스가
+  # 200종인 PC 면 지표 2개로 400 을 채운다. 상한에 닿으면 가장 오래 갱신되지 않은
+  # 트랙을 버리고 새 것을 받는다 — 새 프로세스를 거절하면 누수를 통째로 놓친다.
+  max_tracked: 800
+  drop_reset_ratio: 0.5    # 이 아래로 떨어지면 리셋 (PID 재사용·정상 해제)
+  # 판정·정리 주기. 누수는 분 단위 현상이라 초당 판정할 이유가 없다. 판정 한 번이
+  # 트랙 수백 개의 중앙값 계산이라, 매 틱 돌리면 관측자가 병목이 된다.
+  eval_interval_s: 30.0
+
+  handles:
+    growth_ratio: 3.0      # 창 시작 대비 배수
+    min_delta: 500.0       # 핸들 수는 하드웨어에 비례하지 않으므로 절대값이 맞다
+    monotonic_ratio: 0.85  # "줄지 않은" 표본 비율. 등락하며 오르는 것은 일하는 중이다.
+
+  rss_mb:
+    growth_ratio: 3.0
+    min_delta: 512.0
+    monotonic_ratio: 0.9
+    # RSS 는 RAM 에 비례한다. 512MB 는 4GB PC 에서 심각하고 64GB 에서는 탭 몇 개다.
+    # 이 값을 주면 min_delta 대신 `RAM(MB) × 비율` 을 쓴다.
+    min_delta_ram_ratio: 0.02
+
 calibration:
   # 첫 실행 시 이 PC 의 기준선을 만든다. 하드웨어를 가정하지 않기 위해 필수.
   enabled: true

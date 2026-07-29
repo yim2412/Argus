@@ -45,8 +45,12 @@ def _ensure_loaded() -> None:
     _loaded = True
 
     from ..eval import baselines
+    from .procleak import build as build_procleak
     from .rules import RuleEngine
 
     for baseline_name, builder in baselines.REGISTRY.items():
         register(baseline_name, builder)
     register("rules", RuleEngine)
+    # 프로세스 누수. 룰 엔진이 보는 `obs.metrics`(시스템 전역)에는 드러나지 않는
+    # 프로세스별 지표를 담당한다. 채택 여부는 스코어보드가 정한다.
+    register("procleak", build_procleak)

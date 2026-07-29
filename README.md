@@ -172,6 +172,25 @@ python tools\fault_injector.py cpu_spin --duration 120 --ramp   # 결함 주입 
 .venv\Scripts\python.exe -m argus.eval --detector all --save    # 리플레이 + 채점
 ```
 
+핸들 누수는 개방 속도를 낮춰야 실제 누수에 가까운 모양이 나옵니다. 기본 20/s 는 2분이면
+상한에 닿아 뒤가 평평해집니다.
+
+```powershell
+python tools\fault_injector.py handle_leak --duration 720 --handle-rate 6
+```
+
+### 탐지기
+
+| 이름 | 보는 것 |
+|---|---|
+| `rules` | 시스템 전역 메트릭 위의 룰 엔진 (`rules.yaml`). 지속 조건·쿨다운 강제 |
+| `procleak` | **프로세스별** 자원이 줄지 않고 계속 자라는 것 (핸들·메모리 누수) |
+| `always` · `fixed_*` | 비교 기준선. 새 탐지기가 이걸 못 이기면 채택하지 않습니다 |
+
+`procleak` 이 따로 있는 이유는 핸들 누수가 **전역 메트릭에 드러나지 않기** 때문입니다.
+한 프로세스가 핸들 8천 개를 쥐어도 CPU·메모리·디스크는 평온합니다. 같은 구간 채점에서
+`rules` 의 F1 이 0.000, `procleak` 이 0.400 이었습니다.
+
 ### 귀인 채점 (Phase 8)
 
 ```powershell

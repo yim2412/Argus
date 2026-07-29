@@ -166,6 +166,45 @@ class DetectionSettings(BaseModel):
     notify: bool = False
 
 
+class LeakMetricSettings(BaseModel):
+    """지표 하나의 누수 판정 기준. 전부 상대값이다.
+
+    `min_delta` 만 절대값인데, 핸들 수는 RAM 이나 코어 수에 비례하지 않으므로 그게 맞다.
+    RSS 는 비례하므로 `min_delta_ram_ratio` 로 이 PC 의 RAM 비율로 환산한다.
+    """
+
+    growth_ratio: float = Field(default=3.0, gt=1.0)
+    min_delta: float = Field(default=500.0, ge=0)
+    monotonic_ratio: float = Field(default=0.85, ge=0.0, le=1.0)
+    # 지정하면 min_delta 를 `RAM(MB) × 이 비율` 로 대체한다 (하드웨어를 가정하지 않기 위해).
+    min_delta_ram_ratio: float | None = Field(default=None, ge=0)
+
+
+class ProcessLeakSettings(BaseModel):
+    """프로세스 누수 탐지(Phase 6-A). 시스템 룰로는 닿지 않는 프로세스별 지표를 본다."""
+
+    enabled: bool = True
+    window_s: float = Field(default=900.0, gt=0)
+    # 이만큼 계속 자라야 발화한다. 프로그램을 켤 때의 급증은 누수가 아니다.
+    min_duration_s: float = Field(default=300.0, gt=0)
+    min_samples: int = Field(default=20, ge=2)
+    # 같은 프로세스·지표의 재발화 억제. 누수는 고칠 때까지 계속되므로 이게 없으면
+    # 한 번 새는 프로그램이 알림을 영원히 반복한다.
+    cooldown_s: float = Field(default=1800.0, ge=0)
+    # 동시 추적 상한. **프로세스 수가 아니라 트랙 수다(프로세스 × 지표).**
+    # 상한에 닿으면 가장 오래된 트랙을 버리고 새 것을 받는다.
+    max_tracked: int = Field(default=800, ge=1)
+    # 창 최대치의 이 비율 아래로 떨어지면 추적을 리셋한다(PID 재사용·정상 해제).
+    drop_reset_ratio: float = Field(default=0.5, gt=0, lt=1.0)
+    # 판정·정리 주기. 누수는 분 단위 현상이라 초당 판정할 이유가 없고, 판정 한 번이
+    # 트랙 수백 개의 중앙값 계산이라 매 틱 돌리면 관측자가 병목이 된다.
+    eval_interval_s: float = Field(default=30.0, gt=0)
+    handles: LeakMetricSettings = LeakMetricSettings()
+    rss_mb: LeakMetricSettings = LeakMetricSettings(
+        growth_ratio=3.0, min_delta=512.0, monotonic_ratio=0.9, min_delta_ram_ratio=0.02
+    )
+
+
 class Settings(BaseModel):
     general: GeneralSettings = GeneralSettings()
     storage: StorageSettings = StorageSettings()
@@ -178,6 +217,7 @@ class Settings(BaseModel):
     warm: WarmSettings = WarmSettings()
     retention: RetentionSettings = RetentionSettings()
     detection: DetectionSettings = DetectionSettings()
+    process_leak: ProcessLeakSettings = ProcessLeakSettings()
 
 
 class ConfigError(Exception):
