@@ -120,6 +120,10 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+# DoD 85% 를 가를 수 있는 최소 표본. 6/7 = 85.7% 가 이 문턱을 넘는 가장 작은 조합이다.
+MIN_SCORED = 7
+
+
 def _run_attribution(args) -> int:
     """귀인 채점. 리플레이가 필요 없다 — 원본 프로세스 메트릭을 직접 본다."""
     from . import attribution
@@ -140,10 +144,24 @@ def _run_attribution(args) -> int:
             return 1
         rate = sum(1 for v in scored if v.is_top1) / len(scored)
         print()
+        # **표본이 적으면 판정하지 않는다.** 2건으로는 0·50·100% 밖에 나올 수 없어
+        # 100% 가 나와도 우연과 구별되지 않는다. 85% 를 가르려면 최소 7건이 필요하다
+        # (6/7 = 85.7%). 2026-07-29 에 보존 정리가 주입 22건의 프로세스 메트릭을
+        # 지워 채점 가능한 것이 2건만 남았는데, 그때도 이 판정은 "충족"을 찍었다 —
+        # **근거가 사라진 것을 합격으로 보고하는 스코어보드는 없느니만 못하다.**
+        if len(scored) < MIN_SCORED:
+            print(
+                f"[보류] 채점 표본 {len(scored)}건 — {MIN_SCORED}건 미만이라 DoD 를 판정하지 "
+                f"않는다 (1순위 지목률은 {rate * 100:.1f}%)"
+            )
+            print("       주입을 더 쌓을 것: python tools/fault_injector.py handle_leak --duration 720")
+            return 1
         if rate >= 0.85:
-            print(f"[OK] Phase 8 DoD 충족 — 1순위 지목률 {rate * 100:.1f}% ≥ 85%")
+            print(f"[OK] Phase 8 DoD 충족 — 1순위 지목률 {rate * 100:.1f}% ≥ 85% (표본 {len(scored)}건)")
             return 0
-        print(f"[FAIL] Phase 8 DoD 미달 — 1순위 지목률 {rate * 100:.1f}% < 85%")
+        print(
+            f"[FAIL] Phase 8 DoD 미달 — 1순위 지목률 {rate * 100:.1f}% < 85% (표본 {len(scored)}건)"
+        )
         return 1
 
 

@@ -40,6 +40,27 @@ RESOURCE_COLUMNS = {
     "handles": "handles",
 }
 
+# **저량 자원 — 보유량이지 소비량이 아니다.**
+#
+# 나머지(cpu·io_read·io_write)는 유량이다. 초당 얼마를 쓰는가라서, 구간 중에 새로 뜬
+# 프로세스가 CPU 30% 를 먹으면 그 30% 전부가 진짜로 새로 생긴 부하다 — "전 구간에는
+# 0 이었으니 증가분은 30" 이 맞는 계산이다.
+#
+# 저량은 다르다. 프로세스가 뜰 때 들고 오는 핸들 400개는 **늘어난 것이 아니라 그
+# 프로그램의 기본 보유량**이다. 그런데 전/후 창을 비교하는 방식은 그것을 전부 증가분으로
+# 센다. 2026-07-29 채점에서 `compattelrunner` 13개가 구간 중에 뜨면서 각자 400 핸들을
+# 들고 온 것이 5,200 증가로 계산됐고, 혼자 +8,313 을 낸 실제 원인을 40% 대 23% 로
+# 밀어내 1위를 빼앗았다. 그래서 저량은 전/후 비교가 아니라 **각자 자기 시계열 안에서
+# 얼마나 자랐는가**로 잰다(`_window_growth`). 새로 뜬 프로세스는 자기 첫 관측값이
+# 기준이 되므로 기본 보유량이 자동으로 빠지고, 그러면서도 **진짜로 뜨면서 8GB 를
+# 먹어치우는 프로세스는 여전히 잡힌다** — 그런 프로세스는 자기 시계열 안에서도 자란다.
+STOCK_RESOURCES = frozenset({"rss", "handles"})
+
+# 저량 시계열에서 값이 최대치의 이 비율 아래로 떨어지면 시계열을 끊는다. 정상적인
+# 해제이거나 PID 가 재사용되어 다른 프로그램의 값이 이어 붙은 것이다. `procleak` 의
+# `drop_reset_ratio` 와 같은 판단이고, 사건 구간은 수십 분일 수 있어 더 자주 걸린다.
+STOCK_DROP_RESET_RATIO = 0.5
+
 # **이름으로 합치면 안 되는 프로세스들.**
 #
 # Windows 의 공유 호스트 프로세스는 이름이 같아도 서로 다른 프로그램이다. `svchost.exe`
@@ -82,6 +103,14 @@ class Contributor:
     after: float = 0.0
     share: float = 0.0
     lead_s: float | None = None
+    is_new: bool = False
+    """이상 구간에 처음 나타난 프로그램인가. 새로 뜬 것은 강한 용의자다.
+
+    **관측 여부로 정한다 — 사용량이 0 이었는지가 아니다.** 예전에는 `before == 0.0`
+    으로 유도했는데 그건 두 가지를 뭉갠다. 유량에서는 비교 창 내내 CPU 를 안 쓰고
+    가만히 있던 프로세스가 "새로 시작됨"으로 표시됐고, 저량에서는 `before` 가 구간
+    초반값이 되면서 진짜 새 프로세스조차 영영 False 가 된다.
+    """
 
     @property
     def main_pid(self) -> int | None:
@@ -90,11 +119,6 @@ class Contributor:
     @property
     def delta(self) -> float:
         return self.after - self.before
-
-    @property
-    def is_new(self) -> bool:
-        """이상 구간에 처음 나타난 프로세스인가. 새로 뜬 프로그램은 강한 용의자다."""
-        return self.before == 0.0 and self.after > 0.0
 
     def label(self) -> str:
         if len(self.pids) > 1:
@@ -184,6 +208,61 @@ def _window_usage(
     }
 
 
+def _window_growth(
+    db, resource: str, ts_start: float, ts_end: float
+) -> dict[tuple[int, str], tuple[float, float]]:
+    """저량 자원에서 `(pid, 이름)` 별 (구간 초반값, 구간 후반값).
+
+    전/후 두 창을 비교하는 대신 **한 구간 안의 자기 시계열**을 본다. 그래서 구간
+    중에 새로 뜬 프로세스도 자기 첫 관측값이 기준이 되고, 기본 보유량이 증가분으로
+    둔갑하지 않는다.
+
+    양 끝점 하나씩만 보지 않고 앞/뒤 1/4 의 중앙값을 쓰는 것은 `procleak.judge` 와
+    같은 이유다 — 끝점 하나가 잡음이면 판정이 통째로 뒤집힌다.
+
+    키에 이름을 넣는 이유: PID 는 재사용된다. `(pid, name)` 으로 가르면 죽은 프로세스와
+    그 PID 를 물려받은 다른 프로그램이 한 시계열로 이어 붙는 일이 없다.
+    """
+    column = RESOURCE_COLUMNS[resource]
+    rows = db.query(
+        f"SELECT ts, pid, name, {column} AS value FROM process_metrics "
+        "WHERE ts >= ? AND ts < ? AND pid IS NOT NULL AND name IS NOT NULL "
+        f"AND {column} IS NOT NULL ORDER BY ts",
+        (ts_start, ts_end),
+    )
+
+    series: dict[tuple[int, str], list[float]] = {}
+    for row in rows:
+        key = (int(row["pid"]), row["name"])
+        values = series.setdefault(key, [])
+        value = float(row["value"])
+        # 크게 떨어졌다 = 자원을 해제했다. 이어 붙이면 골짜기를 사이에 둔 두 봉우리가
+        # 하나의 긴 상승으로 보여, 이미 반납한 양까지 증가분으로 세게 된다.
+        if values:
+            peak = max(values)
+            if peak > 0 and value < peak * STOCK_DROP_RESET_RATIO:
+                values.clear()
+        values.append(value)
+
+    out: dict[tuple[int, str], tuple[float, float]] = {}
+    for key, values in series.items():
+        quarter = max(1, len(values) // 4)
+        out[key] = (
+            statistics.median(values[:quarter]),
+            statistics.median(values[-quarter:]),
+        )
+    return out
+
+
+def _observed_pids(db, ts_start: float, ts_end: float) -> set[int]:
+    """그 창에 한 번이라도 관측된 PID. `is_new` 판정의 근거다."""
+    rows = db.query(
+        "SELECT DISTINCT pid FROM process_metrics WHERE ts >= ? AND ts < ? AND pid IS NOT NULL",
+        (ts_start, ts_end),
+    )
+    return {int(r["pid"]) for r in rows}
+
+
 def attribute(
     db,
     resource: str,
@@ -195,13 +274,11 @@ def attribute(
     """변화점 전후를 비교해 기여도를 매긴다.
 
     돌려주는 것은 **증가한** 후보들뿐이다. 줄어든 프로세스는 원인이 아니다.
+
+    유량(cpu·io)과 저량(rss·handles)은 계산이 다르다 — `STOCK_RESOURCES` 주석 참조.
     """
     if resource not in RESOURCE_COLUMNS:
         raise ValueError(f"모르는 자원: {resource}")
-
-    # "평소"를 정하는 창은 중앙값으로 본다 — 그 창의 우연한 스파이크에 끌려가지 않게.
-    usage_before = _window_usage(db, resource, *before, robust=True)
-    usage_after = _window_usage(db, resource, *after)
 
     groups: dict[str, Contributor] = {}
 
@@ -214,10 +291,27 @@ def attribute(
         contributor.pids.add(pid)
         return contributor
 
-    for pid, (name, value) in usage_before.items():
-        group_for(pid, name).before += value
-    for pid, (name, value) in usage_after.items():
-        group_for(pid, name).after += value
+    if resource in STOCK_RESOURCES:
+        # **창을 비교 구간 시작까지 넓혀 잡는다.** 누수는 증상보다 먼저 시작되므로
+        # (사건은 증상이 관측된 시점에 열린다) 이상 구간 안만 보면 미리 오르기 시작한
+        # 진짜 원인의 상승분을 놓친다. `lead_time` 이 "40초 선행"을 재고 있다는 것
+        # 자체가 원인이 구간 밖에서 오르기 시작한다는 뜻이다.
+        for (pid, name), (first, last) in _window_growth(db, resource, before[0], after[1]).items():
+            contributor = group_for(pid, name)
+            contributor.before += first
+            contributor.after += last
+    else:
+        # "평소"를 정하는 창은 중앙값으로 본다 — 그 창의 우연한 스파이크에 끌려가지 않게.
+        usage_before = _window_usage(db, resource, *before, robust=True)
+        usage_after = _window_usage(db, resource, *after)
+        for pid, (name, value) in usage_before.items():
+            group_for(pid, name).before += value
+        for pid, (name, value) in usage_after.items():
+            group_for(pid, name).after += value
+
+    pids_before = _observed_pids(db, *before)
+    for contributor in groups.values():
+        contributor.is_new = not (contributor.pids & pids_before)
 
     risers = [c for c in groups.values() if c.delta > 0]
     total = sum(c.delta for c in risers)

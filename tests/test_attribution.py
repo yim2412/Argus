@@ -107,6 +107,129 @@ def test_baseline_window_uses_median(db: Database) -> None:
     assert result[0].delta == pytest.approx(10.0)
 
 
+# ---------------------------------------------------------------- 저량 자원
+
+
+def test_stock_ignores_startup_holdings_of_new_processes(db: Database) -> None:
+    """구간 중에 뜬 프로세스의 **기본 보유량**이 증가분으로 둔갑하면 안 된다.
+
+    2026-07-29 채점에서 실제로 일어난 일이다. `compattelrunner` 13개가 주입 도중에
+    뜨면서 각자 원래 갖고 있던 400 핸들이 전부 "늘어난 것"으로 계산돼 5,200 이 됐고,
+    혼자 +8,313 을 낸 진짜 원인을 밀어내고 1위를 차지했다. 실제로 이 13개가 구간
+    동안 늘린 핸들은 각 20~29개, 합쳐서 300 남짓이었다.
+
+    여기서는 같은 메커니즘을 20개로 재현한다 — 옛 방식이면 10,000(20 × 500)이 잡혀
+    주입 프로세스(+8,100)를 이기고, 자기 시계열로 보면 400(20 × 20)에 그친다.
+    """
+    base = 1_000_000.0
+    rows = []
+    for i in range(200):  # 비교 창: 주입 프로세스만 있고 핸들은 400 에서 평평하다
+        rows.append((base - 200 + i, 1, "leaky", 0.0, 0.0, 0.0, 400))
+    for i in range(300):  # 이상 구간: 주입 프로세스가 400 → 8,500
+        ts = base + i
+        rows.append((ts, 1, "leaky", 0.0, 0.0, 0.0, 400 + i * 27))
+        for pid in range(10, 30):  # 여기서 새로 뜬다. 각자 500 을 들고 와 20 만 늘린다
+            rows.append((ts, pid, "compattelrunner", 0.0, 0.0, 0.0, 500 + i // 15))
+    _proc(db, rows)
+
+    result = attribute(db, "handles", before=(base - 200, base - 170), after=(base, base + 300))
+
+    assert result[0].name == "leaky", (
+        f"새로 뜬 프로세스의 초기 보유량이 1위를 뺏았다: "
+        f"{[(c.name, round(c.delta)) for c in result[:3]]}"
+    )
+    newcomer = next(c for c in result if c.name == "compattelrunner")
+    assert newcomer.delta < 1000, (
+        f"신규 프로세스 20개의 증가분이 {newcomer.delta:.0f} 로 잡혔다 — "
+        "기본 보유량(각 500)이 증가분에 섞여 있다"
+    )
+    # 그러면서도 새로 떴다는 사실 자체는 근거로 남아야 한다.
+    assert newcomer.is_new and not result[0].is_new
+
+
+def test_stock_still_catches_a_process_that_grows_as_it_starts(db: Database) -> None:
+    """**초기 보유량을 빼는 것과 새 프로세스를 놓치는 것은 다르다.**
+
+    구간 중에 떠서 실제로 자원을 먹어치우는 프로세스는 여전히 1위여야 한다. 초기
+    보유량을 일괄로 빼는 방식(설계 검토 때의 A안)은 여기서 원인을 통째로 놓친다 —
+    그래서 그쪽을 택하지 않았다. 자기 시계열 안에서도 자라기 때문에 잡힌다.
+    """
+    base = 1_000_000.0
+    rows = [(base - 200 + i, 1, "idle", 0.0, 0.0, 0.0, 300) for i in range(200)]
+    for i in range(300):
+        ts = base + i
+        rows.append((ts, 1, "idle", 0.0, 0.0, 0.0, 300))
+        # 구간 중에 뜨고, 뜬 뒤로 자기 시계열 안에서 100 → 8,000 으로 자란다
+        rows.append((ts, 50, "hog", 0.0, 0.0, 0.0, 100 + i * 26))
+    _proc(db, rows)
+
+    result = attribute(db, "handles", before=(base - 200, base - 170), after=(base, base + 300))
+    assert result[0].name == "hog"
+    assert result[0].is_new
+
+
+def test_stock_does_not_stitch_across_pid_reuse(db: Database) -> None:
+    """PID 가 재사용되면 시계열을 끊어야 한다.
+
+    사건 구간은 수십 분일 수 있다. 죽은 프로세스와 그 PID 를 물려받은 프로그램의
+    값이 한 시계열로 이어 붙으면, 이미 반납한 양까지 증가분으로 세게 된다.
+
+    **이름까지 같은 경우로 쓴다.** 시계열 키가 `(pid, name)` 이라 이름이 다르면
+    급락 리셋이 없어도 저절로 갈린다 — 그렇게 쓰면 이 테스트는 리셋을 검증하지 않고
+    통과한다. 같은 프로그램을 껐다 켜는 것(워커 재시작)은 실제로 흔하다.
+    """
+    base = 1_000_000.0
+    rows = [(base - 200 + i, 7, "worker", 0.0, 0.0, 0.0, 5000) for i in range(200)]
+    for i in range(200):  # 같은 PID·같은 이름으로 다시 뜬다: 100 에서 300 까지
+        rows.append((base + i, 7, "worker", 0.0, 0.0, 0.0, 100 + i))
+    _proc(db, rows)
+
+    result = attribute(db, "handles", before=(base - 200, base - 170), after=(base, base + 200))
+    hits = [c for c in result if c.name == "worker"]
+    assert hits, (
+        "재시작 뒤의 상승(약 200)이 잡혀야 한다 — 5,000 에서 이어 붙으면 "
+        "델타가 음수가 되어 후보에서 통째로 빠진다"
+    )
+    assert hits[0].delta < 500, f"이어 붙어 {hits[0].delta:.0f} 로 부풀었다"
+
+
+def test_flow_still_counts_a_new_process_in_full(db: Database) -> None:
+    """유량은 바뀌면 안 된다 — 저량 분기가 유량까지 건드리지 않았는지 본다.
+
+    새로 뜬 프로세스가 CPU 30% 를 먹으면 그 30% 전부가 진짜로 새로 생긴 부하다.
+    저량과 달리 여기서 "자기 시계열 안의 상승분"만 세면 원인을 과소평가한다.
+    """
+    base = 1_000_000.0
+    rows = [(base - 200 + i, 1, "idle", 1.0, 0.0, 0.0, 100) for i in range(200)]
+    for i in range(100):
+        rows.append((base + i, 1, "idle", 1.0, 0.0, 0.0, 100))
+        rows.append((base + i, 50, "spinner", 30.0, 0.0, 0.0, 100))  # 처음부터 30% 고정
+    _proc(db, rows)
+
+    result = attribute(db, "cpu", before=(base - 200, base - 170), after=(base, base + 100))
+    assert result[0].name == "spinner"
+    assert result[0].delta == pytest.approx(30.0, abs=0.5), (
+        "유량에서 새 프로세스의 사용량 전체가 증가분으로 잡혀야 한다"
+    )
+
+
+def test_is_new_means_unseen_not_idle(db: Database) -> None:
+    """`is_new` 는 '관측되지 않았다'이지 '사용량이 0 이었다'가 아니다.
+
+    예전 정의(`before == 0.0`)로는 비교 창 내내 가만히 있던 프로세스가 "이상 구간에
+    새로 시작됨"으로 리포트에 찍혔다. 사용자가 엉뚱한 프로그램을 의심하게 된다.
+    """
+    base = 1_000_000.0
+    rows = [(base - 200 + i, 1, "sleeper", 0.0, 0.0, 0.0, 100) for i in range(200)]
+    for i in range(100):
+        rows.append((base + i, 1, "sleeper", 20.0, 0.0, 0.0, 100))
+    _proc(db, rows)
+
+    result = attribute(db, "cpu", before=(base - 200, base - 170), after=(base, base + 100))
+    assert result[0].name == "sleeper"
+    assert not result[0].is_new, "비교 창에 있던 프로세스는 신규가 아니다"
+
+
 # ---------------------------------------------------------------- 트리
 
 
