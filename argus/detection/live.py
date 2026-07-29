@@ -53,40 +53,64 @@ class DetectionComponent(Component):
         self.detector_name = detector_name
         self.lag_s = lag_s
         self.warm_window_s = warm_window_s
-        self.detector: Detector | None = None
+        self.detectors: list[Detector] = []
         self._tail: ObservationTail | None = None
         self._signals = 0
 
-    def setup(self) -> None:
-        self.detector = build(self.detector_name)
-        self.detector.reset()
+    @property
+    def detector_names(self) -> list[str]:
+        """쉼표로 여러 개를 적을 수 있다. 하나만 적던 기존 설정도 그대로 동작한다."""
+        return [n.strip() for n in self.detector_name.split(",") if n.strip()]
 
-        # 저장된 최근 구간으로 베이스라인을 채운다. 이게 없으면 재시작할 때마다
-        # 30분씩 아무것도 못 잡는다 — 사용자는 PC 를 매일 끈다.
-        warmed = 0
-        warm = getattr(self.detector, "warm", None)
-        if callable(warm):
-            warmed = warm(self.db, time.time())
+    def setup(self) -> None:
+        self.detectors = []
+        warmed_total = 0
+        for name in self.detector_names:
+            try:
+                detector = build(name)
+                detector.reset()
+            except Exception as exc:
+                # **탐지기 하나가 못 떠도 나머지는 돌아야 한다.** 룰 파일 오타 하나로
+                # 프로세스 누수 탐지까지 같이 죽으면 안 된다.
+                log.error("탐지기 로드 실패 — 건너뛴다", extra={"detector": name, "error": str(exc)})
+                continue
+
+            # 저장된 최근 구간으로 베이스라인을 채운다. 이게 없으면 재시작할 때마다
+            # 30분씩 아무것도 못 잡는다 — 사용자는 PC 를 매일 끈다.
+            warm = getattr(detector, "warm", None)
+            if callable(warm):
+                warmed_total += warm(self.db, time.time())
+            self.detectors.append(detector)
 
         self._tail = ObservationTail(self.db, lag_s=self.lag_s)
         log.info(
             "실시간 탐지 시작",
-            extra={"detector": self.detector_name, "warmed_ticks": warmed,
+            extra={"detectors": [d.name for d in self.detectors], "warmed_ticks": warmed_total,
                    "interval_s": self.interval_s},
         )
 
     def tick(self) -> None:
-        if self.detector is None or self._tail is None:
+        if not self.detectors or self._tail is None:
             return
 
+        # **관측은 한 번만 읽어 모든 탐지기가 나눠 쓴다.** 탐지기마다 자기 tail 을 두면
+        # 같은 행을 탐지기 수만큼 다시 읽게 되고, 그건 관측자를 무겁게 만든다(설계 규칙 1).
         observations = self._tail.next_batch()
         if not observations:
             return
 
         rows = []
         for obs in observations:
-            detection = self.detector.observe(obs)
-            if detection is not None:
+            for detector in self.detectors:
+                try:
+                    detection = detector.observe(obs)
+                except Exception as exc:
+                    # 탐지기 하나의 예외가 상주 프로세스를 죽이면 안 된다.
+                    log.warning("탐지기 예외 — 건너뛴다",
+                                extra={"detector": detector.name, "error": str(exc)})
+                    continue
+                if detection is None:
+                    continue
                 rows.append(detection.to_row(run_id=None))   # NULL = 실시간
                 log.info(
                     "이상 탐지",
@@ -109,8 +133,8 @@ class DetectionComponent(Component):
         지속 조건 시계를 그대로 두면 "3시간 동안 조건이 참이었다"가 되어 자고 일어난
         직후 알림이 터진다. 실제로는 그 3시간을 보지 못했다.
         """
-        if self.detector is not None:
-            self.detector.reset()
+        for detector in self.detectors:
+            detector.reset()
         if self._tail is not None:
             self._tail.skip_to_now()
         log.info("시간 공백 — 탐지 상태 초기화", extra={"gap_s": round(gap_s, 1)})
@@ -120,11 +144,17 @@ class DetectionComponent(Component):
 
 
 if __name__ == "__main__":  # 스모크: python -m argus.detection.live
+    from ..config.loader import load_settings
+
+    configured = load_settings().detection.detector
     with Database() as db:
-        component = DetectionComponent(db, interval_s=1.0)
+        component = DetectionComponent(db, detector_name=configured, interval_s=1.0)
         component.setup()
-        print(f"  탐지기: {component.detector_name}")
-        baselines = getattr(component.detector, "baselines", None)
+        print(f"  설정값: {configured!r} → 탐지기 {[d.name for d in component.detectors]}")
+
+        baselines = None
+        for detector in component.detectors:
+            baselines = getattr(detector, "baselines", None) or baselines
         if baselines is not None:
             ready = [name for name, count in baselines.readiness().items() if count >= 60]
             print(f"  베이스라인 준비된 메트릭 {len(ready)}개")
@@ -137,8 +167,14 @@ if __name__ == "__main__":  # 스모크: python -m argus.detection.live
         component.teardown()
 
     problems = []
-    if component.detector is None:
-        problems.append("탐지기가 만들어지지 않았다")
+    if not component.detectors:
+        problems.append("탐지기가 하나도 만들어지지 않았다")
+    # 설정에 적힌 탐지기가 전부 떴는가. 하나가 조용히 빠지면 그 영역은 영영 안 본다.
+    missing = set(component.detector_names) - {d.name for d in component.detectors}
+    if missing:
+        problems.append(f"설정에 있는데 뜨지 않은 탐지기: {sorted(missing)}")
+    if len(component.detector_names) > 1 and len(component.detectors) < 2:
+        problems.append("여러 탐지기를 적었는데 하나만 돈다 — 관측 공유가 무의미해진다")
     if baselines is None or not baselines.ready:
         problems.append("베이스라인 워밍이 되지 않았다 — 재시작 직후 탐지 불가")
     for p in problems:
