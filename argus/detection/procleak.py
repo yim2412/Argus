@@ -330,9 +330,15 @@ class ProcessLeakDetector(BaseDetector):
             return False
 
         # 조용히 삼키지 않는다. 무엇을 왜 막았는지 남긴다(설계 규칙 4).
+        #
+        # **키 이름이 `process` 면 안 된다.** `LogRecord` 가 이미 그 속성을 쓰고 있어
+        # (프로세스 ID) `extra` 로 덮어쓰면 `KeyError` 가 난다. INFO 에서는 `log.debug` 가
+        # 조기 반환해 드러나지 않지만, `log_level: DEBUG` 로 바꾸는 순간 억제가 일어날 때
+        # **탐지 스레드가 죽는다.** 억제를 보이게 만들려고 넣은 코드가 보이게 하면 터졌다
+        # (2026-07-30, 리플레이 조사 중 실제로 터졌다).
         log.debug(
             "지문 억제 — 이 프로그램에게는 평소 수준",
-            extra={"process": name, "metric": rule.attr, "reached": round(verdict.last, 1),
+            extra={"proc_name": name, "metric": rule.attr, "reached": round(verdict.last, 1),
                    "normal_p99": round(fp.p99, 1), "stat": stat},
         )
         self.suppressed += 1
