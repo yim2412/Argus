@@ -501,3 +501,170 @@ def test_bound_refinement_stops_at_the_before_cap(db: Database) -> None:
     assert refined_start <= ts_start - 290.0, (
         f"상한 근처까지 당기지 못했다: {ts_start - refined_start:.0f}초"
     )
+
+
+# ------------------------------------------------- 탐지기가 본 자원의 전달 (8번)
+
+
+def _leak_scene(db: Database, start: float, *, leak_name: str = "python") -> float:
+    """전역 지표는 조용하고 한 프로세스의 핸들만 늘어나는 구간.
+
+    **핸들 누수는 전역 지표에 드러나지 않는다.** 그래서 병목 분류가 `NONE` 을 내고,
+    고치기 전에는 `NONE` → `cpu` 매핑 때문에 "구간에 CPU 를 많이 쓴 무관한 프로세스"가
+    원인으로 발표됐다. 여기서 `cpu_eater` 가 그 무관한 프로세스 역할이다 —
+    **고쳐지지 않았다면 이 프로세스가 1위로 뽑힌다.**
+    """
+    end = start + 120
+    db.insert_many(
+        "metrics_raw",
+        ("ts", "cpu_total", "cpu_max_core", "mem_percent", "disk_resp_ms"),
+        [(start - 1800 + i, 15.0 + (i % 3), 30.0, 30.0, 0.1) for i in range(1800)]
+        + [(start + i, 16.0 + (i % 3), 31.0, 30.0, 0.1) for i in range(120)],
+    )
+    procs = []
+    for i in range(0, 200, 2):  # 비교 창 — 둘 다 평소 상태로 존재한다
+        procs.append((start - 200 + i, 10, leak_name, 2.0, 50.0, 0, 0, 460, 4, 0))
+        procs.append((start - 200 + i, 20, "cpu_eater", 40.0, 100.0, 0, 0, 300, 8, 0))
+    for i in range(0, 120, 2):
+        # 누수: 핸들이 460 → 3,800 으로. CPU 는 거의 안 쓴다.
+        procs.append((start + i, 10, leak_name, 2.0, 52.0, 0, 0, 460 + i * 28, 4, 0))
+        # 무관한 프로세스: CPU 를 많이 쓰지만 핸들은 그대로다.
+        procs.append((start + i, 20, "cpu_eater", 75.0, 100.0, 0, 0, 300, 8, 0))
+    db.insert_many(
+        "process_metrics",
+        ("ts", "pid", "name", "cpu_percent", "rss_mb", "io_read_bps", "io_write_bps",
+         "handles", "threads", "foreground"),
+        procs,
+    )
+    return end
+
+
+def _leak_signal(db: Database, ts: float, *, score: float = 0.6, metric: str = "handles",
+                 process: str = "python", explain: str = "") -> None:
+    features = {
+        "rule": "핸들 누수", "rules": ["핸들 누수"], "process": process, "pid": 10,
+        "metric": metric,
+        "explain": explain or f"{process} (PID 10) 핸들 460 → 3,800개 (8.3배, 2분간 줄지 않음)",
+    }
+    db.insert_many(
+        "anomaly_signals", ("ts", "detector", "score", "severity", "features", "run_id"),
+        [(ts, "procleak", score, "warning", json.dumps(features, ensure_ascii=False), None)],
+    )
+
+
+def _run(db: Database, start: float, now: float) -> dict:
+    fusion = Fusion(db)
+    fusion._set_watermark(start - 1)  # noqa: SLF001
+    fusion.run_once(now=now)
+    return dict(db.query("SELECT * FROM incidents ORDER BY id DESC LIMIT 1")[0])
+
+
+def test_leak_incident_names_the_leaking_process(db: Database) -> None:
+    """탐지기가 `handles` 를 봤다고 말했으면 핸들로 귀인해야 한다.
+
+    2026-07-30 실측: 주입 4건이 모두 엉뚱한 프로세스를 지목했다. 병목이 `NONE` 일 때
+    `cpu` 로 분해했기 때문이다. 이 테스트는 그 조건을 그대로 만든다 —
+    `cpu_eater` 가 CPU 1위이고 `python` 이 핸들 1위다.
+    """
+    now = time.time()
+    start = now - 900
+    _leak_scene(db, start)
+    for i in range(20):
+        _leak_signal(db, start + i * 5)
+
+    row = _run(db, start, now)
+    contributors = json.loads(row["contributors"])
+    assert contributors, "원인 후보가 비어 있다"
+    assert contributors[0]["name"] == "python", (
+        f"핸들 누수인데 1위가 python 이 아니다: {[c['name'] for c in contributors[:3]]}"
+    )
+
+
+def test_leak_incident_title_uses_the_detector_sentence(db: Database) -> None:
+    """제목은 "병목 없음" 이 아니라 탐지기가 만든 문장이어야 한다.
+
+    탐지가 아니라 설명이 산출물이다(CLAUDE.md). 문장은 이미 만들어져 있었고
+    버려지고 있었을 뿐이다.
+    """
+    now = time.time()
+    start = now - 900
+    _leak_scene(db, start)
+    for i in range(20):
+        _leak_signal(db, start + i * 5)
+
+    row = _run(db, start, now)
+    assert "병목 없음" not in row["title"], f"제목이 그대로다: {row['title']}"
+    assert "핸들" in row["title"] and "python" in row["title"], f"제목: {row['title']}"
+
+    # **제목과 기여자가 같은 프로세스를 가리켜야 한다.** 제목은 탐지기 문장에서,
+    # 기여자는 귀인에서 따로 오므로 두 경로가 갈라질 수 있다 — 그러면 사용자는
+    # "python 핸들 누수"라는 제목 아래 cpu_eater 가 1위인 리포트를 읽는다.
+    contributors = json.loads(row["contributors"])
+    assert contributors[0]["name"] == "python", (
+        f"제목은 python 인데 1위는 {contributors[0]['name']} 다 — 두 경로가 갈라졌다"
+    )
+
+
+def test_concrete_bottleneck_is_not_overridden_by_detector(db: Database) -> None:
+    """전역 지표가 증상을 보이면 그쪽을 유지한다.
+
+    탐지기 주장이 항상 이기면 CPU 가 실제로 막힌 구간에서도 프로세스 하나의 내부
+    사정으로 제목이 바뀐다. 사용자가 느낀 것은 전역 증상이다.
+    """
+    now = time.time()
+    start = now - 900
+    # CPU 가 실제로 치솟는 구간
+    db.insert_many(
+        "metrics_raw",
+        ("ts", "cpu_total", "cpu_max_core", "mem_percent", "disk_resp_ms"),
+        [(start - 1800 + i, 15.0 + (i % 3), 30.0, 30.0, 0.1) for i in range(1800)]
+        + [(start + i, 95.0, 99.0, 30.0, 0.1) for i in range(120)],
+    )
+    procs = []
+    for i in range(0, 200, 2):
+        procs.append((start - 200 + i, 20, "cpu_eater", 5.0, 100.0, 0, 0, 300, 8, 0))
+    for i in range(0, 120, 2):
+        procs.append((start + i, 20, "cpu_eater", 80.0, 100.0, 0, 0, 300, 8, 0))
+    db.insert_many(
+        "process_metrics",
+        ("ts", "pid", "name", "cpu_percent", "rss_mb", "io_read_bps", "io_write_bps",
+         "handles", "threads", "foreground"),
+        procs,
+    )
+    for i in range(20):
+        _leak_signal(db, start + i * 5)
+
+    row = _run(db, start, now)
+    assert row["bottleneck"] == "CPU", f"병목이 CPU 가 아니다: {row['bottleneck']}"
+    assert "CPU" in row["title"], f"제목이 병목을 버렸다: {row['title']}"
+
+
+def test_highest_scoring_detector_claim_wins(db: Database) -> None:
+    """탐지기가 여럿이면 점수가 큰 쪽의 자원을 쓴다."""
+    now = time.time()
+    start = now - 900
+    _leak_scene(db, start)
+    for i in range(20):
+        _leak_signal(db, start + i * 5, score=0.3, metric="rss_mb", process="mem_hog",
+                     explain="mem_hog 메모리 증가")
+    _leak_signal(db, start + 7, score=0.95)  # handles, python — 점수가 더 높다
+
+    row = _run(db, start, now)
+    assert "python" in row["title"], f"점수가 낮은 주장이 이겼다: {row['title']}"
+
+
+def test_none_bottleneck_without_claim_does_not_name_a_culprit(db: Database) -> None:
+    """탐지기 주장이 없으면 "병목 없음" 에 프로세스를 붙이지 않는다.
+
+    전역 지표에서 아무것도 못 찾은 상태로 CPU 1위를 원인이라 부르면, 구간에 CPU 를
+    많이 쓴 무관한 프로세스가 범인이 된다.
+    """
+    now = time.time()
+    start = now - 900
+    _leak_scene(db, start)
+    # 자원을 말하지 않는 신호(룰 엔진)만 있다
+    _signals(db, [(start + i * 5, "rules", 0.5, "info", None) for i in range(20)])
+
+    row = _run(db, start, now)
+    assert row["bottleneck"] == "NONE", f"병목: {row['bottleneck']}"
+    assert "cpu_eater" not in row["title"], f"무관한 프로세스를 지목했다: {row['title']}"

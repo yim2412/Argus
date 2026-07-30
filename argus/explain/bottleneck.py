@@ -105,7 +105,14 @@ _RESOURCE_BY_KIND: dict[str, tuple[str, bool]] = {
     "THERMAL": ("cpu", False),
     # 경합은 정의상 "누가 자원을 많이 썼나"로 설명되지 않는다. CPU 상위는 참고일 뿐이다.
     "CONTENTION": ("cpu", False),
-    "NONE": ("cpu", True),
+    # **`NONE` 은 "전역 지표에서 아무것도 못 찾았다"는 뜻이다.** 그 상태에서 CPU 로
+    # 분해한 1위를 원인이라고 확신하면, 구간에 CPU 를 많이 쓴 무관한 프로세스가 범인이
+    # 된다. 2026-07-30 에 핸들 누수 4건이 전부 그렇게 틀린 프로세스를 발표했다
+    # (`attributable=True` 였다). GPU·THERMAL 과 같은 이유로 `False` 가 맞다.
+    #
+    # 탐지기가 자기 자원을 말해 준 경우에는 `fusion.close_incident` 가 그 자원으로
+    # 바꾸면서 `attributable` 도 되살린다 — 그때는 근거가 있다.
+    "NONE": ("cpu", False),
 }
 
 
@@ -248,7 +255,13 @@ def classify(
     trigger_kinds = kinds_for_metrics(trigger_metrics)
 
     if not scores:
-        return Bottleneck("NONE", 0.0, [], "cpu", trigger_kinds=trigger_kinds)
+        # 자원·귀인 가능 여부를 여기서 따로 쓰지 않는다 — 표와 어긋나면 조용히 갈린다.
+        # (2026-07-30: 표만 고쳤더니 이 줄이 dataclass 기본값 `attributable=True` 를
+        # 그대로 써서 "병목 없음 — cpu_eater 100%" 가 계속 나왔다.)
+        none_resource, none_attributable = _RESOURCE_BY_KIND["NONE"]
+        return Bottleneck(
+            "NONE", 0.0, [], none_resource, none_attributable, trigger_kinds=trigger_kinds
+        )
 
     top = max(scores.items(), key=lambda kv: kv[1])[0]
     kind, overridden_from = _choose(scores, top, trigger_kinds)

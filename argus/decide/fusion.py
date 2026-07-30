@@ -75,7 +75,29 @@ def open_incident(db: Database, signal: dict, severity: str) -> int:
         return int(cursor.lastrowid)
 
 
-def _trigger_rules(db: Database, incident_id: int) -> tuple[list[str], list[str]]:
+@dataclass(frozen=True)
+class DetectorClaim:
+    """탐지기가 **자기가 무엇을 봤는지** 직접 말한 것.
+
+    전역 지표에서 다시 추론한 것이 아니라 탐지기가 신호에 실어 보낸 값이다.
+    `procleak` 은 프로세스별 지표에서 발화하므로 자원(`handles`/`rss_mb`)과 범인
+    프로세스를 이미 알고 있고, 완성된 설명 문장까지 갖고 있다.
+    """
+
+    resource: str
+    process: str | None
+    explain: str
+    score: float
+
+
+# `procleak` 의 지표 이름 → 귀인이 쓰는 자원 이름(`attribution.RESOURCE_COLUMNS`).
+# 이름이 다른 것은 자원 축이 컬럼과 1:1 이 아니기 때문이다(`rss_mb` 컬럼 ↔ `rss` 자원).
+_CLAIM_RESOURCE = {"handles": "handles", "rss_mb": "rss"}
+
+
+def _trigger_rules(
+    db: Database, incident_id: int
+) -> tuple[list[str], list[str], DetectorClaim | None]:
     """이 사건에 묶인 신호들이 **어떤 룰**에서 나왔고 **어떤 지표**를 봤는지.
 
     `detectors` 에 `["rules"]` 만 남기면 아무것도 말해 주지 않는다 — 룰 엔진이라는
@@ -84,15 +106,25 @@ def _trigger_rules(db: Database, incident_id: int) -> tuple[list[str], list[str]
     지표를 함께 뽑는 이유는 병목 분류가 그것을 필요로 하기 때문이다. 룰 이름은 사용자가
     바꿀 수 있어 분류의 입력으로 쓸 수 없지만, `evidence` 의 지표 이름은 룰 정의에서
     그대로 따라온다.
+
+    셋째로 `DetectorClaim` 을 돌려준다. **이것이 없어서 제품이 원인을 틀리게 지목했다** —
+    핸들 누수는 전역 지표에 드러나지 않아 병목이 `NONE` 이 되고, `NONE` 은 `cpu` 로
+    매핑되어 "구간에 CPU 를 많이 쓴 프로세스"가 원인으로 발표됐다. 2026-07-30 주입 4건이
+    전부 그렇게 엉뚱한 프로세스를 지목했다(claude·system·compattelrunner·l-connect-service).
+    탐지기는 `metric: "handles"` 와 범인을 알고 있었고, 그 값을 읽고도 쓰지 않았다.
+
+    여러 탐지기가 섞이면 **점수가 가장 높은 것**을 택한다. 규모가 큰 쪽이 사용자가 느낀
+    것에 가깝다는 가정이고, 동점이면 먼저 온 신호가 이긴다(시간순 정렬이라 안정적이다).
     """
     rows = db.query(
-        "SELECT s.features FROM anomaly_signals s "
+        "SELECT s.features, s.score FROM anomaly_signals s "
         "JOIN incident_signals i ON i.ts = s.ts AND i.detector = s.detector "
         "WHERE i.incident_id = ? ORDER BY s.ts",
         (incident_id,),
     )
     names: list[str] = []
     metrics: list[str] = []
+    claim: DetectorClaim | None = None
     for row in rows:
         try:
             features = json.loads(row["features"] or "{}")
@@ -104,7 +136,19 @@ def _trigger_rules(db: Database, incident_id: int) -> tuple[list[str], list[str]
         for metric in features.get("evidence") or {}:
             if metric not in metrics:
                 metrics.append(metric)
-    return names, metrics
+
+        resource = _CLAIM_RESOURCE.get(features.get("metric") or "")
+        if resource is None:
+            continue
+        score = float(row["score"] or 0.0)
+        if claim is None or score > claim.score:
+            claim = DetectorClaim(
+                resource=resource,
+                process=features.get("process"),
+                explain=features.get("explain") or "",
+                score=score,
+            )
+    return names, metrics, claim
 
 
 def _attach_signal(db: Database, incident_id: int, signal: dict) -> None:
@@ -117,18 +161,34 @@ def _attach_signal(db: Database, incident_id: int, signal: dict) -> None:
         db.conn.commit()
 
 
-def close_incident(
-    db: Database, incident_id: int, ts_end: float, settings: FusionSettings | None = None
-) -> None:
-    """사건을 닫으면서 귀인을 계산해 붙인다.
+@dataclass(frozen=True)
+class IncidentAnalysis:
+    """사건 하나의 "왜". **DB 를 건드리지 않고 계산한 결과다.**
 
-    여기가 Phase 8 과 Phase 9 가 만나는 지점이다. 탐지가 "언제"를 주고,
-    귀인이 "왜"를 채운다.
+    저장과 분리한 이유: 코드를 고친 뒤 **저장된 사건을 다시 분석해 전후를 비교**해야
+    하는데, 계산이 저장과 붙어 있으면 그럴 수 없다. 도구에서 계산을 복사하는 것은
+    답이 아니다 — 규칙이 두 곳에 있으면 조용히 갈린다(2026-07-30 에 디스크 문턱과
+    `NONE` 의 `attributable` 에서 실제로 겪었다).
     """
+
+    ts_start: float
+    ts_end: float
+    bottleneck: object | None
+    contributors: list
+    explanation: str
+    title: str
+    triggers: list[str]
+    resource: str
+
+
+def analyze_incident(
+    db: Database, incident_id: int, ts_end: float, settings: FusionSettings | None = None
+) -> IncidentAnalysis | None:
+    """사건의 "왜" 를 계산한다. **읽기 전용.** 없는 사건이면 None."""
     settings = settings or FusionSettings()
     rows = db.query("SELECT * FROM incidents WHERE id = ?", (incident_id,))
     if not rows:
-        return
+        return None
     incident_row = dict(rows[0])
     ts_start = float(incident_row["ts_start"])
 
@@ -145,38 +205,83 @@ def close_incident(
     if peak is None:
         # 원본이 이미 정리됐거나 수집이 죽어 있던 구간. 사건은 닫되 설명은 비운다 —
         # 지어내지 않는다.
-        _finish(db, incident_id, ts_end, None, [], "", "관측 없음", ts_start=ts_start)
-        return
+        return IncidentAnalysis(
+            ts_start=ts_start, ts_end=ts_end, bottleneck=None, contributors=[],
+            explanation="", title="관측 없음", triggers=[], resource="cpu",
+        )
 
     # 방아쇠를 병목 판정 **앞에서** 읽는다. 무엇이 울렸는지가 무엇에 막혔는지의 입력이다.
-    triggers, trigger_metrics = _trigger_rules(db, incident_id)
+    triggers, trigger_metrics, claim = _trigger_rules(db, incident_id)
     bottleneck = classify(peak, baselines, trigger_metrics=trigger_metrics)
+
+    # **병목을 모르겠으면 탐지기가 말한 자원을 쓴다.**
+    #
+    # 구체적 병목(CPU·IO·MEMORY)이 나왔으면 그것을 유지한다 — 전역 지표가 실제로 증상을
+    # 보이는 경우이고, 사용자가 느낀 것은 그쪽이다. 그러나 `NONE` 은 "전역 지표에서
+    # 아무것도 못 찾았다"는 뜻이고, 그 상태에서 CPU 로 분해하면 **구간에 CPU 를 많이 쓴
+    # 무관한 프로세스**가 원인으로 발표된다. 핸들 누수가 정확히 그 경우다.
+    resource = bottleneck.resource
+    attributable = bottleneck.attributable
+    if bottleneck.kind == "NONE" and claim is not None:
+        resource = claim.resource
+        attributable = True
+
     before = (
         ts_start - settings.before_margin_s - settings.before_window_s,
         ts_start - settings.before_margin_s,
     )
-    contributors = attribute(db, bottleneck.resource, before=before, after=(ts_start, ts_end))
+    contributors = attribute(db, resource, before=before, after=(ts_start, ts_end))
     for contributor in contributors:
-        contributor.lead_s = lead_time(db, contributor, bottleneck.resource, ts_start)
+        contributor.lead_s = lead_time(db, contributor, resource, ts_start)
 
     symptom = _symptom(peak, baselines)
     report = build_incident(
         ts_start, ts_end, bottleneck, contributors, symptom=symptom, triggers=triggers
     )
-    explanation = render(report, bottleneck.resource)
+    explanation = render(report, resource)
 
-    # **귀인이 성립할 때만 제목에 프로세스를 넣는다.** GPU·발열은 프로세스별 사용량을
-    # 알 수 없어 CPU 상위로 대신 분해하는데, 그것을 제목에 올리면 "발열 스로틀링 —
-    # svchost 19%" 가 된다. 읽는 사람은 svchost 를 의심하지만 GPU 를 태운 것은 게임이다.
-    title = bottleneck.label
-    if contributors and bottleneck.attributable:
-        title += f" — {contributors[0].name} {contributors[0].share * 100:.0f}%"
-    elif bottleneck.evidence:
-        title += f" — {bottleneck.evidence[0]}"
+    # **탐지기가 문장을 갖고 있으면 그것이 제목이다.**
+    #
+    # `병목 없음 — compattelrunner 72%` 는 두 번 틀렸다. 프로세스가 틀렸고(위에서 고쳤다),
+    # "병목 없음"은 제목이 아니다. 탐지기는 이미
+    # `python (PID 24504) 핸들 458 → 3,838개 (8.4배, 6분간 줄지 않음)` 를 만들어 놨다.
+    # CLAUDE.md 는 탐지가 아니라 설명이 산출물이라고 말한다 — 그 문장이 산출물이다.
+    #
+    # 병목이 구체적으로 잡혔을 때는 기존 형식을 유지한다. 그때는 전역 증상이 있고,
+    # `CPU 병목 — chrome 68%` 가 프로세스 하나의 내부 사정보다 사용자에게 가깝다.
+    if bottleneck.kind == "NONE" and claim is not None and claim.explain:
+        title = claim.explain
+    else:
+        # **귀인이 성립할 때만 제목에 프로세스를 넣는다.** GPU·발열은 프로세스별 사용량을
+        # 알 수 없어 CPU 상위로 대신 분해하는데, 그것을 제목에 올리면 "발열 스로틀링 —
+        # svchost 19%" 가 된다. 읽는 사람은 svchost 를 의심하지만 GPU 를 태운 것은 게임이다.
+        title = bottleneck.label
+        if contributors and attributable:
+            title += f" — {contributors[0].name} {contributors[0].share * 100:.0f}%"
+        elif bottleneck.evidence:
+            title += f" — {bottleneck.evidence[0]}"
 
+    return IncidentAnalysis(
+        ts_start=ts_start, ts_end=ts_end, bottleneck=bottleneck, contributors=contributors,
+        explanation=explanation, title=title, triggers=triggers, resource=resource,
+    )
+
+
+def close_incident(
+    db: Database, incident_id: int, ts_end: float, settings: FusionSettings | None = None
+) -> None:
+    """사건을 닫으면서 귀인을 계산해 붙인다.
+
+    여기가 Phase 8 과 Phase 9 가 만나는 지점이다. 탐지가 "언제"를 주고,
+    귀인이 "왜"를 채운다. 계산은 `analyze_incident` 가 하고 여기서는 저장만 한다.
+    """
+    analysis = analyze_incident(db, incident_id, ts_end, settings)
+    if analysis is None:
+        return
     _finish(
-        db, incident_id, ts_end, bottleneck, contributors, explanation, title,
-        ts_start=ts_start, triggers=triggers,
+        db, incident_id, analysis.ts_end, analysis.bottleneck, analysis.contributors,
+        analysis.explanation, analysis.title,
+        ts_start=analysis.ts_start, triggers=analysis.triggers,
     )
 
 
