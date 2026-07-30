@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import random
 import sys
 from pathlib import Path
 
@@ -97,6 +98,41 @@ def test_baseline_drops_samples_outside_window():
     assert stats.minimum >= 399
 
 
+def test_baseline_sigma_recovers_true_deviation_of_normal_sample():
+    """MAD 를 σ 로 환산하는 계수가 실제로 σ 를 복원하는지 본다.
+
+    이 상수(1.4826)는 모든 z 점수의 분모라, 틀어지면 탐지 민감도가 통째로 바뀐다.
+    그런데 `sigma` 는 `max(mad*계수, sigma_floor, median*0.05)` 의 결과라서
+    **`median*0.05` 가 최대값을 차지하는 표본으로는 계수를 검증할 수 없다.**
+    여기서는 산포를 중앙값 대비 크게(10/50) 잡아 첫 항이 이기게 만든다.
+    """
+    rng = random.Random(20260730)
+    true_sigma = 10.0
+    baseline = BaselineSet(window_s=1e9, min_samples=100)
+    for i in range(4000):
+        baseline.observe(1000.0 + i, {"cpu": rng.gauss(50.0, true_sigma)})
+    stats = baseline.stats("cpu")
+    # 계수를 1.0 으로 바꾸면 6.74 가 되어 이 범위를 벗어난다.
+    assert true_sigma * 0.9 <= stats.sigma <= true_sigma * 1.1
+
+
+def test_baseline_sigma_conversion_factor_is_fixed():
+    """환산값을 리터럴로 고정한다. 계수를 코드에서 읽어오면 아무것도 검증하지 않는다.
+
+    표본을 40/60 절반씩 두면 중앙값 50, 편차가 전부 10 이라 MAD = 10 으로 확정된다.
+    `median*0.05` = 2.5 이므로 첫 항이 이긴다.
+    """
+    baseline = BaselineSet(window_s=1e9, min_samples=10)
+    for i in range(100):
+        baseline.observe(1000.0 + i, {"cpu": 40.0 if i % 2 == 0 else 60.0})
+    stats = baseline.stats("cpu")
+    assert stats.median == pytest.approx(50.0)
+    assert stats.mad == pytest.approx(10.0)
+    assert stats.sigma == pytest.approx(14.826, abs=1e-3)
+    assert stats.z(64.826) == pytest.approx(1.0, abs=1e-3)
+    assert stats.threshold(4) == pytest.approx(109.304, abs=1e-3)
+
+
 def test_baseline_not_ready_before_min_samples():
     baseline = BaselineSet(window_s=100.0, min_samples=60)
     for i in range(10):
@@ -151,6 +187,45 @@ def test_rule_is_deterministic():
     first = [(d.ts, round(d.score, 6)) for d in run_detector(_engine(), stream)]
     second = [(d.ts, round(d.score, 6)) for d in run_detector(_engine(), stream)]
     assert first == second
+
+
+def _scored_engine():
+    """z 를 손으로 계산할 수 있는 베이스라인을 얹은 엔진.
+
+    40/60 절반씩이면 중앙값 50, MAD 10, σ = 14.826 으로 확정된다.
+    """
+    engine = _engine()
+    for i in range(100):
+        engine.baselines.observe(1000.0 + i, {"cpu_total": 40.0 if i % 2 == 0 else 60.0})
+    return engine
+
+
+@pytest.mark.parametrize(
+    "z, expected",
+    [
+        (2.0, 0.25),   # z / 8
+        (4.0, 0.5),
+        (8.0, 1.0),    # 포화 지점
+        (12.0, 1.0),   # 넘어도 1 을 넘지 않는다
+    ],
+)
+def test_rule_score_saturates_at_fixed_z(z, expected):
+    """점수는 z 8 에서 포화한다. 이 지점이 알람 등급을 가르므로 값으로 고정한다.
+
+    포화 지점을 낮추면 웬만한 이상이 전부 1.0 이 되어 등급 구분이 사라지고, 높이면
+    실제 이상이 낮은 점수로 묻힌다. 어느 쪽도 예외를 내지 않아 조용히 틀어진다.
+    """
+    engine = _scored_engine()
+    value = 50.0 + z * 14.826
+    score = engine._score(engine.rules[0], Observation(ts=1100.0, metrics={"cpu_total": value}))
+    assert score == pytest.approx(expected, abs=1e-3)
+
+
+def test_rule_score_without_z_is_neutral_not_zero():
+    """z 를 못 구하는 룰도 발화는 유효하다 — 0 점을 주면 순위에서 사라진다."""
+    engine = _engine()
+    score = engine._score(engine.rules[0], Observation(ts=1100.0, metrics={"cpu_total": 90.0}))
+    assert score == pytest.approx(0.5)
 
 
 def test_suspect_observations_are_skipped():

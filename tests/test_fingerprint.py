@@ -18,6 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from argus.detection import fingerprint as fpmod  # noqa: E402
 from argus.detection.base import Observation, ProcessView, run_detector  # noqa: E402
 from argus.detection.fingerprint import Fingerprint, quantile  # noqa: E402
 from argus.detection.procleak import ProcessLeakDetector  # noqa: E402
@@ -112,6 +113,68 @@ def test_fingerprint_of_another_metric_is_not_applied():
     detector.fingerprints = {("leaky", "rss_p95"): fp("leaky", "rss_p95", 999999)}
     fired = run_detector(detector, leak_stream([400 + i * 10 for i in range(600)]))
     assert fired, "다른 지표의 지문으로 억제했다"
+
+
+# --------------------------------------------------------------- 자격 조건
+
+
+def _fake_source(monkeypatch, *, days: dict[str, int], buckets: int, name: str = "app.exe"):
+    """`build()` 에 데이터를 공급하는 두 지점을 갈아끼운다.
+
+    자격 조건은 지금까지 테스트가 닿지 않았다 — `build()` 가 실제 DB(핫+웜)를 직접
+    읽어서, 조건을 0 으로 만들어도 10개 전부 통과했다. 여기서 데이터를 손으로 준다.
+    `days` 는 {날짜: 그 날의 5분 버킷 수}, `buckets` 는 통계량 표본 수다.
+    """
+    monkeypatch.setattr(fpmod, "_series", lambda stat: {name: [100.0] * buckets})
+    monkeypatch.setattr(fpmod.history, "process_day_index", lambda: {name: days})
+
+
+def _build_one(monkeypatch, **kwargs):
+    _fake_source(monkeypatch, **kwargs)
+    return fpmod.build(stats=("handles_max",))
+
+
+def test_build_rejects_too_few_days(monkeypatch):
+    """이틀만 보인 프로그램은 지문이 되지 않는다 — 요일 차이를 아직 못 봤다."""
+    assert _build_one(monkeypatch, days={"2026-07-28": 100, "2026-07-29": 100}, buckets=200) == []
+
+
+def test_build_accepts_at_minimum_days(monkeypatch):
+    prints = _build_one(
+        monkeypatch,
+        days={"2026-07-27": 100, "2026-07-28": 100, "2026-07-29": 100},
+        buckets=300,
+    )
+    assert [p.days for p in prints] == [3]
+
+
+def test_build_rejects_too_few_buckets(monkeypatch):
+    """날짜 수를 채웠어도 표본이 적으면 p99 가 성립하지 않는다."""
+    days = {f"2026-07-2{i}": 100 for i in range(1, 8)}
+    assert _build_one(monkeypatch, days=days, buckets=99) == []
+    assert len(_build_one(monkeypatch, days=days, buckets=100)) == 1
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="MIN_DAY_HOURS 가 build() 에서 읽히지 않는다 — 2026-07-30 확인, 수정은 "
+           "리플레이 평가와 함께 올린다",
+)
+def test_build_does_not_count_a_five_minute_day_as_a_day(monkeypatch):
+    """5분만 켜 둔 날을 하루로 세면 안 된다 (`MIN_DAY_HOURS` = 6시간).
+
+    "2시간 켜 둔 날과 12시간 켜 둔 날은 같은 하루가 아니다"가 상수의 근거인데,
+    그 조건이 실제로 걸리는지 여기서 고정한다.
+
+    `strict=True` 로 둔 이유: 수정이 들어가 통과하기 시작하면 이 표시가 **실패로
+    바뀌어** 지워야 한다는 것을 알려 준다. 조용히 통과하면 표시가 남아 다음 회귀를 덮는다.
+    """
+    prints = _build_one(
+        monkeypatch,
+        days={"2026-07-27": 100, "2026-07-28": 100, "2026-07-29": 1},
+        buckets=201,
+    )
+    assert prints == [], "5분짜리 날이 하루로 세어져 자격을 넘겼다"
 
 
 def test_reset_keeps_fingerprints():
