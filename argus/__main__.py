@@ -121,7 +121,14 @@ def _build_collectors(settings, queue: SampleQueue, caps) -> list:
     ]
 
     if collector_settings.gpu_enabled and caps.nvml.available:
-        collectors.append(GpuCollector(queue, interval_s=collector_settings.gpu_interval_s))
+        collectors.append(
+            GpuCollector(
+                queue,
+                interval_s=collector_settings.gpu_interval_s,
+                recover_after_failures=collector_settings.gpu_recover_after_failures,
+                recover_backoff_s=collector_settings.gpu_recover_backoff_s,
+            )
+        )
 
     process_settings = collector_settings.process
     if process_settings.enabled:

@@ -109,6 +109,8 @@ class CollectorSettings(BaseModel):
     pdh_enabled: bool = True
     gpu_enabled: bool = True
     gpu_interval_s: float = Field(default=1.0, gt=0)
+    gpu_recover_after_failures: int = Field(default=5, ge=1)
+    gpu_recover_backoff_s: float = Field(default=60.0, gt=0)
     process: ProcessCollectorSettings = ProcessCollectorSettings()
     network: NetworkCollectorSettings = NetworkCollectorSettings()
 

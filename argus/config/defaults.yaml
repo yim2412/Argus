@@ -50,6 +50,13 @@ collector:
   # GPU. NVML 이 없으면 자동으로 꺼진다.
   gpu_enabled: true
   gpu_interval_s: 1.0
+  # 조회가 이만큼 연속 실패하면 NVML 을 다시 초기화한다. 드라이버 업데이트·GPU 리셋
+  # 때 기존 핸들이 무효가 되는데, 재초기화가 없으면 재기동 전까지 GPU 가 통째로 빈다.
+  # 한두 번의 실패는 정상이라 문턱을 둔다.
+  gpu_recover_after_failures: 5
+  # 재초기화가 실패했을 때 다음 시도까지의 간격(초). 드라이버가 아직 안 올라온 동안
+  # 매 초 시도하면 실패 비용만 늘어난다.
+  gpu_recover_backoff_s: 60.0
 
   process:
     enabled: true
