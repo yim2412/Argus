@@ -138,6 +138,7 @@ def _build_collectors(settings, queue: SampleQueue, caps) -> list:
                 collect_interval_s=process_settings.collect_interval_s,
                 top_cpu=process_settings.top_cpu,
                 top_memory=process_settings.top_memory,
+                top_handle_growth=process_settings.top_handle_growth,
                 full_store_interval_s=process_settings.full_store_interval_s,
                 fallback_interval_s=process_settings.fallback_interval_s,
             )

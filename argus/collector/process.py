@@ -89,6 +89,7 @@ class ProcessCollector(Collector):
         collect_interval_s: float = 1.0,
         top_cpu: int = 15,
         top_memory: int = 10,
+        top_handle_growth: int = 10,
         full_store_interval_s: float = 30.0,
         fallback_interval_s: float = 15.0,
         prefer_pdh: bool = True,
@@ -97,12 +98,14 @@ class ProcessCollector(Collector):
         self.interval_s = collect_interval_s
         self.top_cpu = top_cpu
         self.top_memory = top_memory
+        self.top_handle_growth = top_handle_growth
         self.full_store_interval_s = full_store_interval_s
         self._fallback_interval_s = fallback_interval_s
         self._prefer_pdh = prefer_pdh
 
         self._source: Any = None
         self._known: set[int] = set()
+        self._prev_handles: dict[int, float] = {}
         self._last_full_store = 0.0
         self._ticks = 0
         self._stored_active = 0
@@ -149,6 +152,12 @@ class ProcessCollector(Collector):
 
         공백 사실 자체는 `system_events` 에 남으므로 정보를 잃지 않는다.
         """
+        # **핸들 증가량 기준은 소스 상태와 무관하게 버린다.** 공백을 사이에 둔 두 값의
+        # 차는 "지금 늘어나는 중"을 뜻하지 않는다. 그대로 두면 절전 복귀 직후 수백 개가
+        # 증가량 상위로 잡혀 활성 집합이 통째로 뒤집힌다. 아래 조기 반환보다 앞에 둔다 —
+        # 초기화는 어느 경우에도 옳다.
+        self._prev_handles = {}
+
         if self._source is None:
             return
         # PDH 속도·백분율 카운터는 표본을 다시 쌓아야 한다.
@@ -172,13 +181,50 @@ class ProcessCollector(Collector):
     # ------------------------------------------------------------------ 내부
 
     def _select_active(self, snapshot: dict[int, ProcSample], fg_pid: int | None) -> set[int]:
-        """저장할 활성 집합: CPU 상위 + 메모리 상위 + 포어그라운드."""
+        """저장할 활성 집합: CPU 상위 + 메모리 상위 + **핸들 증가량 상위** + 포어그라운드.
+
+        **핸들 증가량 축이 없으면 누수 탐지가 성립하지 않는다.** 2026-07-30 에 확인했다 —
+        핸들 누수 프로세스는 CPU·메모리 상위에 들지 못해 `full_store_interval_s`(30초)에
+        한 번만 저장됐다. 720초 주입 구간에 표본이 29~37행뿐이었고, 첫 표본이 40~50초
+        늦게 잡혀 그 사이 1,400~1,800 핸들이 이미 늘었다. 그러면 `procleak` 이 보는
+        `first` 가 부풀어 배수가 3.0 문턱 밑으로 떨어진다(실측 2.25~2.89) — **주입 5건 중
+        3건이 그렇게 미탐이 됐다.** `procleak` 의 존재 이유가 핸들 누수인데 수집이 그
+        지표를 우선하지 않던 것이다.
+
+        **보유량이 아니라 증가량으로 고른다.** 상시 핸들이 많은 프로세스(브라우저 등)를
+        고르면 정작 400개에서 시작해 새는 프로세스를 놓친다. 늘어나는 것이 누수다.
+
+        추가 조회는 없다 — 스냅샷은 이미 전체 프로세스를 담고 있고, 직전 틱의 핸들 수만
+        기억하면 된다.
+        """
         samples = list(snapshot.values())
         by_cpu = sorted(samples, key=lambda s: s.cpu_percent or 0.0, reverse=True)[: self.top_cpu]
         by_mem = sorted(samples, key=lambda s: s.rss_mb or 0.0, reverse=True)[: self.top_memory]
         active = {s.pid for s in by_cpu} | {s.pid for s in by_mem}
+
+        if self.top_handle_growth:
+            growth: list[tuple[float, int]] = []
+            for sample in samples:
+                if sample.handles is None:
+                    continue
+                prev = self._prev_handles.get(sample.pid)
+                # 처음 본 프로세스는 증가량을 모른다. 0 으로 치면 새로 뜬 누수를 첫 틱에
+                # 놓치는데, 신규 프로세스는 `_emit_start_event` 경로에서 이미 기록된다.
+                if prev is None:
+                    continue
+                delta = float(sample.handles) - prev
+                if delta > 0:
+                    growth.append((delta, sample.pid))
+            growth.sort(reverse=True)
+            active |= {pid for _, pid in growth[: self.top_handle_growth]}
+
         if fg_pid and fg_pid in snapshot:
             active.add(fg_pid)
+
+        # 다음 틱의 증가량 계산용. 사라진 PID 는 자연히 빠진다(스냅샷으로 갈아치운다).
+        self._prev_handles = {
+            s.pid: float(s.handles) for s in samples if s.handles is not None
+        }
         return active
 
     def _emit_metric(self, sample: ProcSample, now: float, tier: int, fg_pid: int | None) -> None:

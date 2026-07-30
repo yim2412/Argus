@@ -86,6 +86,7 @@ class ProcessCollectorSettings(BaseModel):
     collect_interval_s: float = Field(default=1.0, gt=0)
     top_cpu: int = Field(default=15, ge=0)
     top_memory: int = Field(default=10, ge=0)
+    top_handle_growth: int = Field(default=10, ge=0)
     full_store_interval_s: float = Field(default=30.0, gt=0)
     fallback_interval_s: float = Field(default=15.0, gt=0)
 
