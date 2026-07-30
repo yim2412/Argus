@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 
 from ..config.loader import RetentionSettings
@@ -35,6 +36,17 @@ log = get_logger(__name__)
 # `process_metrics` 는 기여도를, `process_events` 는 정답 PID 트리(`descendants`)를 만든다.
 # 한쪽만 지켜도 채점은 성립하지 않는다.
 FAULT_PROTECTED = ("process_metrics", "process_events")
+
+
+def _planned_duration_s(params: str | None) -> float:
+    """주입기가 라벨에 남긴 계획 지속 시간. 없거나 못 읽으면 0."""
+    if not params:
+        return 0.0
+    try:
+        limits = (json.loads(params) or {}).get("limits") or {}
+        return max(0.0, float(limits.get("duration_s") or 0.0))
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
 
 
 def _merge(windows: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -92,7 +104,7 @@ class Retention(Component):
         if guard <= 0:
             return []
         try:
-            rows = self.db.query("SELECT ts_start, ts_end FROM fault_injections")
+            rows = self.db.query("SELECT ts_start, ts_end, params FROM fault_injections")
         except Exception:
             # 주입 테이블이 없는 DB(마이그레이션 이전). 지킬 구간도 없다.
             return []
@@ -102,7 +114,20 @@ class Retention(Component):
             start = float(row["ts_start"])
             # **진행 중인 주입은 `ts_end` 가 아직 없다.** NULL 을 건너뛰면 지금 돌고 있는
             # 주입의 앞부분이 정리에 지워진다 — 12분짜리 주입 도중에 5분 주기가 두 번 돈다.
-            end = float(row["ts_end"]) if row["ts_end"] is not None else now
+            #
+            # 그러나 `now` 를 그대로 쓰면 **닫히지 못한 라벨의 구간이 영원히 자란다.**
+            # 주입기는 종료 시 `finally` 에서 라벨을 닫지만 전원이 끊기면 그 코드가 돌지
+            # 않는다 — 2026-07-30 16:25 에 실제로 그렇게 되어 #47 이 열린 채 남았고, 두
+            # 시간 뒤 보호 구간이 2시간 24분으로 자라 그 구간의 정리가 통째로 멈췄다.
+            # 행만 보고는 "지금 도는 중"과 "죽은 뒤 남은 것"을 구분할 수 없으므로,
+            # **주입기가 라벨에 남긴 계획 길이를 상한으로 쓴다.** 계획을 넘겨 도는 주입은
+            # 없다(길이가 곧 종료 조건이다). 계획이 없는 라벨(`manual`)은 끝이 열려
+            # 있는 것이 의도이므로 기존대로 `now` 를 쓴다.
+            if row["ts_end"] is not None:
+                end = float(row["ts_end"])
+            else:
+                planned = _planned_duration_s(row["params"])
+                end = min(now, start + planned) if planned else now
             windows.append((start - guard, end + guard))
         return _merge(windows)
 
