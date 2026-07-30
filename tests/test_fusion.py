@@ -427,3 +427,77 @@ def test_unknown_trigger_metric_falls_back_to_metrics() -> None:
     )
     assert result.kind == "CPU"
     assert result.trigger_kinds == ()
+
+
+def test_override_requires_both_ratio_and_margin() -> None:
+    """방아쇠를 뒤집는 문턱을 값으로 고정한다.
+
+    뒤집기 조건은 배수(1.5)와 절대차(0.3) 를 **둘 다** 넘는 것이다. 문턱이 낮아지면
+    0.1 대 0.2 같은 근거 없는 차이로 병목이 뒤집혀 사용자가 엉뚱한 곳을 고치고,
+    높아지면 지표가 압도적일 때도 방아쇠가 지목한 자원을 계속 들고 있게 된다.
+    어느 쪽도 예외를 내지 않으므로 값으로 못 박아 둔다.
+    """
+    from argus.explain.bottleneck import _choose
+
+    # 배수만 모자란 경우(1.4 < 1.5). 절대차 0.4 는 충족한다.
+    assert _choose({"DISK": 1.4, "CPU": 1.0}, "DISK", ("CPU",)) == ("CPU", None)
+    # 배수를 넘고 절대차도 넘으면 뒤집고, 원래 자원을 남긴다.
+    assert _choose({"DISK": 1.6, "CPU": 1.0}, "DISK", ("CPU",)) == ("DISK", "CPU")
+    # 배수는 넉넉하지만 절대차가 모자란 경우(0.2 < 0.3).
+    assert _choose({"DISK": 0.5, "CPU": 0.3}, "DISK", ("CPU",)) == ("CPU", None)
+
+
+def test_override_is_not_needed_when_trigger_already_agrees() -> None:
+    from argus.explain.bottleneck import _choose
+
+    assert _choose({"CPU": 1.0, "DISK": 0.2}, "CPU", ("CPU",)) == ("CPU", None)
+
+
+def test_no_trigger_evidence_keeps_the_trigger_on_record() -> None:
+    """방아쇠 자원의 지표 근거가 없어도 다른 답을 냈다는 사실은 남는다."""
+    from argus.explain.bottleneck import _choose
+
+    assert _choose({"DISK": 0.9}, "DISK", ("CPU",)) == ("DISK", "CPU")
+
+
+def _ramp_before(database: Database, ts_start: float, *, elevated_s: int) -> None:
+    """베이스라인 1800초 + 그중 마지막 `elevated_s` 초가 높은 구간.
+
+    조용한 구간을 18/22 로 흔드는 이유: 값이 내내 같으면 σ 가 0 이라 z 판정이
+    성립하지 않아(`degenerate`) 경계 보정이 아예 돌지 않는다.
+    """
+    rows = []
+    for i in range(1800):
+        ts = ts_start - 1800 + i
+        elevated = i >= 1800 - elevated_s
+        cpu = 90.0 if elevated else (18.0 if i % 2 else 22.0)
+        rows.append((ts, cpu, cpu + 5, 30.0, 0.1))
+    database.insert_many(
+        "metrics_raw", ("ts", "cpu_total", "cpu_max_core", "mem_percent", "disk_resp_ms"), rows
+    )
+
+
+def test_bound_refinement_stops_at_the_before_cap(db: Database) -> None:
+    """앞쪽 경계 보정에 상한이 걸리는지 값으로 고정한다.
+
+    상한이 없으면 오래 높은 지표 하나가 사건을 30분까지 늘려 다른 사건을 삼킨다
+    (실측에서 4분짜리가 23분 46초가 됐다). 반대로 상한이 너무 좁으면 탐지 지연을
+    되돌리지 못해 원인이 결과보다 늦게 오른 것처럼 보인다.
+
+    여기서는 이상이 신호 400초 전부터 있었는데 상한이 300초다. 보정된 시작은
+    300초 이전으로 갈 수 없고, 동시에 상한 근처까지는 실제로 당겨져야 한다.
+    """
+    from argus.decide.fusion import _refine_bounds
+
+    ts_start = 1_700_000_000.0
+    ts_end = ts_start + 240.0
+    _ramp_before(db, ts_start, elevated_s=400)
+
+    refined_start, _ = _refine_bounds(db, ts_start, ts_end)
+
+    assert refined_start >= ts_start - 300.0 - 1e-6, (
+        f"상한을 넘어 {ts_start - refined_start:.0f}초까지 당겨졌다"
+    )
+    assert refined_start <= ts_start - 290.0, (
+        f"상한 근처까지 당기지 못했다: {ts_start - refined_start:.0f}초"
+    )
