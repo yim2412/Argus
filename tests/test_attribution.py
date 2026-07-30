@@ -373,3 +373,162 @@ def test_report_hides_lead_for_minor_contributors() -> None:
     text = render_plain(incident)
     assert "120초 선행" in text
     assert "255초 선행" not in text, "기여도가 낮은 후보의 선행성은 잡음이다"
+
+
+# --------------------------------------------- 제품 경로 채점 (9번)
+
+
+def test_product_scoring_uses_the_incident_not_the_label(db: Database) -> None:
+    """제품 경로 채점은 **라벨에서 자원을 받지 않는다.**
+
+    함수 경로는 `SCENARIO_RESOURCE` 에서 `handles` 를 입력으로 받아 시작한다. 제품에는
+    그런 입력이 없어 병목 분류와 탐지기 주장으로 추론해야 한다. 2026-07-30 에 함수
+    경로 100% 와 제품 경로 0% 가 공존했다 — 스코어보드가 제품이 하지 않는 일을 재고 있었다.
+    """
+    import json
+
+    from argus.eval.attribution import score_fault_product
+
+    now = time.time()
+    start = now - 600
+    end = start + 300
+
+    db.insert_many(
+        "metrics_raw",
+        ("ts", "cpu_total", "cpu_max_core", "mem_percent", "disk_resp_ms"),
+        [(start - 1800 + i, 15.0 + (i % 3), 30.0, 30.0, 0.1) for i in range(1800)]
+        + [(start + i, 16.0, 31.0, 30.0, 0.1) for i in range(300)],
+    )
+    rows = []
+    for i in range(0, 200, 2):
+        rows.append((start - 200 + i, 700, "leaker", 1.0, 50.0, 0, 0, 400, 4, 0))
+    for i in range(0, 300, 2):
+        rows.append((start + i, 700, "leaker", 1.0, 52.0, 0, 0, 400 + i * 10, 4, 0))
+    db.insert_many(
+        "process_metrics",
+        ("ts", "pid", "name", "cpu_percent", "rss_mb", "io_read_bps", "io_write_bps",
+         "handles", "threads", "foreground"),
+        rows,
+    )
+    db.insert_many(
+        "fault_injections",
+        ("id", "scenario", "ts_start", "ts_end", "pid", "params", "ramp", "completed"),
+        [(1, "handle_leak", start, end, 700, "{}", 0, 1)],
+    )
+    features = {
+        "rule": "핸들 누수", "rules": ["핸들 누수"], "process": "leaker", "pid": 700,
+        "metric": "handles", "duration_s": 280.0,
+        "explain": "leaker (PID 700) 핸들 400 → 3,390개",
+    }
+    db.insert_many(
+        "anomaly_signals", ("ts", "detector", "score", "severity", "features", "run_id"),
+        [(start + 10 + i * 5, "procleak", 0.7, "warning",
+          json.dumps(features, ensure_ascii=False), None) for i in range(10)],
+    )
+    from argus.decide.fusion import Fusion
+
+    fusion = Fusion(db)
+    fusion._set_watermark(start - 1)  # noqa: SLF001
+    fusion.run_once(now=now)
+
+    fault = dict(db.query("SELECT * FROM fault_injections WHERE id = 1")[0])
+    verdict = score_fault_product(db, fault)
+    assert verdict.skipped is None, f"채점이 건너뛰어졌다: {verdict.skipped}"
+    assert verdict.incident_id is not None, "근거 사건이 비어 있다"
+    assert verdict.resource == "handles", f"자원 추론이 틀렸다: {verdict.resource}"
+    assert verdict.is_top1, f"1위가 정답이 아니다: {verdict.ranked[:2]}"
+    assert "leaker" in verdict.title, f"제목: {verdict.title}"
+
+
+def test_product_scoring_reports_missing_incident_separately(db: Database) -> None:
+    """사건이 없으면 귀인 실패가 아니라 **탐지 실패**다. 둘을 한 수치에 섞지 않는다.
+
+    2026-07-30 실측: 주입 7건 중 3건이 사건을 만들지 못했다. 그것을 귀인 오답으로
+    세면 Phase 8 을 따로 판정할 수 없고, 조용히 빼면 사용자가 아무것도 못 받은 사실이
+    사라진다. 그래서 별도 사유로 표시한다.
+    """
+    from argus.eval.attribution import score_fault_product
+
+    now = time.time()
+    start = now - 600
+    end = start + 300
+    db.insert_many(
+        "process_metrics",
+        ("ts", "pid", "name", "cpu_percent", "rss_mb", "io_read_bps", "io_write_bps",
+         "handles", "threads", "foreground"),
+        [(start + i, 700, "leaker", 1.0, 50.0, 0, 0, 400, 4, 0) for i in range(0, 300, 2)],
+    )
+    db.insert_many(
+        "fault_injections",
+        ("id", "scenario", "ts_start", "ts_end", "pid", "params", "ramp", "completed"),
+        [(2, "handle_leak", start, end, 700, "{}", 0, 1)],
+    )
+
+    fault = dict(db.query("SELECT * FROM fault_injections WHERE id = 2")[0])
+    verdict = score_fault_product(db, fault)
+    assert verdict.skipped and "사건이 만들어지지 않음" in verdict.skipped
+    assert not verdict.is_top1
+
+
+def test_product_scoring_ignores_the_label_when_inference_differs(db: Database) -> None:
+    """**라벨을 입력으로 쓰지 않는다**를 고정한다.
+
+    라벨은 `handle_leak`(자원 `handles`)인데 그 구간에 CPU 가 실제로 치솟는다. 제품은
+    구체적 병목을 우선하므로 `cpu` 로 추론해야 한다. 라벨을 그대로 쓰면 `handles` 가
+    나오고, 그러면 채점이 제품이 아니라 라벨을 재는 것이다.
+
+    두 값이 같아지는 시나리오만 테스트하면 이 구분을 검증할 수 없다 — 처음에 그렇게
+    써서 라벨을 쓰도록 되돌려도 통과했다.
+    """
+    import json
+
+    from argus.decide.fusion import Fusion
+    from argus.eval.attribution import score_fault_product
+
+    now = time.time()
+    start = now - 600
+    end = start + 300
+
+    # CPU 가 실제로 막힌 구간 — 병목 분류가 CPU 를 낸다.
+    db.insert_many(
+        "metrics_raw",
+        ("ts", "cpu_total", "cpu_max_core", "mem_percent", "disk_resp_ms"),
+        [(start - 1800 + i, 15.0 + (i % 3), 30.0, 30.0, 0.1) for i in range(1800)]
+        + [(start + i, 96.0, 99.0, 30.0, 0.1) for i in range(300)],
+    )
+    rows = []
+    for i in range(0, 200, 2):
+        rows.append((start - 200 + i, 700, "leaker", 2.0, 50.0, 0, 0, 400, 4, 0))
+    for i in range(0, 300, 2):
+        rows.append((start + i, 700, "leaker", 85.0, 52.0, 0, 0, 400 + i * 10, 4, 0))
+    db.insert_many(
+        "process_metrics",
+        ("ts", "pid", "name", "cpu_percent", "rss_mb", "io_read_bps", "io_write_bps",
+         "handles", "threads", "foreground"),
+        rows,
+    )
+    db.insert_many(
+        "fault_injections",
+        ("id", "scenario", "ts_start", "ts_end", "pid", "params", "ramp", "completed"),
+        [(3, "handle_leak", start, end, 700, "{}", 0, 1)],
+    )
+    features = {
+        "rule": "핸들 누수", "rules": ["핸들 누수"], "process": "leaker", "pid": 700,
+        "metric": "handles", "duration_s": 280.0, "explain": "leaker 핸들 400 → 3,390개",
+    }
+    db.insert_many(
+        "anomaly_signals", ("ts", "detector", "score", "severity", "features", "run_id"),
+        [(start + 10 + i * 5, "procleak", 0.7, "warning",
+          json.dumps(features, ensure_ascii=False), None) for i in range(10)],
+    )
+
+    fusion = Fusion(db)
+    fusion._set_watermark(start - 1)  # noqa: SLF001
+    fusion.run_once(now=now)
+
+    fault = dict(db.query("SELECT * FROM fault_injections WHERE id = 3")[0])
+    verdict = score_fault_product(db, fault)
+    assert verdict.skipped is None, f"건너뛰어졌다: {verdict.skipped}"
+    assert verdict.resource == "cpu", (
+        f"라벨(handles)을 그대로 썼다 — 추론 결과는 cpu 여야 한다: {verdict.resource}"
+    )

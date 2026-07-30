@@ -35,6 +35,11 @@ class Verdict:
     ranked: list[tuple[str, float, set[int]]]
     """(이름, 기여도, PID 집합) 상위 순."""
     skipped: str | None = None
+    incident_id: int | None = None
+    """제품 경로 채점일 때 근거가 된 사건. 함수 경로 채점에서는 None."""
+
+    title: str = ""
+    """제품 경로 채점일 때 사용자가 보게 되는 제목."""
 
     @property
     def hit_rank(self) -> int | None:
@@ -114,7 +119,76 @@ def score_fault(db, fault: dict, *, margin_s: float = 30.0, limit: int = 8) -> V
     return verdict
 
 
-def score_all(db, *, scenarios: list[str] | None = None, hours: float | None = None) -> list[Verdict]:
+def score_fault_product(db, fault: dict, *, limit: int = 8) -> Verdict:
+    """같은 주입 구간을 **제품이 실제로 낸 사건**으로 채점한다.
+
+    `score_fault` 와의 차이가 요점이다. 그쪽은 `SCENARIO_RESOURCE` 에서 자원을
+    **입력으로 받는다** — "핸들 누수니까 handles 로 보라"고 알려주고 시작한다.
+    제품에는 그런 입력이 없다. 병목 분류와 탐지기 주장으로 자원을 **추론**해야 한다.
+
+    **라벨은 정답으로만 쓰고 입력으로 쓰지 않는다.** 그래야 채점이 제품이 하는 일을
+    재고, 고친 것이 수치에 나타난다. 2026-07-30 에 함수 경로는 7/7 = 100% 였는데 제품은
+    같은 구간에서 4건 모두 엉뚱한 프로세스를 지목했다 — 스코어보드가 제품이 하지 않는
+    일을 재고 있었다.
+
+    **저장된 제목이 아니라 현재 코드로 다시 분석한 결과를 본다.** 저장된 행은 그때
+    코드의 산출물이라, 고친 뒤에도 옛 값이 남아 있으면 개선을 볼 수 없다.
+    """
+    from ..decide.fusion import analyze_incident  # 순환 임포트를 피해 함수 안에서
+
+    base = score_fault(db, fault, limit=limit)
+    verdict = Verdict(
+        fault_id=base.fault_id,
+        scenario=base.scenario,
+        resource="",           # 추론 결과로 채운다
+        answer_pids=base.answer_pids,
+        ranked=[],
+        skipped=base.skipped,
+    )
+    if verdict.skipped:
+        return verdict
+
+    ts_start, ts_end = float(fault["ts_start"]), float(fault["ts_end"])
+    rows = db.query(
+        "SELECT id, ts_start, ts_end FROM incidents "
+        "WHERE ts_start <= ? AND COALESCE(ts_end, ts_start) >= ? ORDER BY ts_start",
+        (ts_end, ts_start),
+    )
+    if not rows:
+        # **탐지가 사건을 만들지 못한 것이지 귀인이 틀린 것이 아니다.** 둘을 한 수치에
+        # 섞으면 Phase 8 을 따로 판정할 수 없다. 대신 보고에서 이 건수를 드러낸다.
+        verdict.skipped = "사건이 만들어지지 않음 (탐지 실패 — 귀인 대상 아님)"
+        return verdict
+
+    # 겹치는 사건이 여럿이면 가장 오래 겹친 것을 본다. 사용자가 그 구간의 이야기로
+    # 읽을 가능성이 가장 큰 사건이다.
+    def overlap(row) -> float:
+        lo = max(ts_start, float(row["ts_start"]))
+        hi = min(ts_end, float(row["ts_end"] or row["ts_start"]))
+        return max(0.0, hi - lo)
+
+    best = max(rows, key=overlap)
+    analysis = analyze_incident(db, int(best["id"]), float(best["ts_end"] or best["ts_start"]))
+    if analysis is None:
+        verdict.skipped = "사건을 다시 분석할 수 없음"
+        return verdict
+
+    verdict.incident_id = int(best["id"])
+    verdict.resource = analysis.resource
+    verdict.title = analysis.title
+    verdict.ranked = [
+        (c.name, c.share, set(c.pids)) for c in analysis.contributors[:limit]
+    ]
+    return verdict
+
+
+def score_all_product(
+    db, *, scenarios: list[str] | None = None, hours: float | None = None
+) -> list[Verdict]:
+    return [score_fault_product(db, dict(f)) for f in _faults(db, scenarios, hours)]
+
+
+def _faults(db, scenarios: list[str] | None, hours: float | None):
     sql = "SELECT * FROM fault_injections"
     params: list[object] = []
     if hours:
@@ -126,7 +200,64 @@ def score_all(db, *, scenarios: list[str] | None = None, hours: float | None = N
     faults = db.query(sql, params)
     if scenarios:
         faults = [f for f in faults if f["scenario"] in scenarios]
-    return [score_fault(db, dict(f)) for f in faults]
+    return faults
+
+
+def score_all(db, *, scenarios: list[str] | None = None, hours: float | None = None) -> list[Verdict]:
+    return [score_fault(db, dict(f)) for f in _faults(db, scenarios, hours)]
+
+
+def report_product(verdicts: list[Verdict]) -> str:
+    """제품 경로 채점 결과. **사용자가 실제로 읽는 문장까지 보여 준다.**
+
+    자원 열을 따로 두는 이유: 그것이 추론 결과이기 때문이다. 함수 경로에서는 라벨에서
+    받은 값이라 볼 필요가 없지만, 여기서는 **무엇을 자원으로 골랐는가가 판정의 일부**다.
+    """
+    scored = [v for v in verdicts if not v.skipped]
+    no_incident = [v for v in verdicts if v.skipped and "사건이 만들어지지 않음" in v.skipped]
+    other_skipped = [v for v in verdicts if v.skipped and v not in no_incident]
+
+    lines = [
+        "",
+        "제품 경로 채점 — 사건이 실제로 원인을 맞게 지목했는가",
+        "  (자원을 라벨에서 받지 않고 병목 분류 + 탐지기 주장으로 추론한다)",
+        "=" * 78,
+    ]
+    for v in scored:
+        rank = v.hit_rank
+        rank_text = f"{rank}위" if rank else "미지목"
+        mark = "✅" if v.is_top1 else ("△" if rank else "❌")
+        top = v.ranked[0] if v.ranked else None
+        top_text = f"{top[0]} ({top[1]*100:.0f}%)" if top else "—"
+        lines.append(
+            f"{v.fault_id:>3}  사건 {v.incident_id:<4} 자원 {v.resource:<9} "
+            f"{rank_text:>8} {mark}  1위 {top_text}"
+        )
+        if v.title:
+            lines.append(f"       제목: {v.title}")
+
+    if scored:
+        top1 = sum(1 for v in scored if v.is_top1)
+        lines += [
+            "-" * 78,
+            f"제품 1순위 지목률 : {top1}/{len(scored)} = {top1 / len(scored) * 100:.1f}%  (DoD 85%)",
+        ]
+    else:
+        lines.append("채점 가능한 사건이 없다.")
+
+    if no_incident:
+        # **숨기지 않는다.** 귀인 대상은 아니지만, 사용자 입장에서는 아무것도 못 받은 것이다.
+        ids = ", ".join(str(v.fault_id) for v in no_incident)
+        lines += [
+            "",
+            f"사건 미생성 {len(no_incident)}건 (주입 #{ids}) — 탐지가 사건을 만들지 못했다.",
+            "  귀인 비율에서는 빼지만 제품 관점에서는 실패다. 탐지 쪽(Phase 3·6)의 문제다.",
+        ]
+    if other_skipped:
+        lines += ["", f"그 밖의 제외 {len(other_skipped)}건:"]
+        for v in other_skipped:
+            lines.append(f"  #{v.fault_id:<3} {v.scenario:<13} {v.skipped}")
+    return "\n".join(lines)
 
 
 def report(verdicts: list[Verdict]) -> str:
@@ -135,7 +266,7 @@ def report(verdicts: list[Verdict]) -> str:
 
     lines = [
         "",
-        "귀인 채점 — 원인 프로세스를 1순위로 지목했는가",
+        "귀인 채점 (함수 경로) — 자원을 알려준 상태에서 원인을 찾는가",
         "=" * 78,
         f"{'id':>3}  {'시나리오':<13} {'자원':<9} {'정답순위':>8}  지목 1위",
         "-" * 78,

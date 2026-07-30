@@ -139,6 +139,12 @@ def _run_attribution(args) -> int:
             return 1
         print(attribution.report(verdicts))
 
+        # **제품 경로로도 채점한다.** 위 수치는 자원(`handles` 등)을 라벨에서 입력으로
+        # 받은 것이라 "자원을 알려주면 원인을 찾는가"를 재고, 제품이 하는 일은 아니다.
+        # 아래가 사용자가 실제로 얻는 결과다.
+        product = attribution.score_all_product(db, scenarios=scenarios)
+        print(attribution.report_product(product))
+
         scored = [v for v in verdicts if not v.skipped]
         if not scored:
             return 1
@@ -156,13 +162,52 @@ def _run_attribution(args) -> int:
             )
             print("       주입을 더 쌓을 것: python tools/fault_injector.py handle_leak --duration 720")
             return 1
-        if rate >= 0.85:
-            print(f"[OK] Phase 8 DoD 충족 — 1순위 지목률 {rate * 100:.1f}% ≥ 85% (표본 {len(scored)}건)")
-            return 0
-        print(
-            f"[FAIL] Phase 8 DoD 미달 — 1순위 지목률 {rate * 100:.1f}% < 85% (표본 {len(scored)}건)"
+
+        # **함수 경로만으로 DoD 를 닫지 않는다.** 그 수치는 자원을 알려준 상태의 것이고,
+        # 2026-07-30 에 함수 100% 와 제품 0% 가 공존했다. 제품 경로 수치를 함께 낸다.
+        p_scored = [v for v in product if not v.skipped]
+        p_rate = (
+            sum(1 for v in p_scored if v.is_top1) / len(p_scored) if p_scored else 0.0
         )
-        return 1
+        no_incident = sum(
+            1 for v in product if v.skipped and "사건이 만들어지지 않음" in v.skipped
+        )
+
+        if rate < 0.85:
+            print(
+                f"[FAIL] Phase 8 DoD 미달 — 함수 경로 1순위 지목률 {rate * 100:.1f}% < 85% "
+                f"(표본 {len(scored)}건)"
+            )
+            return 1
+
+        print(
+            f"[OK] 함수 경로 DoD 충족 — 1순위 지목률 {rate * 100:.1f}% ≥ 85% (표본 {len(scored)}건)"
+        )
+        if not p_scored:
+            print("[보류] 제품 경로는 채점할 사건이 없어 판정하지 않는다.")
+            return 1
+        if len(p_scored) < MIN_SCORED:
+            print(
+                f"[보류] 제품 경로 표본 {len(p_scored)}건 — {MIN_SCORED}건 미만이라 판정하지 "
+                f"않는다 (지목률은 {p_rate * 100:.1f}%)"
+            )
+        elif p_rate >= 0.85:
+            print(
+                f"[OK] 제품 경로 DoD 충족 — 지목률 {p_rate * 100:.1f}% ≥ 85% "
+                f"(표본 {len(p_scored)}건)"
+            )
+        else:
+            print(
+                f"[FAIL] 제품 경로 DoD 미달 — 지목률 {p_rate * 100:.1f}% < 85% "
+                f"(표본 {len(p_scored)}건)"
+            )
+            return 1
+        if no_incident:
+            print(
+                f"[주의] 주입 {no_incident}건은 사건이 만들어지지 않아 사용자가 아무것도 "
+                f"받지 못한다 — 귀인이 아니라 탐지 쪽 문제다."
+            )
+        return 0
 
 
 if __name__ == "__main__":
