@@ -253,19 +253,9 @@ class RuleEngine(BaseDetector):
 
     def observe(self, obs: Observation) -> Detection | None:
         # GPU 지표는 `obs.gpus` 에 장치별 리스트로 온다. 룰에서 `gpu_temp_c` 처럼
-        # 평평한 이름으로 쓰게 펼쳐 준다. 다중 GPU 는 0번(주 장치)만 본다 —
-        # 두 번째 GPU 는 대개 내장 그래픽이고 병목의 주체가 아니다.
-        if obs.gpus:
-            primary = obs.gpus[0]
-            merged = dict(obs.metrics)
-            for key, value in primary.items():
-                if key not in ("ts", "gpu_index"):
-                    merged.setdefault(f"gpu_{key}", value)
-            obs = Observation(
-                ts=obs.ts, metrics=merged, processes=obs.processes,
-                gpus=obs.gpus, suspect=obs.suspect,
-            )
-        return super().observe(obs)
+        # 평평한 이름으로 쓰게 펼쳐 준다. 규칙은 `Observation` 이 갖고 있다 —
+        # 베이스라인 워밍도 같은 규칙을 써야 한다.
+        return super().observe(obs.flatten_gpus())
 
     def learn(self, obs: Observation) -> None:
         self.baselines.observe(obs.ts, obs.metrics)

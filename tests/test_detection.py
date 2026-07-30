@@ -263,3 +263,46 @@ def test_shipped_rules_are_valid():
         assert rule.for_s > 0, f"{rule.name}: 지속 조건이 없다"
         assert rule.cooldown_s > 0, f"{rule.name}: 쿨다운이 없다"
         assert rule.conditions, f"{rule.name}: 조건이 없다"
+
+
+# ------------------------------------------------- GPU 베이스라인 워밍 (6번)
+
+
+def test_warm_from_fills_gpu_metrics():
+    """워밍이 `obs.gpus` 를 함께 채워야 한다.
+
+    2026-07-30 실측: `warm_from()` 이 `obs.metrics` 만 넣어 **GPU 지표만 매 기동마다
+    백지에서 다시 배웠다.** 부하 중에 재시작하면 부하 상태가 "평소"로 학습돼 실제 열
+    스로틀이 z ≈ 0 으로 묻힌다 — 중앙값이 69도에서 85도로 옮겨가 83도가 평소보다
+    *낮은* 값이 됐다(z = −0.47).
+    """
+    obs = [
+        Observation(
+            ts=1000.0 + i,
+            metrics={"cpu_total": 20.0 + (i % 3)},
+            gpus=[{"ts": 1000.0 + i, "gpu_index": 0, "temp_c": 60.0 + (i % 5)}],
+        )
+        for i in range(200)
+    ]
+    baseline = BaselineSet(window_s=1e9, min_samples=30)
+    assert baseline.warm_from(obs) == 200
+
+    stats = baseline.stats("gpu_temp_c")
+    assert stats is not None, "워밍이 GPU 지표를 채우지 않았다"
+    assert 60.0 <= stats.median <= 64.0, f"중앙값이 이상하다: {stats.median}"
+
+
+def test_warm_from_skips_suspect_gpu_samples():
+    """절전 복귀 직후 구간은 GPU 도 배우지 않는다."""
+    obs = [
+        Observation(
+            ts=1000.0 + i,
+            metrics={"cpu_total": 20.0},
+            gpus=[{"ts": 1000.0 + i, "temp_c": 95.0}],
+            suspect=True,
+        )
+        for i in range(100)
+    ]
+    baseline = BaselineSet(window_s=1e9, min_samples=10)
+    assert baseline.warm_from(obs) == 0
+    assert baseline.stats("gpu_temp_c") is None

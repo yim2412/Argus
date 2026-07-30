@@ -56,6 +56,28 @@ class Observation:
     # 베이스라인 학습과 탐지 모두 이 구간을 건너뛰어야 한다.
     suspect: bool = False
 
+    def flatten_gpus(self) -> "Observation":
+        """`gpus[0]` 의 항목을 `gpu_*` 이름으로 `metrics` 에 펼친 사본.
+
+        **한 곳에만 둔다.** 이 규칙이 룰 엔진에만 있고 베이스라인 워밍에는 없어서,
+        GPU 지표만 재시작마다 백지에서 다시 배웠다(2026-07-30 확인). 부하 중에
+        재시작하면 부하 상태가 "평소"로 학습돼 실제 스로틀이 z ≈ 0 으로 묻힌다 —
+        실측에서 중앙값이 69도에서 85도로 옮겨가 83도가 평소보다 *낮은* 값이 됐다.
+
+        다중 GPU 는 0번(주 장치)만 본다. 두 번째는 대개 내장 그래픽이고 병목의
+        주체가 아니다.
+        """
+        if not self.gpus:
+            return self
+        merged = dict(self.metrics)
+        for key, value in self.gpus[0].items():
+            if key not in ("ts", "gpu_index"):
+                merged.setdefault(f"gpu_{key}", value)
+        return Observation(
+            ts=self.ts, metrics=merged, processes=self.processes,
+            gpus=self.gpus, suspect=self.suspect,
+        )
+
     def metric(self, key: str, default: float | None = None) -> float | None:
         value = self.metrics.get(key)
         return default if value is None else value

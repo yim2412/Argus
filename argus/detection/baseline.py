@@ -191,7 +191,12 @@ class BaselineSet:
         for obs in observations:
             if getattr(obs, "suspect", False):
                 continue
-            self.observe(obs.ts, obs.metrics)
+            # **GPU 지표도 함께 채운다.** 리플레이 스트림은 `obs.gpus` 를 주는데 여기서
+            # `obs.metrics` 만 넣던 탓에 GPU 만 매 기동마다 백지에서 다시 배웠다 —
+            # 이 모듈이 "재시작해도 처음부터 다시 배우지 않는다"고 말하는데 GPU 는
+            # 예외였다. 펼치는 규칙은 `Observation.flatten_gpus` 한 곳에 있다.
+            flat = obs.flatten_gpus() if hasattr(obs, "flatten_gpus") else obs
+            self.observe(flat.ts, flat.metrics)
             count += 1
         return count
 
