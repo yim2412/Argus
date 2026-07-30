@@ -88,6 +88,15 @@ class DetectorClaim:
     process: str | None
     explain: str
     score: float
+    ts: float = 0.0
+    """이 주장을 실어 보낸 신호의 시각."""
+
+    duration_s: float = 0.0
+    """탐지기가 **관측한** 증가 지속 시간. 추정이 아니라 자기가 센 값이다.
+
+    사건 경계를 늘리는 데 쓴다. `procleak` 의 추적 창(기본 900초)이 상한이라 이 값이
+    사건을 무한정 늘릴 수는 없다.
+    """
 
 
 # `procleak` 의 지표 이름 → 귀인이 쓰는 자원 이름(`attribution.RESOURCE_COLUMNS`).
@@ -117,7 +126,7 @@ def _trigger_rules(
     것에 가깝다는 가정이고, 동점이면 먼저 온 신호가 이긴다(시간순 정렬이라 안정적이다).
     """
     rows = db.query(
-        "SELECT s.features, s.score FROM anomaly_signals s "
+        "SELECT s.ts, s.features, s.score FROM anomaly_signals s "
         "JOIN incident_signals i ON i.ts = s.ts AND i.detector = s.detector "
         "WHERE i.incident_id = ? ORDER BY s.ts",
         (incident_id,),
@@ -147,6 +156,8 @@ def _trigger_rules(
                 process=features.get("process"),
                 explain=features.get("explain") or "",
                 score=score,
+                ts=float(row["ts"]),
+                duration_s=float(features.get("duration_s") or 0.0),
             )
     return names, metrics, claim
 
@@ -225,6 +236,20 @@ def analyze_incident(
     if bottleneck.kind == "NONE" and claim is not None:
         resource = claim.resource
         attributable = True
+
+        # **탐지기가 센 지속 시간으로 앞쪽 경계를 늘린다.**
+        #
+        # `_refine_bounds` 는 전역 지표만 본다(`_BOUND_METRICS`). 핸들 누수는 전역
+        # 지표를 움직이지 않으므로 보정이 실패하고, 룰 쿨다운 때문에 신호가 몇 개뿐이라
+        # **12분짜리 누수가 18초로 기록된다.** 2026-07-30 실측에서 정확히 그랬고, 그
+        # 18초 창에서 귀인하면 누수 프로세스의 증가분도 18초분뿐이라 마침 그때 뜬
+        # 다른 프로세스에 1위를 빼앗긴다(주입 4건 중 2건이 그랬다).
+        #
+        # `MAX_EXTEND_BEFORE_S` 를 여기 적용하지 않는 이유: 그 상한은 **지표에서 추정한**
+        # 경계가 다른 사건을 삼키는 것을 막으려는 것이다. 여기 값은 탐지기가 자기 창에서
+        # **직접 센 것**이라 추정이 아니고, `procleak` 의 추적 창(기본 900초)이 이미 상한이다.
+        if claim.duration_s > 0:
+            ts_start = min(ts_start, claim.ts - claim.duration_s)
 
     before = (
         ts_start - settings.before_margin_s - settings.before_window_s,

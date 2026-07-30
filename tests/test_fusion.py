@@ -540,10 +540,10 @@ def _leak_scene(db: Database, start: float, *, leak_name: str = "python") -> flo
 
 
 def _leak_signal(db: Database, ts: float, *, score: float = 0.6, metric: str = "handles",
-                 process: str = "python", explain: str = "") -> None:
+                 process: str = "python", explain: str = "", duration_s: float = 120.0) -> None:
     features = {
         "rule": "핸들 누수", "rules": ["핸들 누수"], "process": process, "pid": 10,
-        "metric": metric,
+        "metric": metric, "duration_s": duration_s,
         "explain": explain or f"{process} (PID 10) 핸들 460 → 3,800개 (8.3배, 2분간 줄지 않음)",
     }
     db.insert_many(
@@ -668,3 +668,38 @@ def test_none_bottleneck_without_claim_does_not_name_a_culprit(db: Database) -> 
     row = _run(db, start, now)
     assert row["bottleneck"] == "NONE", f"병목: {row['bottleneck']}"
     assert "cpu_eater" not in row["title"], f"무관한 프로세스를 지목했다: {row['title']}"
+
+
+def test_leak_window_is_extended_by_detector_duration(db: Database) -> None:
+    """전역 지표가 조용하면 경계 보정이 실패한다 — 탐지기가 센 지속 시간으로 늘린다.
+
+    2026-07-30 실측: 12분짜리 주입이 **18초**로 기록됐다. `_refine_bounds` 는 전역
+    지표만 보고(`_BOUND_METRICS`), 핸들 누수는 전역 지표를 움직이지 않기 때문이다.
+    그 18초 창에서 귀인하면 누수 프로세스의 증가분도 18초분뿐이라, 마침 그때 뜬 다른
+    프로세스가 1위를 가져간다(주입 4건 중 2건이 그랬다).
+    """
+    now = time.time()
+    start = now - 900
+    _leak_scene(db, start)
+    # 신호를 짧게만 둔다 — 쿨다운 때문에 실제로 이렇게 온다.
+    _leak_signal(db, start + 60, duration_s=600.0)
+    _leak_signal(db, start + 64, duration_s=600.0)
+
+    row = _run(db, start, now)
+    claimed_start = start + 60 - 600.0
+    assert row["ts_start"] <= claimed_start + 1.0, (
+        f"구간이 늘어나지 않았다: 시작 {row['ts_start'] - start:.0f}초 "
+        f"(탐지기 주장 {claimed_start - start:.0f}초)"
+    )
+
+
+def test_leak_window_is_not_shrunk_by_detector_duration(db: Database) -> None:
+    """이미 더 넓게 잡힌 구간을 탐지기 주장이 좁히지는 않는다."""
+    now = time.time()
+    start = now - 900
+    _leak_scene(db, start)
+    for i in range(20):
+        _leak_signal(db, start + i * 5, duration_s=1.0)  # 아주 짧게 주장한다
+
+    row = _run(db, start, now)
+    assert row["ts_start"] <= start + 5, f"구간이 좁아졌다: {row['ts_start'] - start:.0f}초"
