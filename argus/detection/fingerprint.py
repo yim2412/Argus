@@ -74,7 +74,29 @@ def quantile(values: list[float], p: float) -> float:
     return ordered[min(max(rank - 1, 0), len(ordered) - 1)]
 
 
-def _series(stat: str) -> dict[str, list[float]]:
+def fault_windows(db) -> list[tuple[float, float]]:
+    """지문 학습에서 뺄 결함 주입 구간.
+
+    **주입 구간을 학습하면 지문이 결함을 "평소"로 배운다.** 2026-07-30 에 실제로 그랬다 —
+    07-29 의 주입(상한 5,000)이 `python` 의 `handles_max` p99 를 4,755 로 올려놓아, 07-30 의
+    주입(최대 4,194)이 그 범위 안으로 들어가 억제됐다. 같은 데이터를 리플레이해도 발화하지
+    않게 되어 **회귀 판정이 성립하지 않는다.**
+
+    구간은 정확히 주입 시간만 뺀다. 앞뒤 여유를 두지 않는 이유: `retention` 의
+    `fault_guard_s` 는 채점이 보는 **비교 창**을 지키기 위한 것이고, 여기서 빼려는 것은
+    **결함이 실제로 진행된 구간**뿐이다. 여유까지 빼면 정상 구간의 표본이 줄어든다.
+    """
+    try:
+        rows = db.query(
+            "SELECT ts_start, ts_end FROM fault_injections WHERE ts_end IS NOT NULL"
+        )
+    except Exception as exc:  # 주입 테이블이 없는 DB. 뺄 구간도 없다.
+        log.debug("결함 주입 구간 조회 실패 — 제외 없이 진행", extra={"error": str(exc)})
+        return []
+    return [(float(r["ts_start"]), float(r["ts_end"])) for r in rows]
+
+
+def _series(stat: str, exclude: list[tuple[float, float]] | None = None) -> dict[str, list[float]]:
     """프로세스명 → 버킷 통계량 목록. **핫+웜을 합쳐 읽는다.**
 
     롤업은 이틀이 지나면 Parquet 으로 옮겨가고 SQLite 에서 지워지므로, 핫만 읽으면
@@ -84,12 +106,14 @@ def _series(stat: str) -> dict[str, list[float]]:
     if stat not in {"handles_max", "rss_p95", "cpu_p95", "cpu_p99", "rss_max", "threads_max"}:
         raise ValueError(f"허용되지 않은 통계량: {stat}")  # 문자열이 SQL 에 그대로 들어간다
 
+    clause, params = history.exclusion_clause(exclude or [])
     rows = history._by_day(  # noqa: SLF001 — 병합 규칙을 재구현하지 않으려고 그대로 쓴다
         "process",
         f"SELECT strftime(to_timestamp(ts_5m), '%Y-%m-%d'), name, {stat} "
-        f"FROM warm_process WHERE {stat} IS NOT NULL",
+        f"FROM warm_process WHERE {stat} IS NOT NULL{clause}",
         f"SELECT strftime('%Y-%m-%d', ts_5m, 'unixepoch', 'localtime'), name, {stat} "
-        f"FROM process_5m WHERE {stat} IS NOT NULL",
+        f"FROM process_5m WHERE {stat} IS NOT NULL{clause}",
+        params,
     )
     out: dict[str, list[float]] = {}
     for _day, name, value in rows:
@@ -102,13 +126,18 @@ def build(
     min_days: int = DEFAULT_MIN_DAYS,
     min_buckets: int = DEFAULT_MIN_BUCKETS,
     stats: tuple[str, ...] = tuple(STAT_FOR.values()),
+    exclude: list[tuple[float, float]] | None = None,
 ) -> list[Fingerprint]:
-    """지문을 만든다. 자격 미달 프로그램은 아예 넣지 않는다 — 없는 것과 같아야 한다."""
-    index = history.process_day_index()
+    """지문을 만든다. 자격 미달 프로그램은 아예 넣지 않는다 — 없는 것과 같아야 한다.
+
+    `exclude` 는 학습에서 뺄 구간이다(`fault_windows`). 분포와 자격 판정이 **같은
+    데이터**를 봐야 하므로 양쪽에 똑같이 적용한다.
+    """
+    index = history.process_day_index(exclude=exclude)
     out: list[Fingerprint] = []
 
     for stat in stats:
-        series = _series(stat)
+        series = _series(stat, exclude)
         for name, values in series.items():
             by_day = index.get(name, {})
             days = len(by_day)
@@ -130,13 +159,30 @@ def build(
 
 
 def save(db, fingerprints: list[Fingerprint]) -> int:
+    """지문 테이블을 **통째로 갈아치운다.**
+
+    덮어쓰기만 하면 **자격을 잃은 지문이 영구히 남아 계속 억제한다.** 2026-07-30 에 이게
+    걸렸다 — 주입 구간을 학습에서 빼자 `python` 이 자격 미달로 사라졌는데, `replace=True`
+    는 없어진 것을 지우지 않으므로 오염된 p99 4,755 가 DB 에 그대로 남아 억제를 계속했다.
+    빌드가 "지금 자격이 되는 것 전부"를 내는 순수 함수이므로, 저장도 그 전체로 맞춰야 한다.
+
+    **빈 목록으로는 지우지 않는다.** 롤업이 아직 안 돌았거나 웜 조회가 실패해 결과가
+    비었을 수 있는데, 그때 테이블을 비우면 억제가 통째로 사라져 오탐이 쏟아진다.
+    지문이 하나도 없는 것과 "이번 빌드가 실패한 것"을 구분할 방법이 없으므로 안전한
+    쪽을 택한다.
+    """
     now = time.time()
     rows = [
         (f.name, f.regime, f.stat, f.p50, f.p95, f.p99, f.maximum, f.samples, f.days, now)
         for f in fingerprints
     ]
-    if rows:
-        db.insert_many("process_fingerprint", COLUMNS, rows, replace=True)
+    if not rows:
+        log.warning("지문 빌드 결과가 비어 기존 지문을 유지한다")
+        return 0
+    with db._lock:  # noqa: SLF001
+        db.conn.execute("DELETE FROM process_fingerprint")
+        db.conn.commit()
+    db.insert_many("process_fingerprint", COLUMNS, rows, replace=True)
     return len(rows)
 
 
@@ -188,7 +234,11 @@ class FingerprintBuilder:
 
     def tick(self) -> None:
         try:
-            prints = build(min_days=self.min_days, min_buckets=self.min_buckets)
+            prints = build(
+                min_days=self.min_days,
+                min_buckets=self.min_buckets,
+                exclude=fault_windows(self.db),
+            )
             self._built = save(self.db, prints)
             log.info("지문 갱신", extra={"count": self._built})
         except Exception as exc:
@@ -201,8 +251,13 @@ class FingerprintBuilder:
 if __name__ == "__main__":  # 스모크: python -m argus.detection.fingerprint
     from ..storage.hot import Database
 
-    prints = build()
-    print(f"  지문 {len(prints)}건 (자격: {DEFAULT_MIN_DAYS}일↑ · {DEFAULT_MIN_BUCKETS}버킷↑)")
+    with Database() as _db:
+        excluded = fault_windows(_db)
+    prints = build(exclude=excluded)
+    print(
+        f"  지문 {len(prints)}건 (자격: {DEFAULT_MIN_DAYS}일↑ · {DEFAULT_MIN_BUCKETS}버킷↑, "
+        f"결함 주입 {len(excluded)}구간 제외)"
+    )
 
     by_stat: dict[str, list[Fingerprint]] = {}
     for fp in prints:

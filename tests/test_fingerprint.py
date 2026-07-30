@@ -125,8 +125,10 @@ def _fake_source(monkeypatch, *, days: dict[str, int], buckets: int, name: str =
     읽어서, 조건을 0 으로 만들어도 10개 전부 통과했다. 여기서 데이터를 손으로 준다.
     `days` 는 {날짜: 그 날의 5분 버킷 수}, `buckets` 는 통계량 표본 수다.
     """
-    monkeypatch.setattr(fpmod, "_series", lambda stat: {name: [100.0] * buckets})
-    monkeypatch.setattr(fpmod.history, "process_day_index", lambda: {name: days})
+    monkeypatch.setattr(fpmod, "_series", lambda stat, exclude=None: {name: [100.0] * buckets})
+    monkeypatch.setattr(
+        fpmod.history, "process_day_index", lambda exclude=None: {name: days}
+    )
 
 
 def _build_one(monkeypatch, **kwargs):
@@ -183,3 +185,117 @@ def test_reset_keeps_fingerprints():
     detector.fingerprints = {("leaky", "handles_max"): fp("leaky", "handles_max", 100)}
     detector.reset()
     assert detector.fingerprints, "reset 이 지문까지 버렸다"
+
+
+# --------------------------------------------------------- 결함 주입 제외 (13번)
+
+
+def test_exclusion_clause_binds_values_and_covers_every_window():
+    from argus.storage.history import exclusion_clause
+
+    clause, params = exclusion_clause([(10.0, 20.0), (30.0, 40.0)])
+    assert clause.count("AND NOT") == 2
+    assert params == [10.0, 20.0, 30.0, 40.0]
+    assert "10" not in clause, "값이 SQL 에 박혔다 — 바인딩해야 한다"
+
+    empty, no_params = exclusion_clause([])
+    assert empty == "" and no_params == []
+
+
+def test_build_excludes_fault_windows_from_the_distribution(monkeypatch):
+    """**주입 구간을 학습하면 지문이 결함을 평소로 배운다.**
+
+    2026-07-30 실측: 07-29 주입(상한 5,000)이 `python` 의 handles_max p99 를 4,755 로
+    올려, 07-30 주입(최대 4,194)이 그 안에 들어가 억제됐다. 같은 데이터를 리플레이해도
+    발화하지 않아 회귀 판정이 성립하지 않았다.
+    """
+    # 평소 400, 주입 구간에만 5,000. 제외하면 p99 가 400 대에 머물러야 한다.
+    normal = [(float(1000 + i * 300), 400.0) for i in range(200)]
+    spike = [(float(900_000 + i * 300), 5000.0) for i in range(60)]
+
+    def fake_series(stat, exclude=None):
+        from argus.storage.history import exclusion_clause  # 형식만 확인
+
+        exclusion_clause(exclude or [])
+        rows = normal + spike
+        if exclude:
+            rows = [
+                (ts, v) for ts, v in rows
+                if not any(lo <= ts < hi for lo, hi in exclude)
+            ]
+        return {"app.exe": [v for _, v in rows]}
+
+    days = {f"2026-07-{d:02d}": 100 for d in range(1, 8)}
+    monkeypatch.setattr(fpmod, "_series", fake_series)
+    monkeypatch.setattr(fpmod.history, "process_day_index", lambda exclude=None: {"app.exe": days})
+
+    without = fpmod.build(stats=("handles_max",))
+    assert without and without[0].maximum == 5000.0, "제외 없이는 주입값이 들어와야 한다"
+
+    window = [(900_000.0, 900_000.0 + 60 * 300)]
+    with_exclusion = fpmod.build(stats=("handles_max",), exclude=window)
+    assert with_exclusion, "제외 후 지문이 사라졌다"
+    assert with_exclusion[0].maximum == 400.0, (
+        f"주입 구간이 분포에 남았다: max {with_exclusion[0].maximum}"
+    )
+
+
+def test_fault_windows_survives_a_db_without_the_table():
+    """주입 테이블이 없는 DB(구버전)에서도 지문 생성이 죽지 않는다."""
+
+    class Broken:
+        def query(self, *a, **k):
+            raise RuntimeError("no such table")
+
+    assert fpmod.fault_windows(Broken()) == []
+
+
+def test_medal_case_stays_suppressed():
+    """**(나)의 회귀 방지선.** 지문의 원래 목적을 깨뜨리지 않는지 본다.
+
+    실측 사례: medal(게임 녹화)이 핸들 383 → 1,395 로 늘어 발화했는데 medal 의 평소
+    handles_max p99 는 12,466 이었다. 이건 억제되는 것이 맞다 — 자기 평소 범위 안에서
+    움직인 것이고, 알리면 오탐이다.
+
+    억제 축을 손볼 때 이 케이스가 깨지면 그 변경은 틀린 것이다. 오늘 주입(400 → 4,194,
+    p99 4,755)과 **구조가 같아** 수준만으로는 둘을 가를 수 없다 — 차이는 medal 의 p99 가
+    정당하게 높고 주입의 p99 는 과거 누수가 부풀린 값이라는 데 있다. 그래서 (가)가
+    본질이고 (나)는 이 선을 넘지 않는 범위에서만 가능하다.
+    """
+    detector = ProcessLeakDetector()
+    detector.fingerprints = {("medal", "handles_max"): fp("medal", "handles_max", 12466)}
+    fired = run_detector(detector, leak_stream([383 + i * 2 for i in range(600)], name="medal"))
+    assert not fired, "medal 오탐이 돌아왔다 — 지문 억제의 존재 이유가 깨졌다"
+
+
+def test_save_removes_fingerprints_that_no_longer_qualify(tmp_path):
+    """자격을 잃은 지문이 남아 있으면 계속 억제한다.
+
+    2026-07-30: 주입 구간을 학습에서 빼자 `python` 이 자격 미달로 사라졌는데,
+    `replace=True` 는 없어진 행을 지우지 않아 오염된 p99 4,755 가 DB 에 남았다.
+    """
+    from argus.detection.fingerprint import load, save
+    from argus.storage.hot import Database
+
+    with Database(tmp_path / "t.db") as db:
+        assert save(db, [fp("python", "handles_max", 4755), fp("medal", "handles_max", 12466)]) == 2
+        assert set(load(db)) == {("python", "handles_max"), ("medal", "handles_max")}
+
+        # 다음 빌드에서 python 이 자격을 잃었다
+        assert save(db, [fp("medal", "handles_max", 12466)]) == 1
+        assert set(load(db)) == {("medal", "handles_max")}, "사라진 지문이 남아 있다"
+
+
+def test_save_keeps_existing_fingerprints_when_build_is_empty(tmp_path):
+    """빈 결과로 테이블을 비우면 억제가 통째로 사라져 오탐이 쏟아진다.
+
+    롤업이 아직 안 돌았거나 웜 조회가 실패해 결과가 빌 수 있고, 그것과 "지문이 정말
+    하나도 없다"를 구분할 방법이 없다. 안전한 쪽을 택한다.
+    """
+    from argus.detection.fingerprint import load, save
+    from argus.storage.hot import Database
+
+    with Database(tmp_path / "t.db") as db:
+        save(db, [fp("medal", "handles_max", 12466)])
+        assert save(db, []) == 0
+        assert set(load(db)) == {("medal", "handles_max")}, "빈 빌드가 기존 지문을 지웠다"

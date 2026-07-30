@@ -186,19 +186,43 @@ def observed_days(kind: str = "metrics", min_hours: float = 0.0) -> list[str]:
     return [d for d, c in coverage(kind).items() if c.hours >= min_hours]
 
 
-def process_day_index() -> dict[str, dict[str, int]]:
+def exclusion_clause(
+    windows: list[tuple[float, float]], column: str = "ts_5m"
+) -> tuple[str, list[float]]:
+    """구간 목록을 `AND NOT (col >= ? AND col < ?)` 조각으로 바꾼다.
+
+    두 계층(DuckDB `warm_process`, SQLite `process_5m`)이 같은 문법을 받으므로 조각을
+    한 번만 만들어 양쪽에 쓴다. 값은 바인딩하므로 SQL 에 숫자를 박지 않는다.
+    """
+    if not windows:
+        return "", []
+    parts = " ".join(f"AND NOT ({column} >= ? AND {column} < ?)" for _ in windows)
+    params: list[float] = []
+    for lo, hi in windows:
+        params += [float(lo), float(hi)]
+    return " " + parts, params
+
+
+def process_day_index(
+    exclude: list[tuple[float, float]] | None = None,
+) -> dict[str, dict[str, int]]:
     """프로세스명 → {날짜: 버킷 수}.
 
     버킷 수까지 돌려주는 이유: "며칠 보였나"만으로는 지문을 세울 수 있는지 알 수 없다.
     3일에 걸쳐 보였어도 매번 5분씩이면 p99 를 세울 표본이 못 된다.
+
+    `exclude` 는 세지 않을 구간이다. 결함 주입 구간을 지문 학습에서 빼는 데 쓴다 —
+    자격 판정(며칠·몇 버킷)도 같은 데이터를 봐야 분포와 어긋나지 않는다.
     """
+    clause, params = exclusion_clause(exclude or [])
     # 날짜를 첫 컬럼으로 두어 병합 규칙(`_by_day`)을 그대로 쓴다.
     rows = _by_day(
         "process",
         "SELECT strftime(to_timestamp(ts_5m), '%Y-%m-%d'), name, COUNT(DISTINCT ts_5m) "
-        "FROM warm_process GROUP BY 1, 2",
+        f"FROM warm_process WHERE 1=1{clause} GROUP BY 1, 2",
         "SELECT strftime('%Y-%m-%d', ts_5m, 'unixepoch', 'localtime'), name, "
-        "COUNT(DISTINCT ts_5m) FROM process_5m GROUP BY 1, 2",
+        f"COUNT(DISTINCT ts_5m) FROM process_5m WHERE 1=1{clause} GROUP BY 1, 2",
+        params,
     )
     out: dict[str, dict[str, int]] = {}
     for day, name, buckets in rows:
