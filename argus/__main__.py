@@ -36,6 +36,7 @@ from .runtime.stats import STATS
 from .runtime.supervisor import Supervisor
 from .storage.hot import Database
 from .storage.queue import Sample, SampleQueue
+from .ui.tray import TrayIcon
 
 SYSTEM_EVENT_COLUMNS = ("ts", "event", "gap_seconds", "detail")
 from .storage.retention import Retention
@@ -242,6 +243,13 @@ def run(args: argparse.Namespace) -> int:
         # 다시 죽어 사용자는 "실행이 안 된다"만 보게 된다.
         clear_stale()
 
+        # 트레이 — 알림 창구이기도 하다. **Fusion 보다 먼저 만들어야** 알림 전달자로
+        # 넘겨줄 수 있다. 실패해도 수집은 계속된다(내부에서 삼키고 비활성 상태로 간다).
+        tray: TrayIcon | None = None
+        if settings.general.tray:
+            tray = TrayIcon(on_stop=sup.request_stop)
+            sup.add(tray)
+
         # 런타임 — 스로틀을 받지 않는다(부하가 클 때야말로 제때 돌아야 하는 것들)
         sup.add(BudgetMonitor(guard))
         sup.add(StopFileMonitor(sup.request_stop))
@@ -324,8 +332,11 @@ def run(args: argparse.Namespace) -> int:
                 Fusion(
                     db,
                     FusionSettings(
-                        bottleneck=settings.bottleneck, incident=settings.incident
+                        bottleneck=settings.bottleneck,
+                        incident=settings.incident,
+                        notify_enabled=settings.detection.notify,
                     ),
+                    notifier=tray,
                 )
             )
 

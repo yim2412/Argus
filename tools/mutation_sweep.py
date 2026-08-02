@@ -255,6 +255,34 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "notify_gate",
+        "발송 게이트 — 판정(`notified`)과 실제 발송은 별개다",
+        (
+            (
+                "argus/decide/fusion.py",
+                "        if not self.settings.notify_enabled or self.notifier is None:\n",
+                "        if self.notifier is None:  # MUTANT: 게이트 무시\n",
+            ),
+        ),
+        note="꺼져 있어도 보내게 만든다 — 켜기 전에 알림량을 재는 경로가 무너진다",
+    ),
+    Mutant(
+        "notify_failure_isolation",
+        "알림 실패가 융합을 죽이지 않는다 (탐지가 알림보다 중요하다)",
+        (
+            (
+                "argus/decide/fusion.py",
+                "        except Exception as exc:\n"
+                "            # 알림 실패가 융합을 죽이면 사건 기록이 통째로 멈춘다."
+                " 탐지가 알림보다 중요하다.\n"
+                '            log.warning("알림 발송 실패", extra={"incident": incident_id,'
+                ' "error": str(exc)})\n'
+                "            return\n",
+                "        except Exception:  # MUTANT: 격리 제거\n            raise\n",
+            ),
+        ),
+    ),
+    Mutant(
         "rollup_gpu_clock",
         "GPU 클럭을 롤업에 남긴다 (원본은 24시간 뒤 사라진다)",
         (

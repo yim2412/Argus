@@ -61,6 +61,99 @@ def test_many_signals_become_one_incident(db: Database) -> None:
     assert linked == 30, "어떤 신호로 만들어졌는지 추적할 수 있어야 한다"
 
 
+# ---------------------------------------------------------------- 알림 발송
+#
+# **GUI 를 띄우지 않는다.** 풍선이 실제로 화면에 뜨는지는 사람이 봐야 하는 것이고,
+# 마우스를 움직이는 자동화는 쓰지 않는다(CLAUDE.md). 여기서 고정하는 것은 "누가
+# 언제 불리는가"이고, 그건 가짜 전달자로 전부 확인된다.
+
+
+class _FakeNotifier:
+    """`notify(title, message, severity) -> bool` 만 있으면 된다."""
+
+    def __init__(self, *, fail: bool = False, returns: bool = True) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+        self.fail = fail
+        self.returns = returns
+
+    def notify(self, title: str, message: str, severity: str = "warning") -> bool:
+        self.calls.append((title, message, severity))
+        if self.fail:
+            raise RuntimeError("알림 채널이 죽었다")
+        return self.returns
+
+
+def _one_incident(database: Database, now: float) -> None:
+    start = now - 600
+    _metrics(database, start - 1800, 2400)
+    _signals(database, [(start + i * 5, "rules", 0.8, "warning", None) for i in range(30)])
+
+
+def test_notification_is_not_sent_while_disabled(db: Database) -> None:
+    """**판정과 발송은 별개다.** `notified` 는 항상 판정하고 발송만 설정으로 막는다.
+
+    이 분리가 없으면 "알림을 켜면 몇 건이 올 것인가"를 켜기 전에 잴 수 없다.
+    알림은 되돌릴 수 없으므로(오탐 3번이면 사용자는 끈다) 먼저 재고 켜야 한다.
+    """
+    now = time.time()
+    _one_incident(db, now)
+    notifier = _FakeNotifier()
+
+    fusion = Fusion(db, FusionSettings(notify_enabled=False), notifier=notifier)
+    fusion._set_watermark(now - 601)
+    fusion.run_once(now=now)
+
+    assert notifier.calls == [], "발송이 꺼져 있는데 알림을 보냈다"
+    notified = db.query("SELECT notified FROM incidents")[0]["notified"]
+    assert notified == 1, "발송이 꺼졌다고 판정까지 멈추면 알림량을 미리 잴 수 없다"
+
+
+def test_notification_is_sent_when_enabled(db: Database) -> None:
+    now = time.time()
+    _one_incident(db, now)
+    notifier = _FakeNotifier()
+
+    fusion = Fusion(db, FusionSettings(notify_enabled=True), notifier=notifier)
+    fusion._set_watermark(now - 601)
+    fusion.run_once(now=now)
+
+    assert len(notifier.calls) == 1, f"알림이 {len(notifier.calls)}건 — 사건당 한 번이어야 한다"
+    title, message, severity = notifier.calls[0]
+    assert title and title != "분석 중", f"제목이 비었거나 미완성이다: {title!r}"
+    assert message, "본문이 비었다"
+    assert severity in {"info", "warning", "critical"}
+
+
+def test_notifier_failure_does_not_break_fusion(db: Database) -> None:
+    """**알림 실패가 융합을 죽이면 사건 기록이 통째로 멈춘다.**
+
+    탐지가 알림보다 중요하다 — 알림은 못 받아도 나중에 대시보드에서 볼 수 있지만,
+    사건이 기록되지 않으면 그 시간대는 영영 설명할 수 없다.
+    """
+    now = time.time()
+    _one_incident(db, now)
+    notifier = _FakeNotifier(fail=True)
+
+    fusion = Fusion(db, FusionSettings(notify_enabled=True), notifier=notifier)
+    fusion._set_watermark(now - 601)
+    fusion.run_once(now=now)  # 예외가 새어 나오면 여기서 실패한다
+
+    row = db.query("SELECT notified, ts_end FROM incidents")[0]
+    assert row["notified"] == 1 and row["ts_end"] is not None, "알림 실패가 사건 기록을 막았다"
+
+
+def test_notifier_absent_is_safe(db: Database) -> None:
+    """트레이가 꺼졌거나 등록에 실패한 경우. 발송만 없고 나머지는 그대로 돈다."""
+    now = time.time()
+    _one_incident(db, now)
+
+    fusion = Fusion(db, FusionSettings(notify_enabled=True), notifier=None)
+    fusion._set_watermark(now - 601)
+    fusion.run_once(now=now)
+
+    assert db.query("SELECT notified FROM incidents")[0]["notified"] == 1
+
+
 def test_first_run_persists_watermark(db: Database) -> None:
     """첫 실행에서 워터마크를 저장하지 않으면 융합이 영원히 제자리가 된다.
 

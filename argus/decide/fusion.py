@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from ..config.loader import BottleneckSettings, IncidentSettings
 from ..detection.baseline import BaselineSet
@@ -64,6 +65,11 @@ class FusionSettings:
 
     bottleneck: BottleneckSettings = field(default_factory=BottleneckSettings)
     incident: IncidentSettings = field(default_factory=IncidentSettings)
+
+    # 실제 발송 여부. **판정(`notified`)과는 별개다** — 판정은 항상 돌아야 대시보드와
+    # 채점이 쓰고, 이 값은 사용자에게 실제로 띄울지만 정한다. 기본이 꺼짐인 이유는
+    # 알림이 되돌릴 수 없기 때문이다(오탐 3번이면 사용자는 알림을 끈다).
+    notify_enabled: bool = False
 
 
 def open_incident(db: Database, signal: dict, severity: str) -> int:
@@ -516,11 +522,16 @@ class Fusion(Component):
         db: Database,
         settings: FusionSettings | None = None,
         budget: NotificationBudget | None = None,
+        notifier: Any = None,
     ) -> None:
         self.db = db
         self.settings = settings or FusionSettings()
         self.budget = budget or NotificationBudget()
         self.interval_s = 30.0
+        # 알림 전달자. `notify(title, message, severity) -> bool` 만 있으면 된다.
+        # 인터페이스를 좁게 잡아 두면 트레이 말고 다른 채널(Discord 등)을 붙일 때
+        # 여기를 고치지 않아도 된다. 없으면 기록만 하고 넘어간다.
+        self.notifier = notifier
 
     # ------------------------------------------------------------ 워터마크
 
@@ -614,10 +625,35 @@ class Fusion(Component):
         decision = self.budget.decide(self.db, dict(rows[0]))
         self.budget.record(self.db, incident_id, decision)
         if decision.notify:
-            # 발송은 여기서 하지 않는다. 오탐률이 검증된 뒤에 붙인다.
             log.info("알림 대상", extra={"incident": incident_id})
+            self._send(dict(rows[0]), incident_id)
         else:
             log.debug("알림 생략", extra={"incident": incident_id, "reason": decision.reason})
+
+    def _send(self, incident: dict, incident_id: int) -> None:
+        """실제 발송. **`notify_enabled` 가 꺼져 있으면 보내지 않는다.**
+
+        예산·심각도 판정(`notified`)과 발송은 별개다. 판정은 항상 돌아 대시보드와 채점이
+        쓰고, 발송만 설정으로 막는다 — 그래야 "알림을 켜면 몇 건이 올 것인가"를 켜기
+        전에 잴 수 있다(CLAUDE.md: 알림은 되돌릴 수 없다).
+        """
+        if not self.settings.notify_enabled or self.notifier is None:
+            return
+
+        title = incident.get("title") or "성능 이상"
+        severity = incident.get("severity") or "warning"
+        # 사건을 다시 조회하지 않고 저장된 설명의 첫 줄만 쓴다. 풍선은 짧아야 읽힌다.
+        explanation = (incident.get("explanation_md") or "").strip()
+        message = explanation.splitlines()[0] if explanation else "대시보드에서 확인하세요."
+
+        try:
+            sent = self.notifier.notify(title, message, severity)
+        except Exception as exc:
+            # 알림 실패가 융합을 죽이면 사건 기록이 통째로 멈춘다. 탐지가 알림보다 중요하다.
+            log.warning("알림 발송 실패", extra={"incident": incident_id, "error": str(exc)})
+            return
+        if not sent:
+            log.warning("알림이 전달되지 않았다", extra={"incident": incident_id})
 
     def _merge(self, incident_id: int, signal: dict) -> None:
         """진행 중인 사건에 신호를 더한다.

@@ -27,6 +27,9 @@ ENV_NESTED_SEP = "__"
 class GeneralSettings(BaseModel):
     log_level: str = "INFO"
     console_log: bool = True
+    # 트레이 아이콘. 상주 프로그램인데 살아 있는지 보이지 않으면 사용자는 껐는지도 모른다.
+    # 알림(풍선)도 이 아이콘을 통해 나가므로, 끄면 알림 경로가 함께 사라진다.
+    tray: bool = True
 
     @field_validator("log_level")
     @classmethod

@@ -29,6 +29,7 @@ UI 는 시스템 트레이 + Streamlit 대시보드.
 | `eval/` | 리플레이 + 채점 | `python -m argus.eval`. 탐지기를 건드렸으면 여기를 돌린다 |
 | `runtime/` | 스레드·자기예산·자기계측 | `budget` 이 예산 초과 시 스스로 샘플링을 낮춘다 |
 | `machine/` | 이 PC 의 능력·성능 기준 | 절대 임계값 대신 여기 값을 기준으로 상대화한다 |
+| `ui/` | 트레이 아이콘 + 풍선 알림 | `Shell_NotifyIcon` 직접(의존성 0). 알림 전달자 규약은 `notify(title, message, severity) -> bool` 하나뿐 |
 | `dashboard/` | Streamlit UI | `python -m argus.dashboard` |
 | `config/` | `defaults.yaml` + `rules.yaml` | 임계값이 코드에 박혀 있으면 규칙 3 위반이다 |
 | `tools/` | 단독 실행 도구 | `fault_injector`(결함 주입) · `inject_progress`(주입 진행·판정) · `eval_snapshot`(평가 입력 고정) · `rescore_incidents`(사건 재분석) · `readiness`(착수 판정) · `pyc_audit`(캐시 검사) · `mutation_sweep`(규칙 무력화 측정) |
