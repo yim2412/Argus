@@ -157,6 +157,35 @@ class RetentionSettings(BaseModel):
     fault_guard_s: float = Field(default=900.0, ge=0)
 
 
+class ThermalDriftSettings(BaseModel):
+    """냉각 열화 — 같은 부하에서 예전보다 뜨거운가.
+
+    절대 온도 문턱이 없다는 것이 요점이다(규칙 2). 노트북(평소 87도)이든 데스크탑
+    (평소 70도)이든 자기 과거와만 비교하므로 같은 값이 그대로 맞는다.
+    """
+
+    enabled: bool = True
+    # 판정 주기. 하루 단위 비교라 자주 볼 이유가 없고, 웜(Parquet)까지 훑는 작업이다.
+    interval_s: float = Field(default=21600.0, gt=0)
+
+    # **부하를 맞춰 비교한다.** 유휴를 섞으면 "요즘 게임을 많이 했다"가 "냉각이
+    # 나빠졌다"로 둔갑한다. 이 사용률 이상인 1분 버킷만 본다.
+    min_gpu_util: float = Field(default=80.0, gt=0, le=100)
+    # 그런 버킷이 하루에 이만큼 없으면 그날은 표본에서 뺀다. 5분짜리 부하의 중앙값은
+    # 중앙값이 아니라 우연이다.
+    min_busy_minutes: int = Field(default=20, ge=1)
+
+    # 비교 구간. 최근 N일 대 그 이전 M일.
+    recent_days: int = Field(default=3, ge=1)
+    baseline_days: int = Field(default=14, ge=1)
+    # 표본이 이만큼 모이기 전에는 판정하지 않는다 — 부트스트랩 기간(탐지 규칙 4).
+    min_days: int = Field(default=7, ge=2)
+
+    # 이만큼 올랐을 때 알린다. 실측에서 이 PC 의 부하 시 온도는 6일간 변동이 0 이었다
+    # (93.0도 고정). 산포가 거의 없는 지표라 3도면 뚜렷한 변화다.
+    rise_c: float = Field(default=3.0, gt=0)
+
+
 class BottleneckSettings(BaseModel):
     """병목 분류의 판정 문턱. "무엇에 막혔나"를 가르는 값들이다.
 
@@ -311,6 +340,7 @@ class Settings(BaseModel):
     retention: RetentionSettings = RetentionSettings()
     detection: DetectionSettings = DetectionSettings()
     bottleneck: BottleneckSettings = BottleneckSettings()
+    thermal_drift: ThermalDriftSettings = ThermalDriftSettings()
     incident: IncidentSettings = IncidentSettings()
     process_leak: ProcessLeakSettings = ProcessLeakSettings()
     fingerprint: FingerprintSettings = FingerprintSettings()

@@ -298,6 +298,14 @@ def run(args: argparse.Namespace) -> int:
                     )
                 )
 
+            if settings.thermal_drift.enabled:
+                # 냉각 열화 — "같은 부하에서 예전보다 뜨거운가". 절대 온도 룰과 달리
+                # 하드웨어를 가정하지 않고, 사용자가 **조치할 수 있는** 신호만 낸다
+                # (먼지 청소·서멀 재도포). 롤업을 읽으므로 주기가 길다.
+                from .detection.thermal import ThermalDriftMonitor
+
+                sup.add(ThermalDriftMonitor(db, settings.thermal_drift))
+
             sup.add(
                 DetectionComponent(
                     db,
