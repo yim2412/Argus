@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Iterable, Mapping, Sequence
 
 import yaml
@@ -43,6 +44,15 @@ from .baseline import BaselineSet, Stats
 from .expr import ExprError, compile_expr, evaluate
 
 log = get_logger(__name__)
+
+_warned: set[str] = set()
+
+
+def _warn_once(message: str) -> None:
+    """같은 경고를 매 틱 쏟지 않는다. 룰 평가는 초당 여러 번 돈다."""
+    if message not in _warned:
+        _warned.add(message)
+        log.warning(message)
 
 _DURATION = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h)?\s*$", re.IGNORECASE)
 _UNITS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0, None: 1.0}
@@ -97,7 +107,14 @@ class Condition:
         if self._compiled is not None:
             if stats is None:
                 return None      # 베이스라인이 아직 없으면 상대 임계값을 못 만든다
-            threshold = evaluate(self._compiled, _variables(stats, obs))
+            try:
+                threshold = evaluate(self._compiled, _variables(stats, obs))
+            except ExprError as e:
+                # **조용히 통과시키지 않는다.** 대개 머신 프로파일이 없어 `cores`·
+                # `ram_mb` 를 못 채운 경우다(규칙 4: 없으면 드러내 놓고 비활성화).
+                # 이 룰만 판정 불가로 두고 나머지는 계속 돈다.
+                _warn_once(f"룰 표현식을 평가할 수 없다: {self.value!r} — {e}")
+                return None
             if threshold is None:
                 return None      # 산포가 없는 메트릭 등 — 판정하지 않는다
         else:
@@ -121,6 +138,40 @@ class Condition:
         return actual != threshold
 
 
+@lru_cache(maxsize=1)
+def machine_variables() -> dict[str, float]:
+    """이 PC 의 능력값. 룰이 절대값 대신 이것으로 문턱을 표현한다(규칙 2).
+
+    `ctx_switches_ps > 50000` 은 12코어 기준으로 정한 값이라 4코어 PC 에서는 과하고,
+    `swap_used_mb > 512` 는 RAM 4GB 에서 흔한 값이다. **실측에서 이 PC(12코어)의
+    컨텍스트 스위치 중앙값이 64,566 이었다 — 문턱 50,000 이 정상값 아래에 있었다.**
+    코어당·RAM 대비로 쓰면 어느 기계에서든 같은 뜻이 된다.
+
+    프로파일은 90일 재사용이라 실행 중 바뀌지 않으므로 캐시한다. 없으면 빈 값을
+    돌려주고, 그것을 참조하는 룰은 평가되지 않는다(조용히 통과시키지 않는다).
+    """
+    try:
+        from ..machine.calibration import ensure_profile
+
+        profile = ensure_profile()
+    except Exception:  # 프로파일이 아직 없거나 읽을 수 없는 환경(테스트·리플레이)
+        return {}
+
+    cores = float(profile.cpu.get("logical") or 0)
+    ram_gb = float(profile.memory.get("total_gb") or 0)
+    swap_gb = float(profile.memory.get("swap_total_gb") or 0)
+    out: dict[str, float] = {}
+    if cores > 0:
+        out["cores"] = cores
+        out["physical_cores"] = float(profile.cpu.get("physical") or cores)
+    if ram_gb > 0:
+        out["ram_gb"] = ram_gb
+        out["ram_mb"] = ram_gb * 1024.0
+    if swap_gb > 0:
+        out["swap_total_mb"] = swap_gb * 1024.0
+    return out
+
+
 def _variables(stats: Stats, obs: Observation) -> dict[str, Any]:
     """표현식에서 쓸 수 있는 이름들."""
     variables: dict[str, Any] = {
@@ -130,6 +181,7 @@ def _variables(stats: Stats, obs: Observation) -> dict[str, Any]:
         "sigma": stats.sigma,
         "min": stats.minimum,
         "max": stats.maximum,
+        **machine_variables(),
     }
     # 다른 메트릭의 현재 값도 참조할 수 있게 한다 (예: cpu_total 대비 판단)
     for name, value in obs.metrics.items():
