@@ -31,7 +31,7 @@ UI 는 시스템 트레이 + Streamlit 대시보드.
 | `machine/` | 이 PC 의 능력·성능 기준 | 절대 임계값 대신 여기 값을 기준으로 상대화한다 |
 | `dashboard/` | Streamlit UI | `python -m argus.dashboard` |
 | `config/` | `defaults.yaml` + `rules.yaml` | 임계값이 코드에 박혀 있으면 규칙 3 위반이다 |
-| `tools/` | 단독 실행 도구 | `fault_injector`(결함 주입) · `readiness`(착수 판정) · `pyc_audit`(캐시 검사) |
+| `tools/` | 단독 실행 도구 | `fault_injector`(결함 주입) · `inject_progress`(주입 진행·판정) · `eval_snapshot`(평가 입력 고정) · `rescore_incidents`(사건 재분석) · `readiness`(착수 판정) · `pyc_audit`(캐시 검사) |
 
 **실시간과 리플레이는 같은 경로를 쓴다**(`detection/live.py`, `detection/replay_source.py`).
 탐지기가 실시간에서만 되는 일을 하면 채점이 성립하지 않는다.

@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import argparse
 import sys
 
@@ -18,6 +20,17 @@ from ..logging_setup import setup
 from ..storage.hot import Database
 from . import scoring
 from .replay import Replayer
+
+
+def _db_path(args) -> Path | None:
+    """채점할 DB. `--db` 가 없으면 `None` 을 돌려 기본(상주 DB)을 쓰게 한다."""
+    raw = getattr(args, "db", None)
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.exists():
+        raise SystemExit(f"[FAIL] DB 가 없다: {path}")
+    return path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,6 +49,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--full-window", action="store_true",
         help="주입 구간 주변이 아니라 저장된 전체 구간을 재생한다(오탐률 측정에 유리)",
+    )
+    parser.add_argument(
+        "--db",
+        help="채점할 DB 경로. 기본은 상주 인스턴스의 DB 다. "
+             "`tools/eval_snapshot.py` 로 뜬 스냅샷을 주면 **같은 입력으로 반복 채점**할 수 있다 "
+             "— 상주 DB 는 보존 정리 때문에 재생 구간이 실행마다 줄어든다.",
     )
     parser.add_argument("--save", action="store_true", help="결과를 eval_runs 에 남긴다")
     parser.add_argument("--list", action="store_true", help="탐지기 목록")
@@ -59,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     scenarios = [s.strip() for s in args.scenario.split(",")] if args.scenario else None
 
     setup(level="WARNING")
-    with Database() as db:
+    with Database(_db_path(args)) as db:
         replayer = Replayer(db)
         available = replayer.available_window()
         if available is None:
@@ -131,7 +150,7 @@ def _run_attribution(args) -> int:
     setup(level="WARNING")
     scenarios = [s.strip() for s in args.scenario.split(",")] if args.scenario else None
 
-    with Database() as db:
+    with Database(_db_path(args)) as db:
         verdicts = attribution.score_all(db, scenarios=scenarios)
         if not verdicts:
             print("[FAIL] 결함 주입 라벨이 없다 — 먼저 주입할 것:")
