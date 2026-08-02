@@ -70,6 +70,15 @@ SCENARIO_RESOURCE = {
 NOT_ATTRIBUTABLE = frozenset({"manual"})
 
 
+def _has_global_metrics(db, ts_start: float, ts_end: float) -> bool:
+    """구간에 병목 분류가 읽을 전역 지표가 남아 있는가."""
+    rows = db.query(
+        "SELECT COUNT(*) AS n FROM metrics_raw WHERE ts >= ? AND ts <= ?",
+        (ts_start, ts_end),
+    )
+    return bool(rows and rows[0]["n"])
+
+
 def score_fault(db, fault: dict, *, margin_s: float = 30.0, limit: int = 8) -> Verdict:
     """주입 구간 하나를 채점한다.
 
@@ -149,6 +158,7 @@ def score_fault_product(db, fault: dict, *, limit: int = 8) -> Verdict:
         return verdict
 
     ts_start, ts_end = float(fault["ts_start"]), float(fault["ts_end"])
+
     rows = db.query(
         "SELECT id, ts_start, ts_end FROM incidents "
         "WHERE ts_start <= ? AND COALESCE(ts_end, ts_start) >= ? ORDER BY ts_start",
@@ -166,6 +176,26 @@ def score_fault_product(db, fault: dict, *, limit: int = 8) -> Verdict:
         lo = max(ts_start, float(row["ts_start"]))
         hi = min(ts_end, float(row["ts_end"] or row["ts_start"]))
         return max(0.0, hi - lo)
+
+    # **재분석은 전역 지표를 읽는다.** `analyze_incident()` 의 병목 분류가 `metrics_raw`
+    # 를 보는데, 그 구간이 보존 정리에 지워졌으면 병목이 "관측 없음"이 되고 자원이
+    # 기본값(`cpu`)으로 돌아간다. 기여자도 비고, 결과는 무조건 미지목이다.
+    #
+    # **그것을 귀인 실패로 세면 탐지기가 아니라 보존 정책을 채점하는 것이다.**
+    # `score_fault` 가 "구간에 프로세스 메트릭이 없음"을 빼는 것과 같은 이유다. 다만
+    # 여기서만 필요하다 — 함수 경로는 자원을 라벨에서 받으므로 전역 지표를 읽지 않는다.
+    #
+    # **사건 유무를 먼저 본 뒤에 검사한다.** 사건이 없다는 사실은 `incidents` 가 보존
+    # 정리 대상이 아니라 언제 확인해도 확정이고, "사용자가 아무것도 받지 못했다"는
+    # 진짜 실패라 데이터가 지워졌다는 이유로 덮으면 안 된다.
+    #
+    # 2026-08-02 에 이 분류가 없어 07-30 배치 7건이 전부 `0%` 로 계산됐고, 제품 경로
+    # 지목률이 0.0% 로 나왔다. 데이터의 절반이 없어 판정할 수 없었던 것이지 퇴행이
+    # 아니었다. 더 나쁜 것은 **그 7건이 표본에 남아 이후 실행을 영구히 끌어내린다**는
+    # 점이다 — 새 배치가 5/5 를 맞혀도 5/12 = 42% 라 DoD 85% 에 닿을 수 없다.
+    if not _has_global_metrics(db, ts_start, ts_end):
+        verdict.skipped = "구간에 전역 지표가 없음 (재분석 불능 — 보존 정리)"
+        return verdict
 
     best = max(rows, key=overlap)
     analysis = analyze_incident(db, int(best["id"]), float(best["ts_end"] or best["ts_start"]))

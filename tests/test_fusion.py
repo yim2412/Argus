@@ -703,3 +703,95 @@ def test_leak_window_is_not_shrunk_by_detector_duration(db: Database) -> None:
 
     row = _run(db, start, now)
     assert row["ts_start"] <= start + 5, f"구간이 좁아졌다: {row['ts_start'] - start:.0f}초"
+
+
+# ---------------------------------------- 경합 분류가 탐지기 주장을 덮던 것 (15번)
+
+
+def _leak_scene_with_contention(db: Database, start: float) -> float:
+    """`_leak_scene` 과 같되, 구간 안에 컨텍스트 스위치 스파이크가 하나 있다.
+
+    2026-07-30 배치의 모양이다. 12분짜리 구간에서 분류기는 **최악 시점 한 점**을 보는데,
+    그 한 점이 유튜브·크롬의 잡음이었다. 실측에서 주입 구간의 컨텍스트 스위치 중앙값은
+    오히려 더 낮았다(28,431/s vs 구간 밖 103,580/s) — 경합은 주입과 인과가 없었는데도
+    `CONTENTION` 이 나오면서 탐지기 주장이 통째로 버려졌다.
+    """
+    end = start + 120
+    base = [
+        (start - 1800 + i, 15.0 + (i % 3), 30.0, 30.0, 0.1, 20_000.0 + (i % 5) * 100)
+        for i in range(1800)
+    ]
+    during = [
+        (start + i, 16.0 + (i % 3), 31.0, 30.0, 0.1, 20_000.0 + (i % 5) * 100)
+        for i in range(120)
+    ]
+    # 무관한 스파이크 한 점. **CPU 도 함께 올려야 이 행이 `peak` 으로 뽑힌다** —
+    # `_peak_and_baselines` 는 `max(rows, key=cpu_total)` 로 최악 시점 하나를 고르고
+    # 분류기는 그 행만 본다. 30% 는 `CONTENTION` 조건(`cpu < 60`)을 지키면서 CPU 병목
+    # 조건(`cpu >= 40`)에는 닿지 않는 값이다. 긴 구간에서 무관한 스파이크가 분류를
+    # 통째로 결정하는 구조가 여기 그대로 들어 있다.
+    during[60] = (start + 60, 30.0, 31.0, 30.0, 0.1, 400_000.0)
+    db.insert_many(
+        "metrics_raw",
+        ("ts", "cpu_total", "cpu_max_core", "mem_percent", "disk_resp_ms", "ctx_switches_ps"),
+        base + during,
+    )
+    procs = []
+    for i in range(0, 200, 2):
+        procs.append((start - 200 + i, 10, "python", 2.0, 50.0, 0, 0, 460, 4, 0))
+        procs.append((start - 200 + i, 20, "cpu_eater", 40.0, 100.0, 0, 0, 300, 8, 0))
+    for i in range(0, 120, 2):
+        procs.append((start + i, 10, "python", 2.0, 52.0, 0, 0, 460 + i * 28, 4, 0))
+        procs.append((start + i, 20, "cpu_eater", 50.0, 100.0, 0, 0, 300, 8, 0))
+    db.insert_many(
+        "process_metrics",
+        ("ts", "pid", "name", "cpu_percent", "rss_mb", "io_read_bps", "io_write_bps",
+         "handles", "threads", "foreground"),
+        procs,
+    )
+    return end
+
+
+def test_contention_does_not_discard_the_detector_claim(db: Database) -> None:
+    """`CONTENTION` 은 `NONE` 과 같은 편이다 — 탐지기가 자원과 문장을 갖고 있으면 그쪽을 쓴다.
+
+    `CONTENTION` 은 정의상 "어떤 자원도 포화되지 않았다"는 선언이고, `_RESOURCE_BY_KIND`
+    도 `attributable=False` 로 둔다("CPU 상위는 참고일 뿐이다"). 그 상태에서 CPU 로
+    분해하면 구간에 CPU 를 많이 쓴 무관한 프로세스(`cpu_eater`)가 원인으로 발표된다.
+    """
+    now = time.time()
+    start = now - 900
+    _leak_scene_with_contention(db, start)
+    for i in range(20):
+        _leak_signal(db, start + i * 5)
+
+    row = _run(db, start, now)
+
+    # **분류가 실제로 `CONTENTION` 이 나왔는지 먼저 고정한다.** 이게 없으면 시나리오가
+    # `NONE` 으로 새도 테스트는 통과한다 — `NONE` 은 원래 주장을 채택하기 때문이다.
+    # 처음 이 테스트를 쓸 때 실제로 그렇게 됐고, 규칙을 지워도 통과했다.
+    assert row["bottleneck"] == "CONTENTION", (
+        f"시나리오가 경합을 만들지 못했다({row['bottleneck']}) — 이 테스트는 아무것도 보지 않는다"
+    )
+    assert "python" in row["title"], f"제목이 탐지기 주장을 버렸다: {row['title']}"
+    assert "경합" not in row["title"], f"경합이 제목을 차지했다: {row['title']}"
+    assert "cpu_eater" not in row["title"], f"무관한 프로세스를 지목했다: {row['title']}"
+
+
+def test_claim_never_wins_over_observed_hardware_states() -> None:
+    """`GPU`·`THERMAL` 은 탐지기 주장에 양보하지 않는다.
+
+    넷 다 `attributable=False` 지만 성질이 다르다. `NONE`·`CONTENTION` 은 "원인을 짚지
+    못했다"는 뜻이고, `GPU`·`THERMAL` 은 특정 하드웨어 상태를 **실제로 관측한** 것이다.
+    여기까지 넓히면 `발열 스로틀링 — GPU 92°C` 가 프로세스 하나의 핸들 이야기로 바뀐다 —
+    읽는 사람은 그 프로세스를 의심하지만 GPU 를 태운 것은 게임이다.
+
+    실제 시나리오로 재현하려면 GPU 수집 경로까지 세워야 해서, 여기서는 경계를 이름으로
+    고정한다. 구체 병목(CPU) 쪽 회귀는
+    `test_concrete_bottleneck_is_not_overridden_by_detector` 가 실제 데이터로 지킨다.
+    """
+    from argus.decide.fusion import _CLAIM_WINS_OVER
+
+    assert _CLAIM_WINS_OVER == {"NONE", "CONTENTION"}, (
+        f"주장이 이기는 병목 종류가 바뀌었다: {sorted(_CLAIM_WINS_OVER)}"
+    )

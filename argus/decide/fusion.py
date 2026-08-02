@@ -103,6 +103,23 @@ class DetectorClaim:
 # 이름이 다른 것은 자원 축이 컬럼과 1:1 이 아니기 때문이다(`rss_mb` 컬럼 ↔ `rss` 자원).
 _CLAIM_RESOURCE = {"handles": "handles", "rss_mb": "rss"}
 
+# **탐지기의 주장이 병목 분류를 이기는 경우.**
+#
+# 처음에는 `NONE` 하나였다. 그러자 2026-07-30 배치에서 주입 4건 중 3건이 `CONTENTION`
+# 으로 분류되며 claim 이 통째로 버려졌다 — 신호는 `handles`/`python` 인데 사건은
+# `경합 (자원 포화 없이 지연) — 컨텍스트 스위치 평소의 19.7σ` 로 발표됐다. 그 경합은
+# 주입과 인과가 없다(주입 구간의 컨텍스트 스위치 중앙값이 **오히려 더 낮다** —
+# 28,431/s vs 구간 밖 103,580/s). 분류기는 구간 안 최악 시점 한 점을 보는데, 12분짜리
+# 구간에서는 무관한 스파이크가 늘 하나쯤 잡힌다.
+#
+# **`CONTENTION` 을 넣고 `GPU`·`THERMAL` 은 넣지 않는다.** 넷 다 `attributable=False`
+# 지만 성질이 다르다. `CONTENTION` 은 정의상 "어떤 자원도 포화되지 않았다"는 선언이라
+# `NONE` 과 같은 편이다 — `_RESOURCE_BY_KIND` 의 주석도 "경합은 누가 자원을 많이 썼나로
+# 설명되지 않는다. CPU 상위는 참고일 뿐"이라고 말한다. 반면 `GPU`·`THERMAL` 은 특정
+# 하드웨어 상태를 **실제로 관측한** 것이고, 사용자가 느낀 것이 그쪽이다. 거기까지
+# 넓히면 `발열 스로틀링 — GPU 92°C` 가 프로세스 하나의 핸들 이야기로 대체된다.
+_CLAIM_WINS_OVER = frozenset({"NONE", "CONTENTION"})
+
 
 def _trigger_rules(
     db: Database, incident_id: int
@@ -228,12 +245,13 @@ def analyze_incident(
     # **병목을 모르겠으면 탐지기가 말한 자원을 쓴다.**
     #
     # 구체적 병목(CPU·IO·MEMORY)이 나왔으면 그것을 유지한다 — 전역 지표가 실제로 증상을
-    # 보이는 경우이고, 사용자가 느낀 것은 그쪽이다. 그러나 `NONE` 은 "전역 지표에서
-    # 아무것도 못 찾았다"는 뜻이고, 그 상태에서 CPU 로 분해하면 **구간에 CPU 를 많이 쓴
-    # 무관한 프로세스**가 원인으로 발표된다. 핸들 누수가 정확히 그 경우다.
+    # 보이는 경우이고, 사용자가 느낀 것은 그쪽이다. 그러나 `NONE`·`CONTENTION` 은 "전역
+    # 지표가 원인을 짚지 못했다"는 뜻이고, 그 상태에서 CPU 로 분해하면 **구간에 CPU 를
+    # 많이 쓴 무관한 프로세스**가 원인으로 발표된다. 핸들 누수가 정확히 그 경우다.
+    # 어느 종류가 여기 들어가고 무엇이 빠지는지는 `_CLAIM_WINS_OVER` 참조.
     resource = bottleneck.resource
     attributable = bottleneck.attributable
-    if bottleneck.kind == "NONE" and claim is not None:
+    if bottleneck.kind in _CLAIM_WINS_OVER and claim is not None:
         resource = claim.resource
         attributable = True
 
@@ -274,7 +292,7 @@ def analyze_incident(
     #
     # 병목이 구체적으로 잡혔을 때는 기존 형식을 유지한다. 그때는 전역 증상이 있고,
     # `CPU 병목 — chrome 68%` 가 프로세스 하나의 내부 사정보다 사용자에게 가깝다.
-    if bottleneck.kind == "NONE" and claim is not None and claim.explain:
+    if bottleneck.kind in _CLAIM_WINS_OVER and claim is not None and claim.explain:
         title = claim.explain
     else:
         # **귀인이 성립할 때만 제목에 프로세스를 넣는다.** GPU·발열은 프로세스별 사용량을

@@ -532,3 +532,77 @@ def test_product_scoring_ignores_the_label_when_inference_differs(db: Database) 
     assert verdict.resource == "cpu", (
         f"라벨(handles)을 그대로 썼다 — 추론 결과는 cpu 여야 한다: {verdict.resource}"
     )
+
+
+def _leak_fixture(db: Database, *, global_metrics: bool) -> dict:
+    """핸들 누수 주입 하나. `global_metrics=False` 면 구간의 전역 지표만 없다.
+
+    나머지(프로세스 메트릭·정답 PID·완료 표시)는 동일하게 둔다 — 그래야 판정 차이가
+    전역 지표 하나에서만 나온다.
+    """
+    now = time.time()
+    start = now - 600
+    end = start + 300
+
+    # 비교 창(주입 전)에는 항상 둔다. 없애는 것은 **구간 안**뿐이다 —
+    # 보존 정리가 오래된 쪽부터 지우므로 실제로도 이 모양이 된다.
+    global_rows = [(start - 1800 + i, 15.0, 30.0, 30.0, 0.1) for i in range(1500)]
+    if global_metrics:
+        global_rows += [(start + i, 16.0, 31.0, 30.0, 0.1) for i in range(300)]
+    db.insert_many(
+        "metrics_raw",
+        ("ts", "cpu_total", "cpu_max_core", "mem_percent", "disk_resp_ms"),
+        global_rows,
+    )
+
+    rows = [(start - 200 + i, 700, "leaker", 1.0, 50.0, 0, 400) for i in range(0, 200, 2)]
+    rows += [(start + i, 700, "leaker", 1.0, 52.0, 0, 400 + i * 10) for i in range(0, 300, 2)]
+    _proc(db, rows)
+    db.insert_many(
+        "fault_injections",
+        ("id", "scenario", "ts_start", "ts_end", "pid", "params", "ramp", "completed"),
+        [(1, "handle_leak", start, end, 700, "{}", 0, 1)],
+    )
+    # 사건은 있어야 한다. 없으면 그쪽이 먼저 걸려("탐지 실패") 전역 지표 분류에
+    # 닿지도 못한다 — 그 순서가 의도된 것이라 여기서 사건을 만들어 둔다.
+    db.insert_many(
+        "incidents",
+        ("id", "ts_start", "ts_end", "severity", "bottleneck", "title"),
+        [(1, start + 10, end, "warning", "NONE", "사건")],
+    )
+    return dict(db.query("SELECT * FROM fault_injections WHERE id = 1")[0])
+
+
+def test_product_scoring_skips_windows_whose_global_metrics_were_purged(db: Database) -> None:
+    """전역 지표가 지워진 구간은 **채점 불능**이지 귀인 실패가 아니다.
+
+    `analyze_incident()` 의 병목 분류는 `metrics_raw` 를 읽는다. 그 구간이 보존 정리에
+    지워졌으면 병목이 "관측 없음"이 되고 자원이 기본값으로 돌아가 결과가 무조건
+    미지목이다. 그것을 0점으로 세면 탐지기가 아니라 보존 정책을 채점하는 셈이다 —
+    `score_fault` 가 "프로세스 메트릭이 없음"을 빼는 것과 같은 이유다.
+
+    2026-08-02 에 이것이 없어 07-30 배치 7건이 전부 0% 로 계산돼 제품 경로 지목률이
+    0.0% 로 나왔다. 더 나쁜 것은 **그 7건이 표본에 남아 이후 실행을 영구히 끌어내린다**
+    는 점이다 — 새 배치가 5/5 를 맞혀도 5/12 = 42% 라 DoD 85% 에 닿을 수 없다.
+    """
+    from argus.eval.attribution import score_fault_product
+
+    verdict = score_fault_product(db, _leak_fixture(db, global_metrics=False))
+
+    assert verdict.skipped is not None, "전역 지표가 없는데도 채점했다"
+    assert "전역 지표" in verdict.skipped, f"사유가 다르다: {verdict.skipped}"
+
+
+def test_product_scoring_still_runs_when_global_metrics_survive(db: Database) -> None:
+    """대조 — 전역 지표가 있으면 이 사유로는 빠지지 않는다.
+
+    이게 없으면 위 테스트는 "무조건 건너뛰는 채점"으로도 통과한다. 사건이 없어
+    다른 사유로 빠지는 것은 여기서 따지지 않는다.
+    """
+    from argus.eval.attribution import score_fault_product
+
+    verdict = score_fault_product(db, _leak_fixture(db, global_metrics=True))
+
+    assert "전역 지표" not in (verdict.skipped or ""), (
+        f"전역 지표가 있는데 없다고 판정했다: {verdict.skipped}"
+    )
