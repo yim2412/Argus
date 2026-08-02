@@ -62,6 +62,24 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 그대로 종료합니다(자동 시작과 수동 실행이 겹치는 것은 흔한 일이라 실패로 다루지 않습니다).
 `ARGUS_DATA_DIR` 로 분리한 인스턴스는 서로 막지 않습니다.
 
+### exe 로 묶기
+
+```powershell
+.venv\Scripts\pyinstaller.exe packaging\argus.spec --noconfirm
+dist\argus\argus.exe --check
+```
+
+`--onedir` 입니다(onefile 은 시작이 느리고 DLL 문제가 잦습니다). 실측 **빌드 37~48초 ·
+`dist` 195MB · exe 9.9MB**. 격리 실행으로 검증하려면 `ARGUS_DATA_DIR` 을 지정하세요.
+
+**아직 상주 본체만 묶습니다.** 대시보드(Streamlit)는 자체 자원 파일과 동적 import 가
+많아 별도 문제이고, 그것 때문에 전체 빌드가 막히면 무엇이 진짜 장애물인지 알 수 없게
+됩니다. 트레이·알림 발송도 미구현이라 지금 exe 는 **콘솔 창이 뜬 채 수집만 합니다.**
+
+spec 안에서는 **상대경로를 쓰지 마세요.** spec 의 상대경로는 spec 파일 위치가 아니라
+빌드를 실행한 작업 디렉터리 기준으로 풀립니다. 첫 빌드에서 `pathex=[".."]` 가 프로젝트의
+부모를 가리켜 `argus` 패키지가 통째로 빠졌고, **빌드는 성공한 뒤 실행에서만** 죽었습니다.
+
 ### 로그온 시 자동 시작
 
 상주 모니터는 켜져 있어야 데이터가 쌓입니다. 켜는 것을 잊으면 그날치가 비고, 베이스라인·

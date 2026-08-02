@@ -39,3 +39,8 @@ include = ["argus*"]
 
 [tool.setuptools.package-data]
 argus = ["config/*.yaml", "storage/migrations/*.sql"]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.21.0",
+]

@@ -48,3 +48,7 @@ crash_*.json
 .idea/
 Thumbs.db
 desktop.ini
+
+# uv add 부산물. 빌드 도구가 만드는 것이라 소스가 아니다.
+argus.egg-info/
+uv.lock
