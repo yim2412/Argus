@@ -193,6 +193,23 @@ incident:
   # 저량 지표가 최고치의 이 비율 아래로 떨어지면 PID 재사용으로 보고 시계열을 끊는다.
   stock_drop_reset_ratio: 0.5
 
+severity:
+  # 등급을 가르는 문턱. **두 축이다** — 지금 겪는 손실과, 방치했을 때의 위험.
+  # 지금까지 등급은 탐지기 종류에 붙어 있어(procleak 은 무조건 warning) 누수 규모나
+  # 실제 성능 손실과 무관하게 결정됐다. 실사용 122건에서 역전이 실제로 나왔다.
+  enabled: true
+
+  # 위험 축 — 그 프로그램 자기 p99 대비 위치.
+  # 실측(2026-08-03): medal(정상 동작) 0.12 · 주입 python(진짜 누수) 2.16.
+  risk_warning_ratio: 1.0    # 평소 상한을 넘었다
+  risk_critical_ratio: 2.0   # 평소 상한의 두 배
+  risk_monotonic_floor: 0.95 # 이보다 등락하면 한 단계 내린다 (일하는 중에 가깝다)
+  unknown_leak: warning      # 지문이 없는 프로세스. 지금까지의 고정값이 이것이었다.
+
+  # 현재 손실 축 — 같은 부하에서 클럭이 얼마나 깎였나.
+  impact_warning_loss: 0.10
+  impact_critical_loss: 0.25
+
 fingerprint:
   # 프로세스 지문 — "이 프로그램의 평소는 어디까지인가". process_leak 의 오탐을 줄인다.
   # 실측: medal(게임 녹화)이 핸들 383 → 1,395 로 늘어 발화했는데, medal 의 평소

@@ -24,7 +24,7 @@ UI 는 시스템 트레이 + Streamlit 대시보드.
 | `collector/` | psutil·PDH·NVML 로 리소스를 읽는다 | 수집기 하나가 죽어도 나머지는 계속돼야 한다. `procsource` 가 전 프로세스를 한 번에 가져온다 |
 | `storage/` | 핫(SQLite) + 웜(Parquet/DuckDB) | **장기 데이터는 `history` 를 거친다.** SQLite 만 읽으면 이틀치뿐이다 |
 | `detection/` | "평소와 다름"을 신호로 | `baseline`(중앙값/MAD) 위에 `rules`(전역)·`procleak`(프로세스별). 룰 표현식은 `expr` 이 `eval()` 없이 평가한다 |
-| `decide/` | 신호 → 사건, 무엇을 알릴지 | `fusion` 이 신호를 사건 하나로 접고, `budget`·`suppression` 이 알림 양을 막는다 |
+| `decide/` | 신호 → 사건, 무엇을 알릴지 | `fusion` 이 신호를 사건 하나로 접고, `budget`·`suppression` 이 알림 양을 막는다. `severity` 가 등급을 두 축(현재 손실·위험)으로 매긴다 |
 | `explain/` | "왜 느렸는지" | `bottleneck`(무엇에 막혔나) → `attribution`(누가 가져갔나) → `report`(문장). `changepoint` 가 시작 시각을 찾는다 |
 | `eval/` | 리플레이 + 채점 | `python -m argus.eval`. 탐지기를 건드렸으면 여기를 돌린다 |
 | `runtime/` | 스레드·자기예산·자기계측 | `budget` 이 예산 초과 시 스스로 샘플링을 낮춘다 |

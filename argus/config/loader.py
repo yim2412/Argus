@@ -288,6 +288,31 @@ class FingerprintSettings(BaseModel):
     min_buckets: int = Field(default=100, ge=10)
 
 
+class SeveritySettings(BaseModel):
+    """등급을 가르는 문턱. **두 축(현재 손실 · 방치 시 위험)의 경계다.**
+
+    **이 값들은 2026-08-03 에 실사용 122건으로 정했다** — 근거는 `CHANGELOG.md`.
+    근거 없이 넣으면 07-30 에 배수 문턱 5 를 넣지 않고 멈춘 것과 같은 자리가 된다.
+    """
+
+    enabled: bool = True
+
+    # --- 위험 축: 그 프로그램 자기 p99 대비 위치
+    # 실측: medal(정상 동작) 0.12, 주입 python(진짜 누수) 2.16. 둘 사이가 넓어
+    # 문턱을 어디에 둬도 갈리지만, 1.0(= 평소 상한)이 뜻이 분명하다.
+    risk_warning_ratio: float = Field(default=1.0, gt=0)
+    risk_critical_ratio: float = Field(default=2.0, gt=0)
+    # 이보다 등락하면 한 단계 내린다. 계단식으로만 오르는 것이 누수의 모양이다.
+    risk_monotonic_floor: float = Field(default=0.95, ge=0.0, le=1.0)
+    # 지문이 없는 프로세스의 등급. 모르는 것을 조용히 info 로 내리면 진짜 누수가 묻히고,
+    # critical 로 올리면 신규 프로세스마다 운다. 지금까지의 고정값이 warning 이었다.
+    unknown_leak: str = "warning"
+
+    # --- 현재 손실 축: 같은 부하에서 클럭이 얼마나 깎였나
+    impact_warning_loss: float = Field(default=0.10, gt=0, lt=1)
+    impact_critical_loss: float = Field(default=0.25, gt=0, lt=1)
+
+
 class LeakMetricSettings(BaseModel):
     """지표 하나의 누수 판정 기준. 전부 상대값이다.
 
@@ -343,6 +368,7 @@ class Settings(BaseModel):
     thermal_drift: ThermalDriftSettings = ThermalDriftSettings()
     incident: IncidentSettings = IncidentSettings()
     process_leak: ProcessLeakSettings = ProcessLeakSettings()
+    severity: SeveritySettings = SeveritySettings()
     fingerprint: FingerprintSettings = FingerprintSettings()
 
 

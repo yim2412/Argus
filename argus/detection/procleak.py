@@ -26,8 +26,10 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from ..config.loader import SeveritySettings
+from ..decide.severity import leak_risk
 from ..logging_setup import get_logger
-from .base import SEVERITY_WARNING, BaseDetector, Detection, Observation, ProcessView
+from .base import BaseDetector, Detection, Observation, ProcessView
 
 log = get_logger(__name__)
 
@@ -186,6 +188,7 @@ class ProcessLeakDetector(BaseDetector):
         max_tracked: int = DEFAULT_MAX_TRACKED,
         drop_reset_ratio: float = DEFAULT_DROP_RESET_RATIO,
         eval_interval_s: float = DEFAULT_EVAL_INTERVAL_S,
+        severity: SeveritySettings | None = None,
     ) -> None:
         # 워밍업은 창 길이가 대신한다 — 지속 조건을 못 채우면 어차피 발화하지 않는다.
         super().__init__(warmup_s=0.0)
@@ -197,6 +200,8 @@ class ProcessLeakDetector(BaseDetector):
         self.max_tracked = max_tracked
         self.drop_reset_ratio = drop_reset_ratio
         self.eval_interval_s = eval_interval_s
+        # 등급 문턱. 기본값으로 두면 단독 실행 스모크가 config 없이도 돈다.
+        self.severity = severity or SeveritySettings()
         # 프로세스 지문(Phase 6-B). 비어 있으면 억제 없이 6-A 그대로 동작한다.
         self.fingerprints: dict[tuple[str, str], Any] = {}
         self._tracks: dict[tuple[int, str, str], _Track] = {}
@@ -307,6 +312,17 @@ class ProcessLeakDetector(BaseDetector):
 
     # ------------------------------------------------------------------ 판정
 
+    def _fingerprint_for(self, name: str, rule: MetricRule):
+        """이 (프로그램, 지표) 의 지문. 없으면 None.
+
+        억제 판정과 등급 판정이 **같은 지문**을 봐야 한다. 조회를 두 곳에 적으면
+        한쪽만 고쳤을 때 "억제는 안 하는데 등급은 낮게 주는" 식으로 조용히 갈린다.
+        """
+        from .fingerprint import STAT_FOR
+
+        stat = STAT_FOR.get(rule.attr)
+        return self.fingerprints.get((name, stat)) if stat else None
+
     def _is_normal_for(self, name: str, rule: MetricRule, verdict: LeakVerdict) -> bool:
         """이 프로그램에게는 평소 수준인가 (Phase 6-B 지문 억제).
 
@@ -318,16 +334,12 @@ class ProcessLeakDetector(BaseDetector):
         않는다 — 모르는 것을 막는 방향으로는 틀지 않는다. 같은 실측에서 주입 프로세스는
         평소 p99(2,768)를 훌쩍 넘겨 그대로 발화했다.
         """
-        from .fingerprint import STAT_FOR
-
-        stat = STAT_FOR.get(rule.attr)
-        if not stat:
-            return False
-        fp = self.fingerprints.get((name, stat))
+        fp = self._fingerprint_for(name, rule)
         if fp is None:
             return False
         if not fp.within_normal(verdict.last):
             return False
+        stat = fp.stat
 
         # 조용히 삼키지 않는다. 무엇을 왜 막았는지 남긴다(설계 규칙 4).
         #
@@ -391,10 +403,23 @@ class ProcessLeakDetector(BaseDetector):
             f"{v.first:,.0f} → {v.last:,.0f}{rule.unit} "
             f"({v.ratio:.1f}배, {v.duration_s / 60:.0f}분간 줄지 않음)"
         )
+
+        # 등급은 **자기 p99 대비 위치**로 정한다. 지금까지는 warning 고정이라 누수
+        # 규모와 무관했다 — 실측에서 평소 상한의 3.5배로 자라는 주입과, 평소의 절반도
+        # 안 되는 medal 이 같은 등급이었다. 배수(`ratio`)를 쓰지 않는 이유는 그것이
+        # 심각도와 무관했기 때문이다: 가장 높은 배수(27.8)가 정상 프로세스였다.
+        fp = self._fingerprint_for(hit["name"], rule)
+        severity, risk_reason = leak_risk(
+            last=v.last,
+            fingerprint_p99=fp.p99 if fp is not None else None,
+            monotonic=v.monotonic,
+            settings=self.severity,
+        )
         return self.detect(
             obs,
             score,
-            severity=SEVERITY_WARNING,
+            severity=severity,
+            severity_reason=risk_reason,
             rule=f"{rule.label} 누수",
             process=hit["name"],
             pid=hit["pid"],
@@ -470,6 +495,7 @@ def build() -> ProcessLeakDetector:
             max_tracked=cfg.max_tracked,
             drop_reset_ratio=cfg.drop_reset_ratio,
             eval_interval_s=cfg.eval_interval_s,
+            severity=load_settings().severity,
         )
     except Exception as exc:  # 설정 오류가 탐지기 로드를 막으면 안 된다
         log.warning("process_leak 설정을 읽지 못해 기본값을 쓴다", extra={"error": str(exc)})

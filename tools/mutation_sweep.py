@@ -230,6 +230,42 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "severity_risk_axis",
+        "등급의 위험 축 — 자기 p99 대비 위치로 등급을 가른다",
+        (
+            (
+                "argus/detection/procleak.py",
+                "        severity, risk_reason = leak_risk(\n",
+                '        severity, risk_reason = "warning", ""  # MUTANT: 등급 고정\n'
+                "        _unused_leak_risk = leak_risk(\n",
+            ),
+        ),
+        note="고정 warning 으로 되돌린다 — 07-30 이전 상태",
+    ),
+    Mutant(
+        "severity_risk_threshold",
+        "등급 문턱 — config → 탐지기 배선",
+        (
+            (
+                "argus/config/loader.py",
+                "    risk_critical_ratio: float = Field(default=2.0, gt=0)",
+                "    risk_critical_ratio: float = Field(default=1000.0, gt=0)",
+            ),
+            ("argus/config/defaults.yaml", "risk_critical_ratio: 2.0", "risk_critical_ratio: 1000.0"),
+        ),
+    ),
+    Mutant(
+        "rollup_gpu_clock",
+        "GPU 클럭을 롤업에 남긴다 (원본은 24시간 뒤 사라진다)",
+        (
+            (
+                "argus/storage/rollup.py",
+                '                    _min(g.get("clock_sm_mhz", [])),\n',
+                "                    None,  # MUTANT: 클럭 최저값을 버린다\n",
+            ),
+        ),
+    ),
+    Mutant(
         "rollup_watermark",
         "삭제는 롤업 워터마크를 넘지 못한다 — 접히기 전에 지우면 영구 손실이다",
         (

@@ -86,6 +86,75 @@ def test_does_not_suppress_when_above_normal():
     assert fired, "평소를 넘었는데 억제됐다 — 진짜 누수를 놓친다"
 
 
+# --------------------------------------------------------------- 등급 (위험 축)
+
+def test_severity_rises_with_position_against_own_p99():
+    """**등급이 누수 규모를 따라간다.**
+
+    지금까지 `procleak` 은 warning 고정이라, 평소 상한의 3.5배로 자라는 주입과
+    평소의 절반도 안 되는 정상 동작이 같은 등급이었다. 배수(`ratio`)로는 가를 수
+    없다 — 실측에서 가장 높은 배수(27.8)가 정상 프로세스였다.
+
+    같은 시계열에 지문만 바꿔 등급이 갈리는지 본다. 시계열이 같으므로 **등급을
+    가르는 것이 지문 대비 위치뿐**임이 확정된다.
+
+    기준값은 **발화 시점의 값(3,030)** 이지 시계열의 끝(6,390)이 아니다. 지속 조건을
+    채우는 5분 시점에 발화하기 때문이다 — 끝값으로 기대를 적으면 테스트가 실제와
+    다른 것을 재게 된다(처음 이 테스트를 쓸 때 실제로 그랬다).
+    """
+    stream = leak_stream([400 + i * 10 for i in range(600)])
+
+    # 평소 상한의 세 배 (3,030 / 1,000)
+    hot = ProcessLeakDetector()
+    hot.fingerprints = {("leaky", "handles_max"): fp("leaky", "handles_max", 1000)}
+    fired = run_detector(hot, stream)
+    assert fired and fired[0].severity == "critical", (
+        f"평소 상한의 3배인데 {fired and fired[0].severity} 다"
+    )
+
+    # 평소 상한을 넘기는 하지만 두 배는 아니다 (3,030 / 2,768 = 1.09배)
+    warm = ProcessLeakDetector()
+    warm.fingerprints = {("leaky", "handles_max"): fp("leaky", "handles_max", 2768)}
+    fired = run_detector(warm, stream)
+    assert fired and fired[0].severity == "warning", (
+        f"평소 상한의 1.09배인데 {fired and fired[0].severity} 다"
+    )
+
+
+def test_severity_falls_back_to_warning_without_a_fingerprint():
+    """**지문이 없으면 등급을 낮추지도 올리지도 않는다.**
+
+    억제와 같은 방향이다 — 모르는 것을 조용히 info 로 내리면 진짜 누수가 묻히고,
+    critical 로 올리면 신규 프로세스마다 운다. 지금까지의 고정값이 warning 이었으므로
+    거기 머무는 것이 변화 없는 선택이다.
+    """
+    detector = ProcessLeakDetector()
+    detector.fingerprints = {}
+    fired = run_detector(detector, leak_stream([400 + i * 10 for i in range(600)]))
+    assert fired and fired[0].severity == "warning"
+    assert "지문 없음" in fired[0].features["severity_reason"]
+
+
+def test_severity_threshold_comes_from_config():
+    """문턱이 **config 에서** 온다. 값을 모듈에 박으면 튜닝이 코드 수정이 된다.
+
+    `test_config_thresholds.py` 가 같은 것을 다른 자리에서 본다 — 거기는 판정 함수,
+    여기는 탐지기까지 흘러가는 경로다. 2026-08-03 mutation 에서 `procleak` 의 단조성이
+    로직만 검증되고 배선이 비어 있던 것이 정확히 이 차이였다.
+    """
+    from argus.config.loader import SeveritySettings
+
+    stream = leak_stream([400 + i * 10 for i in range(600)])
+    prints = {("leaky", "handles_max"): fp("leaky", "handles_max", 1000)}
+
+    strict = ProcessLeakDetector(severity=SeveritySettings(risk_critical_ratio=10.0))
+    strict.fingerprints = dict(prints)
+    fired = run_detector(strict, stream)
+    assert fired and fired[0].severity == "warning", (
+        f"critical 문턱을 10배로 올렸는데 {fired and fired[0].severity} 다 — 설정이 닿지 않았다"
+    )
+
+
 def test_no_fingerprint_means_no_suppression():
     """**지문이 없으면 막지 않는다.** 모르는 것을 막는 방향으로는 틀지 않는다.
 
