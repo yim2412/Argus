@@ -187,19 +187,30 @@ def observed_days(kind: str = "metrics", min_hours: float = 0.0) -> list[str]:
 
 
 def exclusion_clause(
-    windows: list[tuple[float, float]], column: str = "ts_5m"
+    windows: list[tuple[float, float]],
+    column: str = "ts_5m",
+    bucket_s: float = BUCKET_S["process"],
 ) -> tuple[str, list[float]]:
-    """구간 목록을 `AND NOT (col >= ? AND col < ?)` 조각으로 바꾼다.
+    """구간 목록을 제외 조각으로 바꾼다. **버킷이 구간과 겹치기만 해도 뺀다.**
 
     두 계층(DuckDB `warm_process`, SQLite `process_5m`)이 같은 문법을 받으므로 조각을
     한 번만 만들어 양쪽에 쓴다. 값은 바인딩하므로 SQL 에 숫자를 박지 않는다.
+
+    **버킷 시작점만 보면 경계 버킷이 남는다.** 값은 `[ts, ts + bucket_s)` 구간을
+    대표하므로, 시작점이 구간 밖이어도 그 5분 안에서 주입이 시작됐으면 결함이 값에
+    들어 있다. 2026-08-03 에 이것이 실제로 지문을 오염시켰다 — 주입 제외를 켜 두고도
+    `python` 의 `handles_max` p99 가 2,768(정상 상한) 대신 **4,533** 이었고, 남은 두
+    버킷이 정확히 주입 #53(14:31 시작 → 14:30 버킷)과 #47(16:15:3x 시작 → 16:15
+    버킷)의 경계였다. 그 결과 07-30 에 고쳤던 "지문이 결함을 평소로 배운다"가 절반만
+    고쳐진 상태로 남아, 등급의 위험 축이 주입을 정상으로 판정했다.
     """
     if not windows:
         return "", []
-    parts = " ".join(f"AND NOT ({column} >= ? AND {column} < ?)" for _ in windows)
+    parts = " ".join(f"AND NOT ({column} < ? AND {column} > ?)" for _ in windows)
     params: list[float] = []
     for lo, hi in windows:
-        params += [float(lo), float(hi)]
+        # col < hi  AND  col + bucket > lo   →  col > lo - bucket
+        params += [float(hi), float(lo) - float(bucket_s)]
     return " " + parts, params
 
 

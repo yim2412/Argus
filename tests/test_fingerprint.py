@@ -193,13 +193,50 @@ def test_reset_keeps_fingerprints():
 def test_exclusion_clause_binds_values_and_covers_every_window():
     from argus.storage.history import exclusion_clause
 
-    clause, params = exclusion_clause([(10.0, 20.0), (30.0, 40.0)])
+    clause, params = exclusion_clause([(10.0, 20.0), (30.0, 40.0)], bucket_s=5.0)
     assert clause.count("AND NOT") == 2
-    assert params == [10.0, 20.0, 30.0, 40.0]
+    # 겹침 판정이라 (상한, 하한 - 버킷) 순으로 바인딩된다.
+    assert params == [20.0, 5.0, 40.0, 25.0]
     assert "10" not in clause, "값이 SQL 에 박혔다 — 바인딩해야 한다"
 
     empty, no_params = exclusion_clause([])
     assert empty == "" and no_params == []
+
+
+def _excluded(ts: float, windows, bucket_s: float) -> bool:
+    """`exclusion_clause` 가 만든 조건을 그대로 평가한다. SQL 을 파이썬으로 옮겨
+    적으면 두 규칙이 갈리므로, 파라미터를 받아 같은 비교를 한다."""
+    from argus.storage.history import exclusion_clause
+
+    _clause, params = exclusion_clause(windows, bucket_s=bucket_s)
+    for i in range(0, len(params), 2):
+        upper, lower = params[i], params[i + 1]
+        if ts < upper and ts > lower:  # AND NOT (col < ? AND col > ?)
+            return True
+    return False
+
+
+def test_exclusion_drops_buckets_that_merely_overlap_the_window():
+    """**버킷이 구간과 겹치기만 해도 빠져야 한다.**
+
+    버킷 값은 `[ts, ts + 300)` 을 대표하므로, 시작점이 구간 밖이어도 그 5분 안에서
+    주입이 시작됐으면 결함이 값에 들어 있다. 2026-08-03 에 이것이 실제로 지문을
+    오염시켰다 — 제외를 켜 두고도 `python` 의 p99 가 정상 상한(2,768) 대신 4,533
+    이었고, 남은 두 버킷이 정확히 주입 시작을 담은 경계 버킷이었다.
+    """
+    # 버킷 경계가 …000 · …300 · …600 일 때, 주입은 버킷 한가운데(+100)에서 시작한다.
+    # 이것이 08-02 #53 의 모양이다 — 14:30 버킷이 도는 중에 14:31 주입이 시작됐다.
+    window = [(1_000_100.0, 1_000_820.0)]
+
+    assert _excluded(1_000_000.0, window, 300.0), (
+        "주입 시작을 담은 경계 버킷이 남는다 — 지문이 결함을 평소로 배운다"
+    )
+    # 구간 안쪽 버킷은 당연히 빠진다.
+    assert _excluded(1_000_300.0, window, 300.0)
+    # 완전히 벗어난 버킷은 남아야 한다. 여유까지 빼면 정상 표본이 줄어든다.
+    # 버킷 [999,700, 1,000,000) 은 주입 시작(1,000,100)을 담지 않는다.
+    assert not _excluded(999_700.0, window, 300.0), "겹치지 않는 앞 버킷까지 뺐다"
+    assert not _excluded(1_000_900.0, window, 300.0), "구간이 끝난 뒤 버킷까지 뺐다"
 
 
 def test_build_excludes_fault_windows_from_the_distribution(monkeypatch):
