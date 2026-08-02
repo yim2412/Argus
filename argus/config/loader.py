@@ -157,6 +157,74 @@ class RetentionSettings(BaseModel):
     fault_guard_s: float = Field(default=900.0, ge=0)
 
 
+class BottleneckSettings(BaseModel):
+    """병목 분류의 판정 문턱. "무엇에 막혔나"를 가르는 값들이다.
+
+    **점수 가중치(0.5·0.3·0.7 …)는 여기 없다.** 그것은 튜닝 값이 아니라 분류 알고리즘의
+    구조다 — YAML 로 노출하면 사용자가 병목 판정을 망가뜨릴 수 있고 되돌릴 방법이 없다.
+    규칙 3 이 요구하는 것은 "임계값을 코드 수정 없이 튜닝"이지 알고리즘 노출이 아니다.
+
+    기본값은 이관 이전의 코드 상수와 같다. 옮기는 것이 목적이지 값을 바꾸는 것이
+    아니다 — `disk_resp_floor_ms` 하나만 예외이고, 그 이유는 아래 주석에 있다.
+    """
+
+    # 상대 판정의 문턱. 이 배수를 넘어야 "평소와 다르다"고 본다.
+    z_high: float = Field(default=3.0, gt=0)
+
+    # **디스크 응답의 체감 하한.** `rules.yaml` 의 디스크 룰이 같은 개념을 `3` 으로
+    # 써서 **한 개념에 두 값**이었다. 5.0 으로 통일한다 — 3ms 는 NVMe 에서 흔한
+    # 값이라 룰 쪽이 더 자주 울렸고, 둘 중 엄격한 쪽을 남기는 것이 오탐을 줄인다.
+    disk_resp_floor_ms: float = Field(default=5.0, gt=0)
+
+    cpu_high_percent: float = Field(default=70.0, gt=0)
+    """이 이상이면 절대값만으로 CPU 병목 근거가 된다."""
+    cpu_elevated_percent: float = Field(default=40.0, gt=0)
+    """절대값은 낮지만 평소 대비 크게 높을 때 요구하는 최소선."""
+
+    mem_high_percent: float = Field(default=85.0, gt=0)
+    """이 이상이면 메모리 압박이 확실하다."""
+    mem_tight_percent: float = Field(default=60.0, gt=0)
+    """메모리가 '빠듯하다'고 볼 선. 스왑·상대 조건이 이 위에서만 근거가 된다.
+
+    **스왑 단독으로는 근거가 되지 않는다**(2026-08-02, PLAN §8 18번). Windows 는
+    메모리가 남아돌아도 페이지파일을 쓴다.
+    """
+
+    disk_queue_high: float = Field(default=2.0, gt=0)
+    """응답시간 근거가 이미 있을 때 큐가 이 이상이면 근거를 더한다."""
+    disk_queue_alone: float = Field(default=4.0, gt=0)
+    """큐 길이는 단위가 하드웨어 독립적이라 이 값 이상이면 혼자서도 근거가 된다."""
+
+    gpu_busy_percent: float = Field(default=90.0, gt=0)
+    gpu_hot_c: float = Field(default=80.0, gt=0)
+    cpu_perf_low_percent: float = Field(default=80.0, gt=0)
+    """실효 클럭이 이 아래로 떨어지면 스로틀링을 의심한다."""
+
+    contention_cpu_ceiling_percent: float = Field(default=60.0, gt=0)
+    """경합은 "자원은 남는데 지연"이다. CPU 가 이 위면 경합이 아니라 CPU 병목이다."""
+
+    # 방아쇠가 지목한 자원을 지표 근거가 뒤집으려면 이만큼 더 강해야 한다.
+    # 근소한 우위는 뒤집을 근거가 못 된다 — `bottleneck._OVERRIDE_*` 주석 참조.
+    override_ratio: float = Field(default=1.5, gt=1.0)
+    override_margin: float = Field(default=0.3, ge=0)
+
+
+class IncidentSettings(BaseModel):
+    """사건을 닫고 설명할 때의 문턱. 분류가 아니라 서술에 관한 값들이다."""
+
+    max_extend_before_s: float = Field(default=300.0, gt=0)
+    """지표에서 추정한 시작 경계를 앞으로 늘릴 수 있는 최대. 다른 사건을 삼키지 않게 한다."""
+    max_extend_after_s: float = Field(default=600.0, gt=0)
+
+    lead_min_share: float = Field(default=0.10, ge=0, le=1)
+    """기여도가 이 아래인 후보에는 선행 시간을 붙이지 않는다 — 잡음이라 오해를 부른다."""
+    lead_resolution_s: float = Field(default=30.0, gt=0)
+    """이 안쪽 차이는 "거의 동시"로 쓴다. 샘플링 주기보다 촘촘하게 말하지 않는다."""
+
+    stock_drop_reset_ratio: float = Field(default=0.5, gt=0, lt=1)
+    """저량 지표가 최고치의 이 비율 아래로 떨어지면 PID 재사용으로 보고 시계열을 끊는다."""
+
+
 class DetectionSettings(BaseModel):
     """탐지 엔진. 임계값은 여기가 아니라 `rules.yaml` 에 있다 — 이건 엔진 설정이다."""
 
@@ -242,6 +310,8 @@ class Settings(BaseModel):
     warm: WarmSettings = WarmSettings()
     retention: RetentionSettings = RetentionSettings()
     detection: DetectionSettings = DetectionSettings()
+    bottleneck: BottleneckSettings = BottleneckSettings()
+    incident: IncidentSettings = IncidentSettings()
     process_leak: ProcessLeakSettings = ProcessLeakSettings()
     fingerprint: FingerprintSettings = FingerprintSettings()
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from ..config.loader import IncidentSettings
 from .attribution import Contributor
 from .bottleneck import Bottleneck, label_for
 
@@ -27,15 +28,14 @@ _UNITS = {
     "handles": ("개", 1.0),
 }
 
-# 이보다 기여가 작은 후보는 선행성을 표시하지 않는다.
-# 상승폭이 작으면 "오르기 시작한 시점"의 판정 기준이 그 프로세스의 자연 변동 범위
-# 안으로 들어가, 아무 의미 없는 값이 큰 숫자로 나온다(실측: 기여도 5% 짜리가
-# "255초 선행"). 용의자가 아닌 것의 선행성은 정보가 아니라 잡음이다.
-_LEAD_MIN_SHARE = 0.10
-
-# 프로세스 저장 해상도(초). 활성 집합에 들기 전에는 이 간격으로만 기록되므로
-# 상승 개시 시점을 이보다 정밀하게 알 수 없다. 이 안의 차이는 "동시"로 본다.
-_LEAD_RESOLUTION_S = 30.0
+# 선행성 표시 문턱은 config 에 있다(`incident.lead_min_share`·`lead_resolution_s`).
+#
+# 기여가 작은 후보에 선행성을 붙이지 않는 이유: 상승폭이 작으면 "오르기 시작한 시점"의
+# 판정 기준이 그 프로세스의 자연 변동 범위 안으로 들어가, 아무 의미 없는 값이 큰 숫자로
+# 나온다(실측: 기여도 5% 짜리가 "255초 선행"). 용의자가 아닌 것의 선행성은 잡음이다.
+#
+# 해상도 쪽은 프로세스 저장 간격이다. 활성 집합에 들기 전에는 그 간격으로만 기록되므로
+# 상승 개시 시점을 그보다 정밀하게 알 수 없다. 그 안의 차이는 "동시"로 본다.
 
 
 @dataclass
@@ -96,8 +96,13 @@ def _fmt_duration(seconds: float) -> str:
     return f"{minutes}분 {rest}초" if rest else f"{minutes}분"
 
 
-def render(incident: Incident, resource: str | None = None) -> str:
+def render(
+    incident: Incident,
+    resource: str | None = None,
+    settings: IncidentSettings | None = None,
+) -> str:
     """사람이 읽는 리포트(Markdown)."""
+    cfg = settings or IncidentSettings()
     resource = resource or incident.bottleneck.resource
     unit, scale = _UNITS.get(resource, ("", 1.0))
 
@@ -143,8 +148,8 @@ def render(incident: Incident, resource: str | None = None) -> str:
             if contributor.is_new:
                 note.append("이상 구간에 새로 시작됨")
             lead = contributor.lead_s
-            if lead is not None and contributor.share >= _LEAD_MIN_SHARE:
-                if abs(lead) <= _LEAD_RESOLUTION_S:
+            if lead is not None and contributor.share >= cfg.lead_min_share:
+                if abs(lead) <= cfg.lead_resolution_s:
                     note.append("거의 동시")
                 elif lead > 0:
                     note.append(f"{lead:.0f}초 선행")
@@ -168,6 +173,10 @@ def render(incident: Incident, resource: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def render_plain(incident: Incident, resource: str | None = None) -> str:
+def render_plain(
+    incident: Incident,
+    resource: str | None = None,
+    settings: IncidentSettings | None = None,
+) -> str:
     """터미널용. Markdown 강조만 걷어낸다."""
-    return render(incident, resource).replace("**", "")
+    return render(incident, resource, settings).replace("**", "")

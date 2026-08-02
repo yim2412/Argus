@@ -27,6 +27,7 @@ from __future__ import annotations
 import statistics
 from dataclasses import dataclass, field
 
+from ..config.loader import IncidentSettings
 from ..logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -59,7 +60,7 @@ STOCK_RESOURCES = frozenset({"rss", "handles"})
 # 저량 시계열에서 값이 최대치의 이 비율 아래로 떨어지면 시계열을 끊는다. 정상적인
 # 해제이거나 PID 가 재사용되어 다른 프로그램의 값이 이어 붙은 것이다. `procleak` 의
 # `drop_reset_ratio` 와 같은 판단이고, 사건 구간은 수십 분일 수 있어 더 자주 걸린다.
-STOCK_DROP_RESET_RATIO = 0.5
+# → config: `incident.stock_drop_reset_ratio`
 
 # **이름으로 합치면 안 되는 프로세스들.**
 #
@@ -209,7 +210,7 @@ def _window_usage(
 
 
 def _window_growth(
-    db, resource: str, ts_start: float, ts_end: float
+    db, resource: str, ts_start: float, ts_end: float, drop_reset_ratio: float
 ) -> dict[tuple[int, str], tuple[float, float]]:
     """저량 자원에서 `(pid, 이름)` 별 (구간 초반값, 구간 후반값).
 
@@ -240,7 +241,7 @@ def _window_growth(
         # 하나의 긴 상승으로 보여, 이미 반납한 양까지 증가분으로 세게 된다.
         if values:
             peak = max(values)
-            if peak > 0 and value < peak * STOCK_DROP_RESET_RATIO:
+            if peak > 0 and value < peak * drop_reset_ratio:
                 values.clear()
         values.append(value)
 
@@ -270,6 +271,7 @@ def attribute(
     before: tuple[float, float],
     after: tuple[float, float],
     limit: int = 8,
+    settings: IncidentSettings | None = None,
 ) -> list[Contributor]:
     """변화점 전후를 비교해 기여도를 매긴다.
 
@@ -279,6 +281,8 @@ def attribute(
     """
     if resource not in RESOURCE_COLUMNS:
         raise ValueError(f"모르는 자원: {resource}")
+
+    cfg = settings or IncidentSettings()
 
     groups: dict[str, Contributor] = {}
 
@@ -296,7 +300,9 @@ def attribute(
         # (사건은 증상이 관측된 시점에 열린다) 이상 구간 안만 보면 미리 오르기 시작한
         # 진짜 원인의 상승분을 놓친다. `lead_time` 이 "40초 선행"을 재고 있다는 것
         # 자체가 원인이 구간 밖에서 오르기 시작한다는 뜻이다.
-        for (pid, name), (first, last) in _window_growth(db, resource, before[0], after[1]).items():
+        for (pid, name), (first, last) in _window_growth(
+            db, resource, before[0], after[1], cfg.stock_drop_reset_ratio
+        ).items():
             contributor = group_for(pid, name)
             contributor.before += first
             contributor.after += last

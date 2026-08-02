@@ -79,7 +79,10 @@ rules:
     when:
       all:
         - {metric: disk_resp_ms, op: ">", value: "median + 6 * sigma"}
-        - {metric: disk_resp_ms, op: ">", value: 3}
+        # 병목 분류의 `bottleneck.disk_resp_floor_ms` 와 **같은 개념**이다. 여기가 3,
+        # 저기가 5 여서 한 개념에 두 값이었다(2026-08-02 정리). 엄격한 쪽으로 맞춘다 —
+        # 3ms 는 NVMe 에서 흔해 룰만 먼저 울리고 분류는 IO 라 하지 않는 일이 생긴다.
+        - {metric: disk_resp_ms, op: ">", value: 5}
     for: 30s
     cooldown: 10m
     severity: warning

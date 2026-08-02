@@ -136,6 +136,45 @@ detection:
   # 알림 발송은 Phase 9. 오탐률이 검증되기 전에 켜면 되돌릴 수 없다.
   notify: false
 
+bottleneck:
+  # 병목 분류("무엇에 막혔나")의 판정 문턱.
+  #
+  # **점수 가중치는 여기 없다.** 0.5·0.3·0.7 같은 값은 튜닝 값이 아니라 분류
+  # 알고리즘의 구조라 코드에 남긴다. 노출하면 사용자가 병목 판정을 망가뜨릴 수 있고
+  # 되돌릴 방법이 없다. 규칙 3 이 요구하는 것은 "임계값을 코드 수정 없이 튜닝"이다.
+  z_high: 3.0
+  # 디스크 응답의 체감 하한(ms). rules.yaml 의 디스크 룰이 같은 개념을 3 으로 써서
+  # **한 개념에 두 값**이었다. 5.0 으로 통일했다 — 3ms 는 NVMe 에서 흔해 룰 쪽이 더
+  # 자주 울렸고, 둘 중 엄격한 쪽을 남기는 것이 오탐을 줄인다.
+  disk_resp_floor_ms: 5.0
+  cpu_high_percent: 70.0
+  cpu_elevated_percent: 40.0
+  mem_high_percent: 85.0
+  # 메모리가 '빠듯하다'고 볼 선. 스왑·상대 조건은 이 위에서만 근거가 된다 —
+  # 스왑 단독으로는 근거가 못 된다(Windows 는 여유가 있어도 페이지파일을 쓴다).
+  mem_tight_percent: 60.0
+  disk_queue_high: 2.0
+  disk_queue_alone: 4.0
+  gpu_busy_percent: 90.0
+  gpu_hot_c: 80.0
+  cpu_perf_low_percent: 80.0
+  # 경합은 "자원은 남는데 지연"이다. CPU 가 이 위면 경합이 아니라 CPU 병목이다.
+  contention_cpu_ceiling_percent: 60.0
+  # 방아쇠가 지목한 자원을 지표 근거가 뒤집으려면 이만큼 더 강해야 한다.
+  override_ratio: 1.5
+  override_margin: 0.3
+
+incident:
+  # 사건을 닫고 설명할 때의 문턱. 분류가 아니라 서술에 관한 값들이다.
+  max_extend_before_s: 300.0
+  max_extend_after_s: 600.0
+  # 기여도가 이 아래인 후보에는 선행 시간을 붙이지 않는다 — 잡음이라 오해를 부른다.
+  lead_min_share: 0.10
+  # 이 안쪽 차이는 "거의 동시"로 쓴다. 샘플링 주기보다 촘촘하게 말하지 않는다.
+  lead_resolution_s: 30.0
+  # 저량 지표가 최고치의 이 비율 아래로 떨어지면 PID 재사용으로 보고 시계열을 끊는다.
+  stock_drop_reset_ratio: 0.5
+
 fingerprint:
   # 프로세스 지문 — "이 프로그램의 평소는 어디까지인가". process_leak 의 오탐을 줄인다.
   # 실측: medal(게임 녹화)이 핸들 383 → 1,395 로 늘어 발화했는데, medal 의 평소

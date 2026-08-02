@@ -24,7 +24,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from argus.decide.fusion import analyze_incident  # noqa: E402
+from argus.config.loader import load_settings  # noqa: E402
+from argus.decide.fusion import FusionSettings, analyze_incident  # noqa: E402
 from argus.logging_setup import setup  # noqa: E402
 from argus.storage.hot import Database  # noqa: E402
 
@@ -36,6 +37,13 @@ def _fault_windows(db: Database) -> list[tuple[float, float]]:
 
 def _overlaps(lo: float, hi: float, windows: list[tuple[float, float]]) -> bool:
     return any(lo <= w_hi and hi >= w_lo for w_lo, w_hi in windows)
+
+
+def _fusion_settings() -> FusionSettings:
+    """제품이 쓰는 것과 같은 판정 문턱. 기본값으로 재분석하면 config 를 고친 사용자의
+    사건과 결과가 갈려, "고친 뒤 어떻게 달라지나"를 보려는 이 도구의 목적이 깨진다."""
+    cfg = load_settings()
+    return FusionSettings(bottleneck=cfg.bottleneck, incident=cfg.incident)
 
 
 def _top(contributors) -> str:
@@ -94,7 +102,9 @@ def main() -> int:
             except (TypeError, ValueError):
                 old_top = "(없음)"
 
-            analysis = analyze_incident(db, int(row["id"]), float(row["ts_end"]))
+            analysis = analyze_incident(
+                db, int(row["id"]), float(row["ts_end"]), _fusion_settings()
+            )
             if analysis is None:
                 print(f"  [{row['id']}] {stamp}  분석 불가")
                 continue

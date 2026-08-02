@@ -123,7 +123,12 @@ def score_fault(db, fault: dict, *, margin_s: float = 30.0, limit: int = 8) -> V
 
     before = (ts_start - margin_s - 120.0, ts_start - margin_s)
     after = (ts_start, ts_end)
-    contributors = attribute(db, resource, before=before, after=after, limit=limit)
+    from ..config.loader import load_settings
+
+    contributors = attribute(
+        db, resource, before=before, after=after, limit=limit,
+        settings=load_settings().incident,
+    )
     verdict.ranked = [(c.name, c.share, set(c.pids)) for c in contributors]
     return verdict
 
@@ -143,7 +148,9 @@ def score_fault_product(db, fault: dict, *, limit: int = 8) -> Verdict:
     **저장된 제목이 아니라 현재 코드로 다시 분석한 결과를 본다.** 저장된 행은 그때
     코드의 산출물이라, 고친 뒤에도 옛 값이 남아 있으면 개선을 볼 수 없다.
     """
-    from ..decide.fusion import analyze_incident  # 순환 임포트를 피해 함수 안에서
+    # 순환 임포트를 피해 함수 안에서 가져온다.
+    from ..config.loader import load_settings
+    from ..decide.fusion import FusionSettings, analyze_incident
 
     base = score_fault(db, fault, limit=limit)
     verdict = Verdict(
@@ -198,7 +205,16 @@ def score_fault_product(db, fault: dict, *, limit: int = 8) -> Verdict:
         return verdict
 
     best = max(rows, key=overlap)
-    analysis = analyze_incident(db, int(best["id"]), float(best["ts_end"] or best["ts_start"]))
+    # **채점도 제품과 같은 문턱을 쓴다.** 기본값으로 두면 사용자가 config 를 고쳤을 때
+    # 채점 결과와 실제 사건이 갈린다 — 그러면 스코어보드가 제품을 재지 않는다.
+    cfg = load_settings()
+    fusion_settings = FusionSettings(bottleneck=cfg.bottleneck, incident=cfg.incident)
+    analysis = analyze_incident(
+        db,
+        int(best["id"]),
+        float(best["ts_end"] or best["ts_start"]),
+        fusion_settings,
+    )
     if analysis is None:
         verdict.skipped = "사건을 다시 분석할 수 없음"
         return verdict

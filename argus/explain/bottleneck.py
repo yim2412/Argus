@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
+from ..config.loader import BottleneckSettings
 from ..detection.baseline import BaselineSet
 from ..logging_setup import get_logger
 
@@ -81,15 +82,16 @@ def _z(baselines: BaselineSet, metric: str, value: float | None) -> float | None
     return stats.z(value) if stats else None
 
 
-# 디스크 응답시간의 "체감 하한". 이 아래면 어떤 하드웨어에서도 사용자가 느끼지 못한다.
+# **디스크 응답의 체감 하한은 `config` 에 있다**(`bottleneck.disk_resp_floor_ms`).
 #
-# **상대 조건만으로는 안 된다.** NVMe 의 평소 응답은 0.1ms 라 산포가 거의 0 이고,
-# 0.1 → 0.2ms 가 20σ 로 계산된다. 그걸 병목이라 부르면 아무도 느끼지 못한 일에
-# 알림을 보내게 된다(실측에서 실제로 그렇게 판정됐다).
-#
+# 여기 적어 두는 것은 그 값이 왜 필요한가다. **상대 조건만으로는 안 된다** — NVMe 의
+# 평소 응답은 0.1ms 라 산포가 거의 0 이고, 0.1 → 0.2ms 가 20σ 로 계산된다. 그걸 병목이라
+# 부르면 아무도 느끼지 못한 일에 알림을 보내게 된다(실측에서 실제로 그렇게 판정됐다).
 # 반대로 절대값만 쓰면 HDD 사용자(평소 10ms)에게 상시 오탐이 된다. 그래서 **둘 다**
 # 요구한다 — 평소와 다르고(상대), 실제로 아플 만큼 느리다(절대).
-DISK_RESP_FLOOR_MS = 5.0
+#
+# 같은 함정이 스왑에도 있었다(PLAN §8 18번). 값이 거의 일정한 지표에 z 만 걸면
+# 448 → 449 가 큰 z 가 된다.
 
 
 # 병목 종류 → (기여도 분해에 쓸 자원, 그 자원이 병목의 자원과 같은가)
@@ -142,14 +144,12 @@ _KIND_BY_METRIC: dict[str, str] = {
 }
 
 
-# 방아쇠가 지목한 자원을 뒤집으려면 다른 자원의 근거가 이만큼 더 강해야 한다.
+# 방아쇠를 뒤집는 기준(`bottleneck.override_ratio`·`override_margin`)이 왜 필요한가.
 #
 # 실측에서 GPU 온도 룰이 연 사건이 "CPU 병목 — deltaforce 53%" 로 나갔다. 게임 중에는
 # CPU 가 늘 70% 를 넘어 CPU 점수(0.8)가 THERMAL(0.7)을 상시 근소하게 앞선다. **근소한
 # 우위는 뒤집을 근거가 못 된다** — 방아쇠는 "평소와 다르다"를 확인하고 울린 것이고,
 # 병목 점수는 "지금 값이 높다"만 본다. 후자가 전자를 이기려면 큰 차이가 필요하다.
-_OVERRIDE_RATIO = 1.5
-_OVERRIDE_MARGIN = 0.3
 
 
 def kinds_for_metrics(metrics: Iterable[str]) -> tuple[str, ...]:
@@ -166,8 +166,7 @@ def classify(
     metrics: Mapping[str, float | None],
     baselines: BaselineSet,
     *,
-    z_high: float = 3.0,
-    disk_resp_floor_ms: float = DISK_RESP_FLOOR_MS,
+    settings: BottleneckSettings | None = None,
     trigger_metrics: Iterable[str] = (),
 ) -> Bottleneck:
     """한 시점의 지표로 병목을 판정한다.
@@ -179,6 +178,9 @@ def classify(
     자원을 우선**한다. 지표만 보고 판정하면 게임 중처럼 여러 자원이 동시에 높은 구간에서
     늘 CPU 가 이겨, GPU 온도로 열린 사건이 "CPU 병목" 으로 보고된다(실측 3/6).
     """
+    cfg = settings or BottleneckSettings()
+    z_high = cfg.z_high
+
     # 근거는 **판정별로** 모은다. 한 리스트에 섞으면 "CPU 병목 — 근거: 스왑 220MB"
     # 처럼 판정과 무관한 근거가 붙어, 읽는 사람이 판단을 검증할 수 없게 된다.
     evidence_by_kind: dict[str, list[str]] = {}
@@ -204,11 +206,11 @@ def classify(
     ctx_z = _z(baselines, "ctx_switches_ps", ctx)
 
     # CPU: 평소보다 크게 높고, 절대적으로도 여유가 없어야 한다.
-    if cpu is not None and cpu >= 70.0:
+    if cpu is not None and cpu >= cfg.cpu_high_percent:
         add("CPU", 0.5, f"CPU {cpu:.0f}%")
         if cpu_z is not None and cpu_z >= z_high:
             add("CPU", 0.3, f"평소의 {cpu_z:.1f}σ")
-    elif cpu_z is not None and cpu_z >= z_high and (cpu or 0) >= 40.0:
+    elif cpu_z is not None and cpu_z >= z_high and (cpu or 0) >= cfg.cpu_elevated_percent:
         add("CPU", 0.4, f"CPU {cpu:.0f}% (평소 {cpu_z:.1f}σ)")
 
     # IO: **응답시간이 증상이다.** 처리량만 높은 것은 병목이 아니고,
@@ -217,17 +219,17 @@ def classify(
         resp is not None
         and resp_z is not None
         and resp_z >= z_high
-        and resp >= disk_resp_floor_ms
+        and resp >= cfg.disk_resp_floor_ms
     ):
         add("IO", 0.5, f"디스크 응답 {resp:.1f}ms (평소의 {resp_z:.1f}σ)")
-        if queue is not None and queue >= 2.0:
+        if queue is not None and queue >= cfg.disk_queue_high:
             add("IO", 0.3, f"큐 깊이 {queue:.1f}")
-    elif queue is not None and queue >= 4.0:
+    elif queue is not None and queue >= cfg.disk_queue_alone:
         # 큐 길이는 단위가 하드웨어 독립적이라 절대값으로 다뤄도 된다.
         add("IO", 0.4, f"큐 깊이 {queue:.1f}")
 
     # 메모리: 여유가 실제로 없을 때만. 스왑은 **혼자서는 근거가 되지 못한다.**
-    if mem is not None and mem >= 85.0:
+    if mem is not None and mem >= cfg.mem_high_percent:
         add("MEMORY", 0.5, f"메모리 {mem:.0f}%")
 
     # **스왑 사용량은 메모리 압박의 신호가 아니다 — Windows 에서는 상시 값이다.**
@@ -248,12 +250,12 @@ def classify(
     # "메모리가 부족해서" 페이지아웃이 일어나야 하는데, Windows 의 페이지파일 사용량은
     # 압박과 무관하게 존재한다. 진짜 신호는 페이지폴트 **속도**지 사용량이 아니고, 그건
     # 지금 수집하지 않는다. 수집하게 되면 이 조건을 그쪽으로 옮긴다.
-    if swap and (mem or 0) >= 60.0:
+    if swap and (mem or 0) >= cfg.mem_tight_percent:
         add("MEMORY", 0.3, f"스왑 {swap:.0f}MB")
-    if mem_z is not None and mem_z >= z_high and (mem or 0) >= 60.0:
+    if mem_z is not None and mem_z >= z_high and (mem or 0) >= cfg.mem_tight_percent:
         add("MEMORY", 0.3, f"메모리 평소의 {mem_z:.1f}σ")
 
-    if gpu is not None and gpu >= 90.0:
+    if gpu is not None and gpu >= cfg.gpu_busy_percent:
         add("GPU", 0.6, f"GPU {gpu:.0f}%")
 
     # 발열: 클럭이 떨어졌는데 온도가 높거나 스로틀 사유가 잡힌 경우.
@@ -262,13 +264,13 @@ def classify(
         # 넣을 수 없다), "스로틀 사유에 THERMAL" 만으로는 얼마나 나쁜지 알 수 없다.
         detail = f"GPU {gpu_temp:.0f}°C 열 스로틀링" if gpu_temp is not None else "GPU 열 스로틀링"
         add("THERMAL", 0.7, detail)
-    if perf is not None and perf < 80.0:
+    if perf is not None and perf < cfg.cpu_perf_low_percent:
         add("THERMAL", 0.3, f"실효 클럭 {perf:.0f}%")
-        if gpu_temp is not None and gpu_temp >= 80.0:
+        if gpu_temp is not None and gpu_temp >= cfg.gpu_hot_c:
             add("THERMAL", 0.2, f"GPU {gpu_temp:.0f}°C")
 
     # 경합: 자원은 남는데 컨텍스트 스위치만 폭증.
-    if ctx_z is not None and ctx_z >= z_high and (cpu or 0) < 60.0:
+    if ctx_z is not None and ctx_z >= z_high and (cpu or 0) < cfg.contention_cpu_ceiling_percent:
         add("CONTENTION", 0.5, f"컨텍스트 스위치 평소의 {ctx_z:.1f}σ")
 
     trigger_kinds = kinds_for_metrics(trigger_metrics)
@@ -283,7 +285,7 @@ def classify(
         )
 
     top = max(scores.items(), key=lambda kv: kv[1])[0]
-    kind, overridden_from = _choose(scores, top, trigger_kinds)
+    kind, overridden_from = _choose(scores, top, trigger_kinds, cfg)
 
     evidence = evidence_by_kind.get(kind, [])
     resource, attributable = _RESOURCE_BY_KIND[kind]
@@ -299,7 +301,10 @@ def classify(
 
 
 def _choose(
-    scores: Mapping[str, float], top: str, trigger_kinds: tuple[str, ...]
+    scores: Mapping[str, float],
+    top: str,
+    trigger_kinds: tuple[str, ...],
+    cfg: BottleneckSettings,
 ) -> tuple[str, str | None]:
     """방아쇠와 지표 점수를 조정해 최종 병목을 고른다.
 
@@ -324,8 +329,8 @@ def _choose(
     # 배수만 보면 0.1 대 0.2 같은 작은 값에서 쉽게 뒤집히고, 절대차만 보면 근거가 약한
     # 구간에서 큰 차이가 나오지 않아 영영 뒤집히지 않는다.
     if (
-        scores[top] >= scores[best_trigger] * _OVERRIDE_RATIO
-        and scores[top] - scores[best_trigger] >= _OVERRIDE_MARGIN
+        scores[top] >= scores[best_trigger] * cfg.override_ratio
+        and scores[top] - scores[best_trigger] >= cfg.override_margin
     ):
         return top, best_trigger
     return best_trigger, None

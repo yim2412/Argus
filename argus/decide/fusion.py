@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from ..config.loader import BottleneckSettings, IncidentSettings
 from ..detection.baseline import BaselineSet
 from ..explain.attribution import attribute, lead_time
 from ..explain.bottleneck import classify
@@ -45,7 +46,12 @@ def _escalate(severity: str, steps: int = 1) -> str:
 
 @dataclass
 class FusionSettings:
-    """융합 파라미터. 임계값이 아니라 시간 구조라 config 가 아닌 여기 둔다."""
+    """융합 파라미터. 아래 넷은 임계값이 아니라 시간 구조라 config 가 아닌 여기 둔다.
+
+    반면 `bottleneck`·`incident` 는 **판정 문턱**이라 config 로 나가 있다(규칙 3).
+    여기서는 그것을 들고 다니기만 한다 — 실시간(`Fusion`)과 재분석(`analyze_incident`)이
+    같은 값을 쓰게 하려면 한 곳에서 흘려보내야 한다.
+    """
 
     # 신호가 이만큼 끊기면 사건이 끝난 것으로 본다. 룰 쿨다운(10분)보다 짧아야
     # 한 사건이 쿨다운 때문에 둘로 쪼개지지 않는다.
@@ -55,6 +61,9 @@ class FusionSettings:
     # 귀인 비교 창: 사건 시작 전 이만큼을 "평소"로 본다.
     before_window_s: float = 180.0
     before_margin_s: float = 30.0
+
+    bottleneck: BottleneckSettings = field(default_factory=BottleneckSettings)
+    incident: IncidentSettings = field(default_factory=IncidentSettings)
 
 
 def open_incident(db: Database, signal: dict, severity: str) -> int:
@@ -226,7 +235,7 @@ def analyze_incident(
     # 문제에도 신호를 한 번만 내므로, 신호 시각을 그대로 쓰면 **5분짜리 문제가
     # "0초"로 기록된다.** 실측에서 정확히 그랬고, 그러면 사용자는 순간 스파이크로
     # 읽으며 비교 창 길이가 0 이라 원인 후보가 통째로 비어 버린다.
-    ts_start, ts_end = _refine_bounds(db, ts_start, ts_end)
+    ts_start, ts_end = _refine_bounds(db, ts_start, ts_end, settings.incident)
 
     # 그 구간에서 가장 나빴던 시점을 병목 판정의 대상으로 삼는다.
     peak, baselines = _peak_and_baselines(db, ts_start, ts_end)
@@ -240,7 +249,9 @@ def analyze_incident(
 
     # 방아쇠를 병목 판정 **앞에서** 읽는다. 무엇이 울렸는지가 무엇에 막혔는지의 입력이다.
     triggers, trigger_metrics, claim = _trigger_rules(db, incident_id)
-    bottleneck = classify(peak, baselines, trigger_metrics=trigger_metrics)
+    bottleneck = classify(
+        peak, baselines, settings=settings.bottleneck, trigger_metrics=trigger_metrics
+    )
 
     # **병목을 모르겠으면 탐지기가 말한 자원을 쓴다.**
     #
@@ -263,7 +274,7 @@ def analyze_incident(
         # 18초 창에서 귀인하면 누수 프로세스의 증가분도 18초분뿐이라 마침 그때 뜬
         # 다른 프로세스에 1위를 빼앗긴다(주입 4건 중 2건이 그랬다).
         #
-        # `MAX_EXTEND_BEFORE_S` 를 여기 적용하지 않는 이유: 그 상한은 **지표에서 추정한**
+        # `incident.max_extend_before_s` 를 여기 적용하지 않는 이유: 그 상한은 **지표에서 추정한**
         # 경계가 다른 사건을 삼키는 것을 막으려는 것이다. 여기 값은 탐지기가 자기 창에서
         # **직접 센 것**이라 추정이 아니고, `procleak` 의 추적 창(기본 900초)이 이미 상한이다.
         if claim.duration_s > 0:
@@ -273,7 +284,9 @@ def analyze_incident(
         ts_start - settings.before_margin_s - settings.before_window_s,
         ts_start - settings.before_margin_s,
     )
-    contributors = attribute(db, resource, before=before, after=(ts_start, ts_end))
+    contributors = attribute(
+        db, resource, before=before, after=(ts_start, ts_end), settings=settings.incident
+    )
     for contributor in contributors:
         contributor.lead_s = lead_time(db, contributor, resource, ts_start)
 
@@ -281,7 +294,7 @@ def analyze_incident(
     report = build_incident(
         ts_start, ts_end, bottleneck, contributors, symptom=symptom, triggers=triggers
     )
-    explanation = render(report, resource)
+    explanation = render(report, resource, settings.incident)
 
     # **탐지기가 문장을 갖고 있으면 그것이 제목이다.**
     #
@@ -339,11 +352,13 @@ _BOUND_METRICS = ("cpu_total", "mem_percent", "disk_resp_ms", "disk_queue", "ctx
 #
 # 앞쪽이 짧은 이유: 룰의 지속 조건(30~60초)과 베이스라인 지연을 합쳐도 몇 분이면 충분하다.
 # 뒤쪽이 긴 이유: 회복은 원인이 사라진 뒤에도 시간이 걸린다(캐시 재구성, 큐 배수).
-MAX_EXTEND_BEFORE_S = 300.0
-MAX_EXTEND_AFTER_S = 600.0
+# 경계를 늘릴 수 있는 최대는 config 에 있다
+# (`incident.max_extend_before_s`·`max_extend_after_s`).
 
 
-def _refine_bounds(db: Database, ts_start: float, ts_end: float) -> tuple[float, float]:
+def _refine_bounds(
+    db: Database, ts_start: float, ts_end: float, cfg: IncidentSettings
+) -> tuple[float, float]:
     """지표에서 사건의 실제 시작·끝을 다시 찾는다.
 
     **모든 후보 지표를 보고 가장 넓은 구간을 택한다.** 하나만 쓰면 그 지표가 아닌
@@ -374,14 +389,14 @@ def _refine_bounds(db: Database, ts_start: float, ts_end: float) -> tuple[float,
             (r["ts"], r[metric])
             for r in db.query(
                 f"SELECT ts, {metric} FROM metrics_raw WHERE ts >= ? AND ts <= ? ORDER BY ts",
-                (ts_start - MAX_EXTEND_BEFORE_S, ts_start),
+                (ts_start - cfg.max_extend_before_s, ts_start),
             )
         ]
         after = [
             (r["ts"], r[metric])
             for r in db.query(
                 f"SELECT ts, {metric} FROM metrics_raw WHERE ts >= ? AND ts <= ? ORDER BY ts",
-                (ts_end, ts_end + MAX_EXTEND_AFTER_S),
+                (ts_end, ts_end + cfg.max_extend_after_s),
             )
         ]
         onset = find_onset(before, stats, ts_start)
@@ -390,8 +405,8 @@ def _refine_bounds(db: Database, ts_start: float, ts_end: float) -> tuple[float,
             continue
 
         candidate = (
-            max(onset.ts if onset else ts_start, ts_start - MAX_EXTEND_BEFORE_S),
-            min(recovery if recovery else ts_end, ts_end + MAX_EXTEND_AFTER_S),
+            max(onset.ts if onset else ts_start, ts_start - cfg.max_extend_before_s),
+            min(recovery if recovery else ts_end, ts_end + cfg.max_extend_after_s),
         )
         if candidate[1] - candidate[0] > best[1] - best[0]:
             best = candidate

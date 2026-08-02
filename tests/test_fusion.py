@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from argus.decide.budget import NotificationBudget
+from argus.config.loader import BottleneckSettings, IncidentSettings
 from argus.decide.fusion import Fusion, FusionSettings
 from argus.decide.suppression import apply_suppression
 from argus.storage.hot import Database
@@ -440,24 +441,24 @@ def test_override_requires_both_ratio_and_margin() -> None:
     from argus.explain.bottleneck import _choose
 
     # 배수만 모자란 경우(1.4 < 1.5). 절대차 0.4 는 충족한다.
-    assert _choose({"DISK": 1.4, "CPU": 1.0}, "DISK", ("CPU",)) == ("CPU", None)
+    assert _choose({"DISK": 1.4, "CPU": 1.0}, "DISK", ("CPU",), BottleneckSettings()) == ("CPU", None)
     # 배수를 넘고 절대차도 넘으면 뒤집고, 원래 자원을 남긴다.
-    assert _choose({"DISK": 1.6, "CPU": 1.0}, "DISK", ("CPU",)) == ("DISK", "CPU")
+    assert _choose({"DISK": 1.6, "CPU": 1.0}, "DISK", ("CPU",), BottleneckSettings()) == ("DISK", "CPU")
     # 배수는 넉넉하지만 절대차가 모자란 경우(0.2 < 0.3).
-    assert _choose({"DISK": 0.5, "CPU": 0.3}, "DISK", ("CPU",)) == ("CPU", None)
+    assert _choose({"DISK": 0.5, "CPU": 0.3}, "DISK", ("CPU",), BottleneckSettings()) == ("CPU", None)
 
 
 def test_override_is_not_needed_when_trigger_already_agrees() -> None:
     from argus.explain.bottleneck import _choose
 
-    assert _choose({"CPU": 1.0, "DISK": 0.2}, "CPU", ("CPU",)) == ("CPU", None)
+    assert _choose({"CPU": 1.0, "DISK": 0.2}, "CPU", ("CPU",), BottleneckSettings()) == ("CPU", None)
 
 
 def test_no_trigger_evidence_keeps_the_trigger_on_record() -> None:
     """방아쇠 자원의 지표 근거가 없어도 다른 답을 냈다는 사실은 남는다."""
     from argus.explain.bottleneck import _choose
 
-    assert _choose({"DISK": 0.9}, "DISK", ("CPU",)) == ("DISK", "CPU")
+    assert _choose({"DISK": 0.9}, "DISK", ("CPU",), BottleneckSettings()) == ("DISK", "CPU")
 
 
 def _ramp_before(database: Database, ts_start: float, *, elevated_s: int) -> None:
@@ -493,7 +494,7 @@ def test_bound_refinement_stops_at_the_before_cap(db: Database) -> None:
     ts_end = ts_start + 240.0
     _ramp_before(db, ts_start, elevated_s=400)
 
-    refined_start, _ = _refine_bounds(db, ts_start, ts_end)
+    refined_start, _ = _refine_bounds(db, ts_start, ts_end, IncidentSettings())
 
     assert refined_start >= ts_start - 300.0 - 1e-6, (
         f"상한을 넘어 {ts_start - refined_start:.0f}초까지 당겨졌다"
