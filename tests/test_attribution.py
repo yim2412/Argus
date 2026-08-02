@@ -606,3 +606,56 @@ def test_product_scoring_still_runs_when_global_metrics_survive(db: Database) ->
     assert "전역 지표" not in (verdict.skipped or ""), (
         f"전역 지표가 있는데 없다고 판정했다: {verdict.skipped}"
     )
+
+
+def test_swap_alone_is_not_memory_pressure() -> None:
+    """스왑이 돌아도 메모리에 여유가 있으면 메모리 병목이 아니다.
+
+    **Windows 는 메모리가 남아돌아도 페이지파일을 쓴다.** 원래 조건은 `if swap:` 이라
+    스왑이 0보다 크기만 하면 `MEMORY` 에 0.3점을 줬고, 다른 병목이 없으면 그 0.3 이
+    최고점이 되어 병목이 `MEMORY` 로 확정됐다. 이 기계 실측(64,866 표본)에서
+    `swap_used_mb` 는 중앙값 448MB 이고 0 인 표본이 9.2% 뿐이라 **시간의 90.8% 동안**
+    메모리 병목 점수가 붙어 있었다 — 메모리는 32% 밖에 안 쓰는데 그렇다.
+
+    2026-08-02 주입 배치 8건이 전부 이것 때문에 `메모리 압박 — chrome 70%` 처럼
+    발표됐고 제품 경로 귀인이 12.5% 로 떨어졌다.
+    """
+    baselines = BaselineSet(window_s=10_000.0, min_samples=10)
+    for index in range(120):
+        baselines.observe(
+            float(index),
+            {"cpu_total": 20.0, "mem_percent": 28.0, "swap_used_mb": 448.0, "disk_resp_ms": 0.1},
+        )
+
+    verdict = classify(
+        # 이 기계의 평상시 그대로다 — 메모리 28%, 스왑 450MB.
+        {"cpu_total": 20.0, "mem_percent": 28.0, "swap_used_mb": 450.0, "disk_resp_ms": 0.1},
+        baselines,
+    )
+    assert verdict.kind != "MEMORY", (
+        f"스왑만 보고 메모리 병목이라고 했다: {verdict.kind} {verdict.evidence}"
+    )
+
+
+def test_swap_still_counts_when_memory_is_actually_tight() -> None:
+    """대조 — 메모리가 실제로 빠듯하면 스왑은 여전히 근거다.
+
+    이게 없으면 위 테스트는 "스왑을 아예 안 보는" 변경으로도 통과한다. 스왑이 압박의
+    신호이려면 "메모리가 부족해서" 페이지아웃이 일어나야 한다는 것이 요점이지,
+    스왑을 무시하자는 것이 아니다.
+    """
+    baselines = BaselineSet(window_s=10_000.0, min_samples=10)
+    for index in range(120):
+        baselines.observe(
+            float(index),
+            {"cpu_total": 20.0, "mem_percent": 40.0, "swap_used_mb": 448.0, "disk_resp_ms": 0.1},
+        )
+
+    verdict = classify(
+        {"cpu_total": 20.0, "mem_percent": 72.0, "swap_used_mb": 3000.0, "disk_resp_ms": 0.1},
+        baselines,
+    )
+    assert verdict.kind == "MEMORY", f"실제 메모리 압박을 놓쳤다: {verdict.kind}"
+    assert any("스왑" in e for e in verdict.evidence), (
+        f"스왑이 근거에서 빠졌다: {verdict.evidence}"
+    )
