@@ -31,7 +31,7 @@ UI 는 시스템 트레이 + Streamlit 대시보드.
 | `machine/` | 이 PC 의 능력·성능 기준 | 절대 임계값 대신 여기 값을 기준으로 상대화한다 |
 | `dashboard/` | Streamlit UI | `python -m argus.dashboard` |
 | `config/` | `defaults.yaml` + `rules.yaml` | 임계값이 코드에 박혀 있으면 규칙 3 위반이다 |
-| `tools/` | 단독 실행 도구 | `fault_injector`(결함 주입) · `inject_progress`(주입 진행·판정) · `eval_snapshot`(평가 입력 고정) · `rescore_incidents`(사건 재분석) · `readiness`(착수 판정) · `pyc_audit`(캐시 검사) |
+| `tools/` | 단독 실행 도구 | `fault_injector`(결함 주입) · `inject_progress`(주입 진행·판정) · `eval_snapshot`(평가 입력 고정) · `rescore_incidents`(사건 재분석) · `readiness`(착수 판정) · `pyc_audit`(캐시 검사) · `mutation_sweep`(규칙 무력화 측정) |
 
 **실시간과 리플레이는 같은 경로를 쓴다**(`detection/live.py`, `detection/replay_source.py`).
 탐지기가 실시간에서만 되는 일을 하면 채점이 성립하지 않는다.
@@ -113,8 +113,13 @@ UI 는 시스템 트레이 + Streamlit 대시보드.
   이게 Phase 2 를 앞당긴 이유다.
 - **테스트는 코드·로직·프로세스 레벨로만.** GUI 검증도 마우스 포인터를 실제로 움직이는 자동화를
   쓰지 않는다. 창이 떴는지·오류가 없는지·데이터가 맞는지는 프로세스/로그/반환값으로 확인한다.
-- **새 테스트는 일부러 깨뜨려 실패하는지 확인한다.** 지키려는 규칙을 코드에서 잠깐 제거하고
-  돌려 본 뒤 되돌린다. 통과는 증거가 아니다 — **아무것도 검증하지 않는 테스트도 통과한다.**
+- **새 테스트는 일부러 깨뜨려 실패하는지 확인한다.** `.venv\Scripts\python.exe
+  tools\mutation_sweep.py --only <키>` 가 무력화·캐시 삭제·복원을 대신 한다(손으로 하면
+  아래 07-29 사고가 다시 난다). 통과는 증거가 아니다 — **아무것도 검증하지 않는 테스트도
+  통과한다.**
+  **로직과 배선을 따로 재야 한다** — 문턱을 테스트 안에서 직접 만들면 판정 로직은 보지만
+  `config` 배선은 보지 않는다. 2026-08-03 에 `procleak` 단조성이 그 상태였다: YAML 을
+  고쳐도 판정이 안 바뀌는데 241개가 전부 통과했다.
   2026-07-29 에 하루 두 번 겪었다. 웜/핫 병합 테스트는 양쪽 버킷 수를 똑같이 만들어 둬서
   규칙을 지워도 10개 전부 통과했고, `python -m argus.storage.history` 스모크는 실제 DB 에
   의존해 중복이 우연히 없는 날에는 통과하면서 아무것도 보지 않았다.

@@ -21,9 +21,17 @@ from pathlib import Path
 import pytest
 import yaml
 
-from argus.config.loader import BottleneckSettings, IncidentSettings, Settings
+from argus.config.loader import (
+    BottleneckSettings,
+    FingerprintSettings,
+    IncidentSettings,
+    LeakMetricSettings,
+    ProcessLeakSettings,
+    Settings,
+)
 from argus.decide.fusion import FusionSettings, analyze_incident
 from argus.detection.baseline import BaselineSet
+from argus.detection.procleak import _Track, judge, rules_from_settings
 from argus.explain.bottleneck import classify
 from argus.storage.hot import Database
 
@@ -122,29 +130,52 @@ def test_incident_reanalysis_uses_the_given_thresholds(db: Database) -> None:
     )
 
 
+def _compare_section(raw: dict, code_defaults: dict, where: str) -> None:
+    """YAML 절 하나를 코드 기본값과 대조한다. 중첩 절도 같은 규칙으로 내려간다
+    (`process_leak.handles` 처럼 지표별 문턱이 하위 절에 있다)."""
+    for key, value in raw.items():
+        assert key in code_defaults, (
+            f"defaults.yaml 의 `{where}.{key}` 가 모델에 없다 — 오타면 조용히 무시된다"
+        )
+        if isinstance(value, dict):
+            _compare_section(value, code_defaults[key], f"{where}.{key}")
+            continue
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            assert value == pytest.approx(code_defaults[key]), (
+                f"`{where}.{key}` 가 어긋난다: YAML {value} vs 코드 {code_defaults[key]}"
+            )
+        else:
+            assert value == code_defaults[key], (
+                f"`{where}.{key}` 가 어긋난다: YAML {value!r} vs 코드 {code_defaults[key]!r}"
+            )
+    missing = {k for k in code_defaults if k not in raw and code_defaults[k] is not None}
+    assert not missing, f"`{where}` 에 YAML 로 노출되지 않은 문턱: {sorted(missing)}"
+
+
 def test_defaults_yaml_matches_the_code_defaults() -> None:
     """`defaults.yaml` 의 값이 코드 기본값과 같은가.
 
     둘이 갈리면 **"한 개념에 두 값"이 다시 생긴다** — 디스크 응답 하한이 코드 5.0,
     `rules.yaml` 3 이었던 것이 정확히 그 상태였다(2026-08-02 통일). pydantic 은 모르는
     키를 조용히 무시하므로, YAML 쪽 오타도 여기서만 드러난다.
+
+    **`process_leak`·`fingerprint` 는 2026-08-03 에 들어왔다.** mutation 스윕에서
+    `process_leak.*.monotonic_ratio` 를 0 으로 만들어도 241개가 전부 통과했다 —
+    누수 판정의 단조성 조건이 config 쪽으로는 검증된 적이 없었다.
     """
     raw = yaml.safe_load(
         (Path("argus/config/defaults.yaml")).read_text(encoding="utf-8")
     )
 
-    for section, model in (("bottleneck", BottleneckSettings), ("incident", IncidentSettings)):
+    sections = (
+        ("bottleneck", BottleneckSettings),
+        ("incident", IncidentSettings),
+        ("process_leak", ProcessLeakSettings),
+        ("fingerprint", FingerprintSettings),
+    )
+    for section, model in sections:
         assert section in raw, f"defaults.yaml 에 `{section}` 절이 없다"
-        code_defaults = model().model_dump()
-        for key, value in raw[section].items():
-            assert key in code_defaults, (
-                f"defaults.yaml 의 `{section}.{key}` 가 모델에 없다 — 오타면 조용히 무시된다"
-            )
-            assert value == pytest.approx(code_defaults[key]), (
-                f"`{section}.{key}` 가 어긋난다: YAML {value} vs 코드 {code_defaults[key]}"
-            )
-        missing = set(code_defaults) - set(raw[section])
-        assert not missing, f"`{section}` 에 YAML 로 노출되지 않은 문턱: {sorted(missing)}"
+        _compare_section(raw[section], model().model_dump(), section)
 
 
 def test_disk_response_floor_is_one_value(tmp_path: Path) -> None:
@@ -167,6 +198,83 @@ def test_disk_response_floor_is_one_value(tmp_path: Path) -> None:
             f"rules.yaml 의 {floor} 와 bottleneck 의 "
             f"{BottleneckSettings().disk_resp_floor_ms} 가 다르다"
         )
+
+
+def _sawtooth_track() -> _Track:
+    """배수·증가량·지속·표본은 전부 충분하고 **단조성만** 위반하는 시계열.
+
+    400 → 4000 이지만 매 틱 오르내린다. 일하는 중인 프로그램이 이렇게 보인다.
+    """
+    track = _Track()
+    for i in range(600):
+        track.samples.append((1000.0 + i, (400 + i * 6) * (1.2 if i % 2 else 0.8)))
+    return track
+
+
+def _handles_rule(settings: ProcessLeakSettings):
+    rules = {rule.attr: rule for rule in rules_from_settings(settings)}
+    assert "handles" in rules, f"handles 룰이 없다: {sorted(rules)}"
+    return rules["handles"]
+
+
+def test_process_leak_monotonic_ratio_comes_from_config() -> None:
+    """누수 판정의 단조성 조건이 **config 에서** 온다.
+
+    `test_procleak.py` 에도 톱니 케이스가 있지만 그쪽은 `MetricRule` 을 테스트 안에서
+    직접 만든다 — 판정 로직은 보지만 **배선은 보지 않는다.** 그래서 2026-08-03 의
+    mutation 스윕에서 `monotonic_ratio` 를 코드 기본값과 YAML 양쪽에서 0 으로 만들어도
+    전부 통과했다. 튜닝이 조용히 무시되는 상태이고, 그게 규칙 3 이 막으려는 것이다.
+
+    양방향으로 본다. 한쪽만 보면 "무조건 등락함이라고 하는" 구현으로도 통과한다.
+    """
+    track = _sawtooth_track()
+    judge_kw = {"min_duration_s": 300.0, "min_samples": 20}
+
+    strict = judge(track, _handles_rule(ProcessLeakSettings()), **judge_kw)
+    assert not strict.leaking and "등락함" in strict.reason, (
+        f"기본값(0.85)에서는 톱니를 걸러야 한다: {strict.reason}"
+    )
+
+    loose = judge(
+        track,
+        _handles_rule(ProcessLeakSettings(handles=LeakMetricSettings(monotonic_ratio=0.0))),
+        **judge_kw,
+    )
+    assert loose.leaking, (
+        f"단조성 조건을 0 으로 낮췄는데 판정이 그대로다 — 설정이 닿지 않았다: {loose.reason}"
+    )
+
+
+def test_process_leak_growth_and_delta_come_from_config() -> None:
+    """같은 배선을 배수·증가량에서도 고정한다. 셋이 한 경로로 흐르므로 하나만
+    보면 나머지가 끊겨도 모른다."""
+    track = _Track()
+    for i in range(600):  # 5000 → 6200: 단조 증가지만 1.24배 · 증가량 1,200
+        track.samples.append((1000.0 + i, 5000.0 + i * 2))
+    judge_kw = {"min_duration_s": 300.0, "min_samples": 20}
+
+    default = judge(track, _handles_rule(ProcessLeakSettings()), **judge_kw)
+    assert not default.leaking and "배수 부족" in default.reason, default.reason
+
+    lenient = judge(
+        track,
+        _handles_rule(
+            ProcessLeakSettings(handles=LeakMetricSettings(growth_ratio=1.1, min_delta=100.0))
+        ),
+        **judge_kw,
+    )
+    assert lenient.leaking, f"배수·증가량을 낮췄는데 반영되지 않았다: {lenient.reason}"
+
+    strict = judge(
+        track,
+        _handles_rule(
+            ProcessLeakSettings(handles=LeakMetricSettings(growth_ratio=1.1, min_delta=5000.0))
+        ),
+        **judge_kw,
+    )
+    assert not strict.leaking and "증가량 부족" in strict.reason, (
+        f"증가량 문턱을 올렸는데 반영되지 않았다: {strict.reason}"
+    )
 
 
 def test_settings_exposes_both_sections() -> None:
