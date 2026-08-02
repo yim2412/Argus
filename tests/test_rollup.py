@@ -67,6 +67,31 @@ def test_rollup_aggregates_one_bucket(db: Database) -> None:
     assert row["cpu_imbalance_mean"] == pytest.approx(50.0 - 29.5)
 
 
+def test_rollup_keeps_gpu_clock(db: Database) -> None:
+    """**GPU SM 클럭이 롤업에 남아야 한다.**
+
+    원본(`gpu_metrics`)은 24시간만 보존되므로, 접지 않으면 매일 사라진다. 등급의
+    "현재 손실" 축은 며칠치 비교를 요구하는데 그때 과거를 되살릴 방법이 없다.
+
+    `min` 을 함께 두는 이유: 스로틀은 클럭이 **떨어지는** 것이라 평균만 보면 짧고
+    깊은 하락이 묻힌다. 여기서도 1,900 이 58초, 1,200 이 2초라 평균은 1,876 이지만
+    실제로 물린 지점은 1,200 이다.
+    """
+    start = bucket_of(time.time() - 3600)
+    _seed(db, start, 1)
+    db.insert_many(
+        "gpu_metrics",
+        ("ts", "gpu_index", "util_percent", "temp_c", "clock_sm_mhz"),
+        [(start + s, 0, 95.0, 84.0, 1200.0 if s < 2 else 1900.0) for s in range(60)],
+    )
+
+    assert Rollup(db, RollupSettings()).run_once() == 1
+
+    row = db.query("SELECT * FROM metrics_1m")[0]
+    assert row["gpu_clock_sm_min"] == 1200.0, "가장 깎였을 때가 남지 않는다"
+    assert row["gpu_clock_sm_mean"] == pytest.approx(1876.667, abs=0.01)
+
+
 def test_rollup_is_idempotent(db: Database) -> None:
     """같은 버킷을 다시 접어도 결과가 같아야 한다.
 

@@ -68,6 +68,9 @@ COLUMNS: tuple[str, ...] = (
     "gpu_vram_mb_max",
     "gpu_temp_max",
     "gpu_power_mean",
+    # 스로틀이 실제로 얼마나 물었는지. 원본은 24시간만 남아 접지 않으면 매일 사라진다.
+    "gpu_clock_sm_mean",
+    "gpu_clock_sm_min",
     "foreground_proc",
     "foreground_ratio",
     "top_cpu_proc",
@@ -92,6 +95,10 @@ def _mean(values: Sequence[float]) -> float | None:
 
 def _max(values: Sequence[float]) -> float | None:
     return round(max(values), 3) if values else None
+
+
+def _min(values: Sequence[float]) -> float | None:
+    return round(min(values), 3) if values else None
 
 
 def _pct(values: Sequence[float], q: float) -> float | None:
@@ -256,14 +263,14 @@ class Rollup(_RollupBase):
         """GPU 는 여러 장일 수 있다. 지금은 0번만 접는다 — 다중 GPU 는 레짐에
         필요하지 않고, 필요해지면 그때 컬럼이 아니라 별도 테이블로 가야 한다."""
         rows = self.db.query(
-            "SELECT ts, util_percent, vram_used_mb, temp_c, power_w FROM gpu_metrics "
-            "WHERE ts >= ? AND ts < ? AND gpu_index = 0 ORDER BY ts",
+            "SELECT ts, util_percent, vram_used_mb, temp_c, power_w, clock_sm_mhz "
+            "FROM gpu_metrics WHERE ts >= ? AND ts < ? AND gpu_index = 0 ORDER BY ts",
             (start, end),
         )
         buckets: dict[int, dict[str, list[float]]] = {}
         for row in rows:
             b = buckets.setdefault(bucket_of(row["ts"]), {})
-            for key in ("util_percent", "vram_used_mb", "temp_c", "power_w"):
+            for key in ("util_percent", "vram_used_mb", "temp_c", "power_w", "clock_sm_mhz"):
                 if row[key] is not None:
                     b.setdefault(key, []).append(float(row[key]))
         return buckets
@@ -376,6 +383,8 @@ class Rollup(_RollupBase):
                     _max(g.get("vram_used_mb", [])),
                     _max(g.get("temp_c", [])),
                     _mean(g.get("power_w", [])),
+                    _mean(g.get("clock_sm_mhz", [])),
+                    _min(g.get("clock_sm_mhz", [])),
                     fg_proc,
                     fg_ratio,
                     top_proc,
