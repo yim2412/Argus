@@ -32,10 +32,18 @@ from .hot import Database
 
 log = get_logger(__name__)
 
-# 결함 주입 구간을 보존해야 하는 테이블. 채점이 이 둘을 함께 읽는다 —
-# `process_metrics` 는 기여도를, `process_events` 는 정답 PID 트리(`descendants`)를 만든다.
-# 한쪽만 지켜도 채점은 성립하지 않는다.
-FAULT_PROTECTED = ("process_metrics", "process_events")
+# 결함 주입 구간을 보존해야 하는 테이블. 채점이 이것들을 **함께** 읽는다 —
+# `process_metrics` 는 기여도를, `process_events` 는 정답 PID 트리(`descendants`)를,
+# `metrics_raw`·`gpu_metrics` 는 병목 분류를 만든다. 하나만 빠져도 채점은 성립하지 않는다.
+#
+# 전역 지표 둘은 처음에 빠져 있었고, 그 결과가 2026-08-02 에 드러났다. 07-30 주입 배치의
+# `process_metrics` 는 보호되어 그대로 남았는데 `metrics_raw` 는 지워져, `analyze_incident()`
+# 가 병목을 관측하지 못하고 자원을 기본값으로 되돌렸다 — **제품 경로 귀인이 0/7 = 0%** 로
+# 나왔다. 탐지가 퇴행한 것이 아니라 채점할 데이터의 절반이 없었다. 저장 당시의 사건 제목
+# ("경합 — 컨텍스트 스위치 8.1σ")은 남아 있었으므로 그때는 분류가 되고 있었다.
+#
+# 보호 비용은 작다. 주입 구간은 12분짜리 몇 개뿐이고 이 둘은 1초 간격이라 구간당 수백 행이다.
+FAULT_PROTECTED = ("process_metrics", "process_events", "metrics_raw", "gpu_metrics")
 
 
 def _planned_duration_s(params: str | None) -> float:
