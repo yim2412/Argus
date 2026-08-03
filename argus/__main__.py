@@ -313,6 +313,7 @@ def run(args: argparse.Namespace) -> int:
                         interval_s=settings.fingerprint.interval_s,
                         min_days=settings.fingerprint.min_days,
                         min_buckets=settings.fingerprint.min_buckets,
+                        min_day_hours=settings.fingerprint.min_day_hours,
                     )
                 )
 

@@ -33,8 +33,24 @@ STAT_FOR = {"handles": "handles_max", "rss_mb": "rss_p95"}
 # 지문이 되기 위한 최소 조건. 3일에 걸쳐 보였어도 매번 5분씩이면 p99 를 세울 표본이 못 된다.
 DEFAULT_MIN_DAYS = 3
 DEFAULT_MIN_BUCKETS = 100
-# 하루로 세는 최소 관측 시간. 2시간 켜 둔 날과 12시간 켜 둔 날은 같은 하루가 아니다.
-MIN_DAY_HOURS = 6.0
+# 하루로 세는 최소 관측 시간. 5분만 켜 둔 날을 하루로 세면 "3일 이상"이 "3번 실행"이 된다.
+#
+# **1.0 은 실측으로 정했다(2026-08-04). 원래 값 6.0 은 전제가 틀렸다.**
+# 여기서 세는 버킷은 *켜 둔 시간*이 아니라 **활성 집합(상위 40)에 있던 시간**이다
+# (`ProcessRollup` 이 버킷마다 상위 N 개만 남긴다). 실측 분포에서 하루 최대가
+# 209버킷(17.4시간)이라 6시간은 최대치의 1/3 — 생각보다 훨씬 강한 조건이었고,
+# 지문 179개 중 74개(41%)가 탈락하면서 **게임 클라이언트가 전부 빠졌다.**
+# 이 PC 의 게임 사용은 하루 1.4~2시간이다.
+#
+# 게임은 핸들·RSS 변동이 커 `procleak` 오탐의 주 원천이고, 탈락 37종 중 8종은 실제
+# 사건에 등장한 프로세스다(`fczf` 7건, `leagueclient*` 18건). 거기서 억제를 걷어내는
+# 것은 "오탐이 미탐보다 비싸다"의 반대 방향이다.
+#
+# 1.0 은 원래 의도(짧은 날 배제)를 달성하면서 현재 지문을 하나도 잃지 않는다.
+# 짧은 날만으로 자격을 넘보는 프로세스가 생기면 그때부터 실제로 일한다.
+MIN_DAY_HOURS = 1.0
+# 롤업 버킷이 5분이라 한 시간은 12버킷이다. `process_day_index` 가 세는 단위와 맞춰야 한다.
+BUCKETS_PER_HOUR = 12
 
 COLUMNS = ("name", "regime", "stat", "p50", "p95", "p99", "maximum", "samples", "days", "built_at")
 DEFAULT_REGIME = "all"
@@ -126,6 +142,7 @@ def build(
     *,
     min_days: int = DEFAULT_MIN_DAYS,
     min_buckets: int = DEFAULT_MIN_BUCKETS,
+    min_day_hours: float = MIN_DAY_HOURS,
     stats: tuple[str, ...] = tuple(STAT_FOR.values()),
     exclude: list[tuple[float, float]] | None = None,
 ) -> list[Fingerprint]:
@@ -133,15 +150,20 @@ def build(
 
     `exclude` 는 학습에서 뺄 구간이다(`fault_windows`). 분포와 자격 판정이 **같은
     데이터**를 봐야 하므로 양쪽에 똑같이 적용한다.
+
+    `days` 는 **날짜 수가 아니라 자격 있는 날 수**다. 5분만 켜 둔 날이 하루로 세어지면
+    "3일 이상 관측"이라는 조건이 사실상 "3번 실행"이 된다 — 그 표본으로 세운 p99 는
+    그 프로그램의 평소가 아니다. 2026-08-04 까지 상수만 있고 이 판정이 없었다.
     """
     index = history.process_day_index(exclude=exclude)
+    min_buckets_per_day = min_day_hours * BUCKETS_PER_HOUR
     out: list[Fingerprint] = []
 
     for stat in stats:
         series = _series(stat, exclude)
         for name, values in series.items():
             by_day = index.get(name, {})
-            days = len(by_day)
+            days = sum(1 for buckets in by_day.values() if buckets >= min_buckets_per_day)
             if days < min_days or len(values) < min_buckets:
                 continue
             out.append(
@@ -229,11 +251,13 @@ class FingerprintBuilder(Component):
     name = "fingerprint"
 
     def __init__(self, db, *, interval_s: float = 21600.0, min_days: int = DEFAULT_MIN_DAYS,
-                 min_buckets: int = DEFAULT_MIN_BUCKETS) -> None:
+                 min_buckets: int = DEFAULT_MIN_BUCKETS,
+                 min_day_hours: float = MIN_DAY_HOURS) -> None:
         self.db = db
         self.interval_s = interval_s
         self.min_days = min_days
         self.min_buckets = min_buckets
+        self.min_day_hours = min_day_hours
         self._built = 0
 
     def setup(self) -> None:
@@ -244,6 +268,7 @@ class FingerprintBuilder(Component):
             prints = build(
                 min_days=self.min_days,
                 min_buckets=self.min_buckets,
+                min_day_hours=self.min_day_hours,
                 exclude=fault_windows(self.db),
             )
             self._built = save(self.db, prints)

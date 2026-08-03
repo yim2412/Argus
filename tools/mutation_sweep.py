@@ -78,10 +78,26 @@ MUTANTS: list[Mutant] = [
     ),
     Mutant(
         "min_day_hours",
-        "지문 자격 — 6시간 미만인 날은 하루로 세지 않는다",
-        (("argus/detection/fingerprint.py", "MIN_DAY_HOURS = 6.0", "MIN_DAY_HOURS = 0.0"),),
-        note="구현이 아직 없다(PLAN §8 의 1번). xfail(strict) 하나가 이 사실을 고정한다",
-        expect_caught=False,
+        "지문 자격 — 짧게 켠 날은 하루로 세지 않는다 (판정 로직)",
+        (
+            (
+                "argus/detection/fingerprint.py",
+                "            days = sum(1 for buckets in by_day.values() "
+                "if buckets >= min_buckets_per_day)\n",
+                "            days = len(by_day)  # MUTANT: 짧은 날도 하루로 센다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "min_day_hours_wiring",
+        "지문 자격 — config → 빌더 배선",
+        (
+            (
+                "argus/detection/fingerprint.py",
+                "                min_day_hours=self.min_day_hours,\n",
+                "                # MUTANT: 배선 제거 — 기본값으로만 돈다\n",
+            ),
+        ),
     ),
     Mutant(
         "score_saturation_z",

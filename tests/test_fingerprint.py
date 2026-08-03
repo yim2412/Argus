@@ -226,19 +226,12 @@ def test_build_rejects_too_few_buckets(monkeypatch):
     assert len(_build_one(monkeypatch, days=days, buckets=100)) == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="MIN_DAY_HOURS 가 build() 에서 읽히지 않는다 — 2026-07-30 확인, 수정은 "
-           "리플레이 평가와 함께 올린다",
-)
 def test_build_does_not_count_a_five_minute_day_as_a_day(monkeypatch):
-    """5분만 켜 둔 날을 하루로 세면 안 된다 (`MIN_DAY_HOURS` = 6시간).
+    """5분만 켜 둔 날을 하루로 세면 안 된다.
 
-    "2시간 켜 둔 날과 12시간 켜 둔 날은 같은 하루가 아니다"가 상수의 근거인데,
-    그 조건이 실제로 걸리는지 여기서 고정한다.
-
-    `strict=True` 로 둔 이유: 수정이 들어가 통과하기 시작하면 이 표시가 **실패로
-    바뀌어** 지워야 한다는 것을 알려 준다. 조용히 통과하면 표시가 남아 다음 회귀를 덮는다.
+    세지 않으면 "3일 이상 관측"이 사실상 **"3번 실행"** 이 되고, 그 표본으로 세운 p99 는
+    그 프로그램의 평소가 아니다. 2026-08-04 까지 상수만 있고 판정이 없었다
+    (`xfail(strict)` 이 그 사실을 고정하고 있었다).
     """
     prints = _build_one(
         monkeypatch,
@@ -246,6 +239,57 @@ def test_build_does_not_count_a_five_minute_day_as_a_day(monkeypatch):
         buckets=201,
     )
     assert prints == [], "5분짜리 날이 하루로 세어져 자격을 넘겼다"
+
+
+def test_build_counts_a_day_at_exactly_the_threshold(monkeypatch):
+    """경계는 포함이다 — `min_day_hours` 를 정확히 채운 날은 하루로 센다.
+
+    문턱 값이 1.0(=12버킷)이라 경계가 흔한 자리에 있다. `>` 로 짜면 딱 1시간 관측된
+    날이 조용히 빠지고, 그 프로그램만 지문을 잃는다.
+    """
+    prints = _build_one(
+        monkeypatch,
+        days={"2026-07-27": 12, "2026-07-28": 12, "2026-07-29": 12},
+        buckets=200,
+    )
+    assert [p.days for p in prints] == [3], "정확히 문턱을 채운 날이 세어지지 않았다"
+
+
+def test_build_min_day_hours_is_configurable(monkeypatch):
+    """값이 인자로 흐르는지 — 상수만 있고 판정이 없던 것이 원래 문제였다."""
+    days = {"2026-07-27": 100, "2026-07-28": 100, "2026-07-29": 30}  # 2.5시간짜리 하루
+    _fake_source(monkeypatch, days=days, buckets=230)
+    assert fpmod.build(stats=("handles_max",), min_day_hours=1.0)[0].days == 3
+    assert fpmod.build(stats=("handles_max",), min_day_hours=6.0) == []
+
+
+# --------------------------------------------------------------- 배선 (11번 교훈)
+
+
+def test_builder_passes_min_day_hours_to_build(monkeypatch):
+    """**로직과 배선을 따로 잰다.** `FingerprintBuilder` 가 값을 흘리지 않으면
+    YAML 을 고쳐도 상주의 판정은 안 바뀐다 — 2026-08-03 에 `procleak` 단조성이
+    정확히 그 상태였고, 로직 테스트만 있어 241개가 전부 통과했다."""
+    seen: dict = {}
+
+    def fake_build(**kwargs):
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(fpmod, "build", fake_build)
+    monkeypatch.setattr(fpmod, "fault_windows", lambda db: [])
+    monkeypatch.setattr(fpmod, "save", lambda db, prints: 0)
+
+    fpmod.FingerprintBuilder(None, min_day_hours=3.5).tick()
+    assert seen.get("min_day_hours") == 3.5, "빌더가 min_day_hours 를 build 에 넘기지 않는다"
+
+
+def test_main_wires_min_day_hours_from_settings():
+    """`__main__` 이 config 값을 빌더에 넘기는지. 여기가 비면 기본값으로만 돈다."""
+    source = Path("argus/__main__.py").read_text(encoding="utf-8")
+    assert "min_day_hours=settings.fingerprint.min_day_hours" in source, (
+        "__main__ 이 fingerprint.min_day_hours 를 넘기지 않는다 — YAML 이 죽은 설정이 된다"
+    )
 
 
 def test_reset_keeps_fingerprints():

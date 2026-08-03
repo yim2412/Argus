@@ -292,6 +292,8 @@ class FingerprintSettings(BaseModel):
     # 자격 조건. 3일에 걸쳐 보였어도 매번 5분씩이면 p99 를 세울 표본이 못 된다.
     min_days: int = Field(default=3, ge=1)
     min_buckets: int = Field(default=100, ge=10)
+    # 하루로 세는 최소 관측 시간. 값의 근거는 `fingerprint.MIN_DAY_HOURS` 주석.
+    min_day_hours: float = Field(default=1.0, ge=0)
 
 
 class SeveritySettings(BaseModel):
