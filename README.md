@@ -69,8 +69,9 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 .venv\Scripts\python.exe -m argus.desktop.app --seconds 12   # 검증: 그린 표본 수를 보고
 ```
 
-대시보드를 브라우저가 아니라 데스크톱 앱(PySide6)으로 옮기는 중입니다. 지금은 실시간
-차트 하나만 있고, 나머지 페이지는 아직 Streamlit 쪽에 있습니다.
+대시보드를 브라우저가 아니라 데스크톱 앱(PySide6)으로 옮기는 중입니다. **다섯 페이지
+(실시간 · 프로세스 · 타임라인 · 사건 · 자기 상태)가 모두 동작합니다.** Streamlit 판은
+비교·되돌리기를 위해 당분간 함께 둡니다.
 
 **상주와 별도 프로세스입니다** — 창이 죽어도 수집은 계속됩니다. 개발 중 창 위치는
 `ARGUS_UI_SCREEN`(0-기반 모니터 번호)으로 지정합니다. 배포 exe 에는 영향이 없습니다.

@@ -19,6 +19,8 @@ from ..dashboard import theme
 from .pages.incidents import IncidentPage
 from .pages.processes import ProcessPage
 from .pages.realtime import RealtimePage
+from .pages.selfstate import SelfStatePage
+from .pages.timeline import TimelinePage
 
 # 개발 중 창을 띄울 모니터(0-기반). 배포 exe 에는 영향이 없다 — 값이 없으면
 # Windows 가 정하는 기본 위치를 그대로 쓴다.
@@ -60,6 +62,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.realtime = RealtimePage()
         self.processes = ProcessPage()
         self.incidents = IncidentPage()
+        self.timeline = TimelinePage()
+        self.selfstate = SelfStatePage()
 
         # 왼쪽 탭 + 오른쪽 내용. 페이지가 늘어도 여기만 추가하면 된다.
         self._nav = QtWidgets.QListWidget()
@@ -74,9 +78,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._add_page("실시간", self.realtime)
         self._add_page("프로세스", self.processes)
+        self._add_page("타임라인", self.timeline)
         self._add_page("사건", self.incidents)
-        for name in ("타임라인", "자기 상태"):
-            self._add_page(name, _Placeholder(name))
+        self._add_page("자기 상태", self.selfstate)
 
         self._nav.currentRowChanged.connect(self._stack.setCurrentIndex)
         self._nav.setCurrentRow(0)
@@ -113,6 +117,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.realtime.stop()
         self.processes.stop()
         self.incidents.stop()
+        self.timeline.stop()
+        self.selfstate.stop()
         super().closeEvent(event)
 
 
@@ -165,6 +171,8 @@ def main(seconds: float | None = None) -> int:
         loads = window.processes.load_count
         print(f"  백필 {backfill}개 · 실시간 {live}개 ({seconds:.0f}초, 기대 {expected}개 이상)")
         print(f"  프로세스 표 갱신 {loads}회 · 사건 조회 {window.incidents.load_count}회")
+        print(f"  타임라인 조회 {window.timeline.load_count}회 · 오버레이 {window.timeline.overlay_count}개")
+        print(f"  자기 상태 조회 {window.selfstate.load_count}회")
         if live == 0:
             print("[FAIL] 실시간 표본이 하나도 없다 — 조회나 시그널 경계가 깨졌다")
             return 1

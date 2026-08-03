@@ -13,7 +13,7 @@ from collections import deque
 from typing import Iterable, Sequence
 
 import pyqtgraph as pg
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..dashboard import theme
 
@@ -128,6 +128,99 @@ class TimeSeriesChart(QtWidgets.QWidget):
             values = self._series[name]
             if len(values) == len(xs):
                 curve.setData(xs, list(values))
+
+
+class HistoryChart(QtWidgets.QWidget):
+    """긴 구간용 시계열. **x 축이 절대 시각이다.**
+
+    실시간 차트(`TimeSeriesChart`)는 "몇 초 전"으로 그린다 — 10분 창에서는 그게 읽기
+    쉽다. 그러나 24시간이나 일주일을 "-86400초"로 적으면 아무도 못 읽는다. 여기서는
+    `DateAxisItem` 으로 날짜·시각을 찍는다.
+
+    **오버레이를 그린다.** 결함 주입 구간(세로 밴드)과 탐지 신호(세로선)를 지표 위에
+    겹쳐야 "그때 무엇을 넣었고 무엇이 울렸나"가 한눈에 보인다. 색은 계열 팔레트가
+    아니라 상태색을 쓴다 — 이건 데이터 계열이 아니라 표시라서, 계열 색으로 그리면
+    5번째 지표처럼 읽힌다.
+    """
+
+    def __init__(
+        self,
+        title: str,
+        names: Sequence[str],
+        *,
+        unit: str = "",
+        y_range: tuple[float, float] | None = None,
+        note: str = "",
+    ) -> None:
+        super().__init__()
+        box = QtWidgets.QVBoxLayout(self)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(4)
+
+        header = QtWidgets.QLabel(title)
+        header.setStyleSheet(f"color: {theme.INK}; font-size: 13px; font-weight: 600;")
+        box.addWidget(header)
+
+        self._plot = pg.PlotWidget(axisItems={"bottom": pg.DateAxisItem()})
+        self._plot.showGrid(x=True, y=True, alpha=0.15)
+        self._plot.setLabel("left", unit)
+        if y_range:
+            self._plot.setYRange(*y_range)
+        if len(names) > 1:
+            self._plot.addLegend(offset=(-10, 10), labelTextColor=theme.INK_SECONDARY)
+        box.addWidget(self._plot, stretch=1)
+
+        if note:
+            hint = QtWidgets.QLabel(note)
+            hint.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 10px;")
+            hint.setWordWrap(True)
+            box.addWidget(hint)
+
+        self._curves: dict[str, pg.PlotDataItem] = {}
+        for index, name in enumerate(names):
+            colour = theme.SERIES[index % len(theme.SERIES)]
+            self._curves[name] = self._plot.plot(
+                [], [], pen=pg.mkPen(colour, width=2), name=name
+            )
+        self._overlays: list = []
+
+    def set_data(self, timestamps: Sequence[float], values: dict[str, Sequence[float]]) -> None:
+        for name, curve in self._curves.items():
+            series = values.get(name) or []
+            if len(series) == len(timestamps):
+                curve.setData(list(timestamps), list(series))
+
+    def set_overlays(self, bands: Sequence[dict], marks: Sequence[float]) -> None:
+        """`bands` 는 `{lo, hi, strong}`, `marks` 는 시각 목록.
+
+        **효과가 관측되지 않은 주입은 흐리게 그린다**(`strong=False`). 라벨은 있으나
+        증상이 없던 구간이라 채점에서 빠지는데, 같은 진하기로 그리면 "탐지 실패"처럼
+        보인다.
+        """
+        for item in self._overlays:
+            self._plot.removeItem(item)
+        self._overlays.clear()
+
+        for band in bands:
+            colour = QtGui.QColor(theme.STATUS["warning"])
+            colour.setAlphaF(0.22 if band.get("strong") else 0.07)
+            region = pg.LinearRegionItem(
+                values=(band["lo"], band["hi"]), brush=colour, movable=False
+            )
+            region.setZValue(-10)  # 지표 선 아래로
+            self._plot.addItem(region)
+            self._overlays.append(region)
+
+        pen = pg.mkPen(theme.STATUS["critical"], width=1, style=QtCore.Qt.DotLine)
+        for ts in marks:
+            line = pg.InfiniteLine(pos=ts, angle=90, pen=pen)
+            self._plot.addItem(line)
+            self._overlays.append(line)
+
+    @property
+    def overlay_count(self) -> int:
+        """검증용 — 오버레이가 실제로 그려졌는지 숫자로 확인한다."""
+        return len(self._overlays)
 
 
 class Column:

@@ -15,6 +15,11 @@ import time
 
 import pytest
 
+try:
+    from PySide6 import QtCore
+except ImportError:  # PySide6 가 없으면 Qt 테스트는 건너뛴다
+    QtCore = None
+
 
 # ---------------------------------------------------------------- 조회 계층 독립성
 
@@ -405,6 +410,169 @@ def test_empty_incident_list_explains_why(qapp) -> None:
     page._on_rows([{"id": 1, "ts_start": 1000.0, "ts_end": 1100.0,
                     "severity": "info", "title": "무언가"}])
     assert page._notice.isHidden(), "사건이 있는데 안내가 남았다"
+
+
+# ---------------------------------------------------------------- 타임라인
+
+
+def _timeline_page(qapp):
+    from argus.desktop.pages.timeline import TimelinePage
+
+    page = TimelinePage()
+    page.stop()
+    return _keep(page)
+
+
+def test_overlays_draw_bands_and_marks(qapp) -> None:
+    """**주입 구간과 탐지 신호를 지표 위에 겹쳐야** "무엇을 넣었고 무엇이 울렸나"가 보인다."""
+    from argus.desktop.widgets import HistoryChart
+
+    chart = _keep(HistoryChart("t", ["a"]))
+    chart.set_overlays(
+        [{"lo": 100.0, "hi": 200.0, "strong": True}, {"lo": 300.0, "hi": 400.0, "strong": False}],
+        [150.0, 350.0, 500.0],
+    )
+    assert chart.overlay_count == 5, "밴드 2 + 신호선 3 이어야 한다"
+
+    # 다시 그리면 이전 것이 남지 않아야 한다 — 구간을 바꿀 때마다 쌓이면 화면이 덮인다.
+    chart.set_overlays([], [])
+    assert chart.overlay_count == 0, "오버레이가 누적됐다"
+
+
+def test_incomplete_injection_is_drawn_faintly(qapp) -> None:
+    """**증상이 관측되지 않은 주입은 흐리게.**
+
+    채점에서 빠지는 구간인데 같은 진하기로 그리면 "탐지 실패"처럼 보인다.
+    """
+    import pyqtgraph as pg
+
+    from argus.desktop.widgets import HistoryChart
+
+    chart = _keep(HistoryChart("t", ["a"]))
+    chart.set_overlays(
+        [{"lo": 0.0, "hi": 10.0, "strong": True}, {"lo": 20.0, "hi": 30.0, "strong": False}], []
+    )
+    regions = [o for o in chart._overlays if isinstance(o, pg.LinearRegionItem)]
+    alphas = [r.brush.color().alphaF() for r in regions]
+    assert alphas[0] > alphas[1], f"증상 없는 주입이 더 진하거나 같다: {alphas}"
+
+
+def test_timeline_foreground_share_sums_to_hundred(qapp) -> None:
+    """비중은 관측된 분(分)의 비율이다 — 이 표가 레짐 추론의 입력이 된다."""
+    page = _timeline_page(qapp)
+    page._fill_foreground(
+        [{"foreground_proc": "chrome"}] * 3
+        + [{"foreground_proc": "code"}]
+        + [{"foreground_proc": None}]  # 기록 없는 분은 세지 않는다
+    )
+    model = page._foreground.model()
+    assert model.rowCount() == 2
+    shares = [model.index(i, 2).data() for i in range(model.rowCount())]
+    assert shares[0] == "75%", f"비중 계산이 틀렸다: {shares}"
+
+
+def test_timeline_marks_unfinished_injection(qapp) -> None:
+    page = _timeline_page(qapp)
+    page._fill_faults(
+        [
+            {"scenario": "handle_leak", "ts_start": 1000.0, "ts_end": 1720.0, "completed": 1},
+            {"scenario": "cpu_spin", "ts_start": 2000.0, "ts_end": None, "completed": 0},
+        ]
+    )
+    model = page._faults.model()
+    rows = [
+        {model.headerData(c, QtCore.Qt.Horizontal): model.index(r, c).data() for c in range(4)}
+        for r in range(model.rowCount())
+    ]
+    lengths = [r["길이"] for r in rows]
+    assert "미완" in lengths, f"끝나지 않은 주입을 표시하지 않았다: {lengths}"
+    observed = [r["증상 관측"] for r in rows]
+    assert any("채점 제외" in o for o in observed), observed
+
+
+def test_timeline_empty_explains_rollup_delay(qapp) -> None:
+    page = _timeline_page(qapp)
+    page._on_loaded({"rows": [], "faults": [], "signals": []})
+    assert not page._notice.isHidden()
+    assert "롤업" in page._notice.text(), "왜 비었는지 말하지 않았다"
+
+
+# ---------------------------------------------------------------- 자기 상태
+
+
+def _selfstate_page(qapp):
+    from argus.desktop.pages.selfstate import SelfStatePage
+
+    page = SelfStatePage()
+    page.stop()
+    return _keep(page)
+
+
+def test_growth_is_measured_on_private_not_rss() -> None:
+    """**누수 판정의 정본은 `private` 이다.**
+
+    RSS 는 Windows 의 워킹셋 트림에 따라 내려가 누수를 가린다 — 2026-07-27 에 RSS 가
+    63 → 18MB 로 내려간 것이 반납이 아니라 트림이었다. 여기서도 RSS 는 줄고 private 은
+    느는 상황을 준다. RSS 로 재면 음수가 나온다.
+    """
+    from argus.desktop.pages.selfstate import _private_growth
+
+    rows = [
+        {"ts": 0.0, "private_mb": 100.0, "rss_mb": 200.0},
+        {"ts": 3600.0, "private_mb": 110.0, "rss_mb": 50.0},
+    ]
+    text = _private_growth(rows)
+    assert "+10.00 MB/시간" in text, f"private 기준이 아니다: {text}"
+
+
+def test_growth_stays_quiet_on_short_windows() -> None:
+    from argus.desktop.pages.selfstate import _private_growth
+
+    assert _private_growth([{"ts": 0.0, "private_mb": 100.0},
+                            {"ts": 300.0, "private_mb": 200.0}]) == ""
+    assert _private_growth([{"ts": 0.0, "rss_mb": 100.0}]) == "", "private 이 없으면 침묵"
+
+
+def test_selfstate_alerts_on_drops_and_throttle(qapp) -> None:
+    """**규칙 1 이 깨지고 있다는 신호만 띄운다.** 평소에는 조용해야 한다."""
+    page = _selfstate_page(qapp)
+
+    quiet = [{"ts": 1.0, "cpu_percent": 0.2, "rss_mb": 70.0, "private_mb": 71.0,
+              "drop_count": 0, "handles": 400, "throttle_level": 0}]
+    page._on_loaded({"rows": quiet, "storage": {}})
+    # `isVisible()` 은 창을 띄우지 않으면 항상 False 라 아무것도 검증하지 못한다.
+    assert page._alert.isHidden() and page._alert.text() == "", "평소인데 경고를 띄웠다"
+
+    noisy = [
+        {"ts": 1.0, "cpu_percent": 3.0, "rss_mb": 320.0, "private_mb": 330.0,
+         "drop_count": 0, "handles": 900, "throttle_level": 2},
+        {"ts": 2.0, "cpu_percent": 3.1, "rss_mb": 330.0, "private_mb": 340.0,
+         "drop_count": 152, "handles": 950, "throttle_level": 1},
+    ]
+    page._on_loaded({"rows": noisy, "storage": {}})
+    assert not page._alert.isHidden()
+    assert "유실" in page._alert.text() and "스로틀" in page._alert.text()
+
+
+def test_selfstate_shows_cpu_against_budget(qapp) -> None:
+    """예산(2%) 대비 몇 %인지를 함께 보여 준다 — 절대값만으로는 판단이 안 선다."""
+    page = _selfstate_page(qapp)
+    page._on_loaded(
+        {
+            "rows": [{"ts": 1.0, "cpu_percent": 1.0, "rss_mb": 80.0, "private_mb": 80.0,
+                      "drop_count": 0, "handles": 400, "throttle_level": 0}],
+            "storage": {},
+        }
+    )
+    assert "50%" in page._tiles["cpu"]._note.text(), page._tiles["cpu"]._note.text()
+
+
+def test_missing_rollup_state_is_surfaced(qapp) -> None:
+    """**롤업이 멈추면 원본 정리도 함께 멈춘다.** 그 사실이 화면에 드러나야 한다."""
+    page = _selfstate_page(qapp)
+    page._fill_storage({"db_bytes": 1048576, "tables": []})
+    assert page._storage_tiles["lag"]._value.text() == "—"
+    assert "실행되지 않음" in page._storage_tiles["lag"]._note.text()
 
 
 # ---------------------------------------------------------------- 모니터 배치

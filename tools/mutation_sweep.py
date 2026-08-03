@@ -255,6 +255,58 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "private_growth_basis",
+        "누수 증가율은 RSS 가 아니라 private 으로 잰다",
+        (
+            (
+                "argus/desktop/pages/selfstate.py",
+                '    with_private = [r for r in rows if r.get("private_mb") is not None]\n',
+                '    with_private = [r for r in rows if r.get("rss_mb") is not None]\n',
+            ),
+            (
+                "argus/desktop/pages/selfstate.py",
+                '    delta = float(last["private_mb"]) - float(first["private_mb"])\n',
+                '    delta = float(last["rss_mb"]) - float(first["rss_mb"])\n',
+            ),
+        ),
+        note="RSS 는 워킹셋 트림에 따라 내려가 누수를 가린다 (07-27 실측 63→18MB)",
+    ),
+    Mutant(
+        "selfstate_alert",
+        "유실·스로틀은 경고로 드러낸다 (규칙 1 이 깨지는 신호다)",
+        (
+            (
+                "argus/desktop/pages/selfstate.py",
+                "        self._alert.setVisible(bool(messages))\n",
+                "        self._alert.setVisible(False)  # MUTANT: 경고를 숨긴다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "overlay_reset",
+        "오버레이를 다시 그릴 때 이전 것을 지운다 (누적되면 화면이 덮인다)",
+        (
+            (
+                "argus/desktop/widgets.py",
+                "        for item in self._overlays:\n"
+                "            self._plot.removeItem(item)\n"
+                "        self._overlays.clear()\n",
+                "        pass  # MUTANT: 이전 오버레이를 남긴다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "incomplete_injection_faint",
+        "증상 없는 주입은 흐리게 (채점 제외 구간이 탐지 실패로 보이면 안 된다)",
+        (
+            (
+                "argus/desktop/widgets.py",
+                '            colour.setAlphaF(0.22 if band.get("strong") else 0.07)\n',
+                "            colour.setAlphaF(0.22)  # MUTANT: 항상 진하게\n",
+            ),
+        ),
+    ),
+    Mutant(
         "feedback_cache_invalidation",
         "피드백을 저장하면 캐시를 비운다 (이름이 어긋나면 조용히 죽는다)",
         (
