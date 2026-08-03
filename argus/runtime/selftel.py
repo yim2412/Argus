@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import time
+from typing import Callable
 
 import psutil
 
@@ -35,7 +36,12 @@ _COLUMNS = [
     "drop_count",
     "write_latency_ms",
     "throttle_level",
+    "active",
 ]
+
+# 실행 중 컴포넌트를 몇 개까지 남기나. 전부 남길 이유가 없다 — 셋을 넘어가면
+# 어느 하나를 지목하는 데 쓸 수 없고, 매 5초 행마다 문자열만 길어진다.
+_ACTIVE_MAX = 3
 
 
 class SelfTelemetry(Component):
@@ -46,11 +52,31 @@ class SelfTelemetry(Component):
     # 오히려 기록이 가장 필요한 순간이다.
     throttleable = False
 
-    def __init__(self, db: Database, guard: BudgetGuard, interval_s: float = 5.0) -> None:
+    def __init__(
+        self,
+        db: Database,
+        guard: BudgetGuard,
+        interval_s: float = 5.0,
+        active_fn: Callable[[], list[str]] | None = None,
+    ) -> None:
         self.db = db
         self.guard = guard
         self.interval_s = interval_s
+        # 수퍼바이저를 통째로 들고 있지 않고 함수 하나만 받는다 — 계측이 실행 제어를
+        # 건드릴 수 있게 되면 "관측자는 관측만 한다"가 코드로 보장되지 않는다.
+        self._active_fn = active_fn
         self._proc = psutil.Process(os.getpid())
+
+    def _active(self) -> str | None:
+        """표본 시점에 tick 중이던 컴포넌트. **여기서 나는 예외가 계측을 멈추면 안 된다.**"""
+        if self._active_fn is None:
+            return None
+        try:
+            names = [n for n in self._active_fn() if n != self.name]  # 자기 자신은 뺀다
+        except Exception:
+            log.debug("실행 중 컴포넌트 조회 실패", extra={"component": self.name})
+            return None
+        return ",".join(names[:_ACTIVE_MAX]) if names else None
 
     def tick(self) -> None:
         cpu, rss_mb = self.guard.last()
@@ -84,6 +110,7 @@ class SelfTelemetry(Component):
                     snapshot.drop_count,
                     round(snapshot.write_latency_ms, 3),
                     self.guard.level,
+                    self._active(),
                 )
             ],
         )
@@ -106,7 +133,7 @@ class BudgetMonitor(Component):
 if __name__ == "__main__":  # 스모크: python -m argus.runtime.selftel
     from ..config.loader import load_settings
     from ..logging_setup import setup
-    from .supervisor import Supervisor
+    from .supervisor import CallableComponent, Supervisor
 
     setup(level="INFO")
     settings = load_settings()
@@ -117,7 +144,9 @@ if __name__ == "__main__":  # 스모크: python -m argus.runtime.selftel
 
         sup = Supervisor(multiplier_fn=lambda: guard.multiplier)
         sup.add(BudgetMonitor(guard))
-        sup.add(SelfTelemetry(db, guard, interval_s=0.3))
+        sup.add(SelfTelemetry(db, guard, interval_s=0.3, active_fn=sup.active_components))
+        # 오래 도는 tick 이 실제로 `active` 에 잡히는지 보려면 그런 컴포넌트가 있어야 한다.
+        sup.add(CallableComponent("slow_smoke", lambda: time.sleep(0.4), interval_s=0.05))
         sup.start()
         time.sleep(1.5)
         sup.stop()
@@ -130,10 +159,16 @@ if __name__ == "__main__":  # 스모크: python -m argus.runtime.selftel
                 f"    cpu={row['cpu_percent']}%  rss={row['rss_mb']}MB  "
                 f"private={row['private_mb']}MB  peak_wset={row['peak_wset_mb']}MB  "
                 f"faults={row['page_faults']}  threads={row['threads']}  "
-                f"handles={row['handles']}  level={row['throttle_level']}"
+                f"handles={row['handles']}  level={row['throttle_level']}  "
+                f"active={row['active']}"
             )
         if after <= before:
             print("[FAIL] 자기 계측이 기록되지 않았다")
+            raise SystemExit(1)
+        # 0.4초짜리 tick 이 도는 동안 0.3초마다 찍었으니 대부분의 행에 잡혀야 한다.
+        # 하나도 없으면 배선이 끊긴 것이고, 그러면 RSS 봉우리의 주인을 영영 못 찾는다.
+        if not any(row["active"] and "slow_smoke" in row["active"] for row in rows):
+            print("[FAIL] 실행 중 컴포넌트가 기록되지 않았다 — active 배선이 끊겼다")
             raise SystemExit(1)
         # 누수 판정의 정본이 될 컬럼이므로, 비어 있으면 실패로 본다(Windows 기준).
         if os.name == "nt" and rows and rows[0]["private_mb"] is None:

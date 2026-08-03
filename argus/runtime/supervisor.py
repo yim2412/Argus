@@ -70,6 +70,9 @@ class Supervisor:
             raise ValueError("wake_granularity_s 는 0보다 커야 한다 (대기 루프가 돌지 않는다)")
         self._wake_granularity_s = wake_granularity_s
         self._error_counts: dict[str, int] = {}
+        # 지금 tick 안에 들어가 있는 컴포넌트 → 진입 시각. 예산 초과 시점에 누가 돌고
+        # 있었는지를 알려면 이게 있어야 한다(`active_components`). tick 당 쓰기 두 번뿐이다.
+        self._active: dict[str, float] = {}
 
     # **`tick()` 을 감싼 try 바깥에서 읽는 것들만** 검사한다. 없으면 예외가 스레드를
     # 그대로 죽이기 때문이다.
@@ -128,6 +131,7 @@ class Supervisor:
 
         while not self._stop.is_set():
             started = time.perf_counter()
+            self._active[name] = started
             try:
                 component.tick()
             except Exception:
@@ -146,6 +150,10 @@ class Supervisor:
                 if backoff:
                     log.info("컴포넌트 회복", extra={"component": name})
                 backoff = 0.0
+            finally:
+                # tick 이 어떻게 끝나든 지운다. 예외 경로에서 빠뜨리면 그 컴포넌트가
+                # **영원히 실행 중으로 보여** 계측이 거짓말을 한다.
+                self._active.pop(name, None)
 
             self._sleep(component, started, backoff)
 
@@ -154,6 +162,20 @@ class Supervisor:
         except Exception:
             log.exception("컴포넌트 teardown 실패", extra={"component": name})
         log.debug("컴포넌트 종료", extra={"component": name})
+
+    def active_components(self) -> list[str]:
+        """지금 tick 안에 있는 컴포넌트를 **오래 돈 순**으로 돌려준다.
+
+        예산 초과 시점의 RSS 봉우리는 5초 표본이 대부분 놓친다. 봉우리를 더 자주 찍는
+        것은 관측자를 무겁게 하므로(설계 규칙 1), 대신 **표본을 찍은 그 순간 누가
+        돌고 있었는지**를 남겨 스로틀 표본만 모아 분포로 본다.
+
+        오래 돈 순인 이유: 메모리를 크게 잡는 tick 은 대체로 오래도 걸린다.
+        """
+        # dict 를 통째로 복사한 뒤 정렬한다 — 순회 중 다른 스레드가 넣고 빼면
+        # `RuntimeError: dictionary changed size` 가 나고, 그건 계측이 수집을 죽이는 것이다.
+        snapshot = list(self._active.items())
+        return [name for name, _ in sorted(snapshot, key=lambda kv: kv[1])]
 
     def _sleep(self, component: Component, started: float, backoff: float) -> None:
         """다음 틱까지 기다린다. **대기 중에 바뀐 스로틀 배수에 반응한다.**

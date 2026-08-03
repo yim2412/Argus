@@ -490,6 +490,31 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "selftel_active_clear",
+        "예외로 끝난 tick 도 실행 중에서 지운다 (안 지우면 계측이 아무나 가리킨다)",
+        (
+            (
+                "argus/runtime/supervisor.py",
+                "            finally:\n"
+                "                # tick 이 어떻게 끝나든 지운다. 예외 경로에서 빠뜨리면 그 컴포넌트가\n"
+                "                # **영원히 실행 중으로 보여** 계측이 거짓말을 한다.\n"
+                "                self._active.pop(name, None)\n",
+                "                self._active.pop(name, None)  # MUTANT: 예외 경로에서만 안 지운다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "selftel_active_column",
+        "표본 시점의 실행 중 컴포넌트를 남긴다 (RSS 봉우리의 주인을 찾는 유일한 근거)",
+        (
+            (
+                "argus/runtime/selftel.py",
+                "                    self._active(),\n",
+                "                    None,  # MUTANT: 실행 중 컴포넌트를 버린다\n",
+            ),
+        ),
+    ),
+    Mutant(
         "log_level_field",
         "로그레벨 자리를 extra 가 덮어쓰지 못한다 (거르면 통째로 누락된다)",
         (

@@ -133,7 +133,7 @@ powershell -ExecutionPolicy Bypass -File tools\install_autostart.ps1 -Uninstall
 | `process_metrics` | 1초 / 30초 | 활성 집합은 1초, 전체 프로세스는 30초 해상도 |
 | `process_events` | 이벤트 | 프로세스 생성·종료 (부모·실행 경로 포함) |
 | `net_connections` | 30초 | 활성 연결 (DNS 역조회 없음) |
-| `self_telemetry` | 5초 | Argus 자신의 CPU·메모리(RSS/**private**)·핸들·큐·유실 |
+| `self_telemetry` | 5초 | Argus 자신의 CPU·메모리(RSS/**private**)·핸들·큐·유실·**실행 중 컴포넌트** |
 | `metrics_1m` | 1분 | 위를 접은 장기 보존용 집계 — 평균·최대·p95·**표준편차**·코어 불균형·포어그라운드 |
 
 굵게 표시한 것이 일반 모니터링 도구에 없는 "증상" 지표입니다. 사용률은 원인이고 응답시간이 증상인데,

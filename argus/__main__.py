@@ -265,7 +265,14 @@ def run(args: argparse.Namespace) -> int:
             )
         )
         if settings.self_telemetry.enabled:
-            sup.add(SelfTelemetry(db, guard, interval_s=settings.self_telemetry.interval_s))
+            sup.add(
+                SelfTelemetry(
+                    db,
+                    guard,
+                    interval_s=settings.self_telemetry.interval_s,
+                    active_fn=sup.active_components,
+                )
+            )
 
         # 롤업은 보존 정리보다 **먼저** 등록한다. 순서가 동작을 정하지는 않지만
         # (보존이 워터마크로 스스로 막는다), 읽는 사람에게 의존 방향을 보여 준다.
