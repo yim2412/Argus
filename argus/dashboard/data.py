@@ -9,19 +9,58 @@
 - **범위 제한**. `SELECT *` 로 전 구간을 긁지 않고 항상 시간 창을 건다.
 
 수집기가 도는 중에도 안전한 이유는 WAL 이다 — 읽기가 쓰기를 막지 않는다.
+
+**UI 프레임워크에 의존하지 않는다.** 원래 캐시가 `st.cache_data` 였는데, 그러면 이
+계층이 Streamlit 없이는 못 돈다 — 네이티브 창(PySide6)으로 옮기는 순간 조회 코드까지
+따라 옮겨야 한다. 캐시는 "같은 질문을 짧은 시간 안에 다시 묻지 않는다"는 것뿐이고,
+그건 UI 와 아무 상관이 없다. 2026-08-03 에 `ttl_cache` 로 바꿔 떼어냈다.
 """
 
 from __future__ import annotations
 
+import functools
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any, Sequence
 
-import streamlit as st
-
 from ..paths import data_dir, db_path
 from ..storage import history
+
+
+def ttl_cache(ttl: float):
+    """호출 결과를 `ttl` 초 동안 재사용한다.
+
+    `functools.lru_cache` 를 쓰지 않는 이유: 시간 기반 만료가 없어 대시보드가 영원히
+    옛 값을 보여 준다. 여기서 필요한 것은 "얼마나 오래된 값까지 괜찮은가"다.
+
+    락을 두는 이유: Qt 는 워커 스레드에서 조회하고 메인 스레드에서 그린다. 캐시가
+    스레드 안전하지 않으면 그 경계에서 깨진다.
+    """
+
+    def decorate(fn):
+        store: dict[tuple, tuple[float, Any]] = {}
+        lock = threading.Lock()
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            key = (args, tuple(sorted(kwargs.items())))
+            now = time.monotonic()
+            with lock:
+                hit = store.get(key)
+                if hit is not None and now - hit[0] < ttl:
+                    return hit[1]
+            value = fn(*args, **kwargs)
+            with lock:
+                store[key] = (now, value)
+            return value
+
+        wrapper.cache_clear = store.clear  # 테스트가 캐시를 비울 수 있어야 한다
+        wrapper.cache_ttl = ttl
+        return wrapper
+
+    return decorate
 
 
 def _connect() -> sqlite3.Connection:
@@ -53,20 +92,23 @@ def db_exists() -> bool:
 # ---------------------------------------------------------------- 실시간
 
 
-@st.cache_data(ttl=2.0, show_spinner=False)
+# 수집이 1초 주기이므로 캐시도 1초다. 2초였던 것은 Streamlit 의 rerun 폭주를 막으려던
+# 값인데, 네이티브 창은 폴링 주기를 스스로 정하므로 그 캐시가 오히려 갱신을 절반으로
+# 떨어뜨린다(예광탄 실측: 12초에 6개). 단일 행 조회라 1초로 낮춰도 부하는 무시할 수준이다.
+@ttl_cache(1.0)
 def latest_metrics() -> dict | None:
     rows = query("SELECT * FROM metrics_raw ORDER BY ts DESC LIMIT 1")
     return rows[0] if rows else None
 
 
-@st.cache_data(ttl=2.0, show_spinner=False)
+@ttl_cache(1.0)
 def latest_gpu() -> list[dict]:
     return query(
         "SELECT * FROM gpu_metrics WHERE ts = (SELECT MAX(ts) FROM gpu_metrics) ORDER BY gpu_index"
     )
 
 
-@st.cache_data(ttl=5.0, show_spinner=False)
+@ttl_cache(5.0)
 def recent_metrics(seconds: int = 600) -> list[dict]:
     return query(
         "SELECT ts, cpu_total, cpu_max_core, mem_percent, disk_read_bps, disk_write_bps, "
@@ -76,7 +118,7 @@ def recent_metrics(seconds: int = 600) -> list[dict]:
     )
 
 
-@st.cache_data(ttl=5.0, show_spinner=False)
+@ttl_cache(5.0)
 def recent_gpu(seconds: int = 600) -> list[dict]:
     return query(
         "SELECT ts, util_percent, vram_used_mb, temp_c, power_w FROM gpu_metrics "
@@ -88,7 +130,7 @@ def recent_gpu(seconds: int = 600) -> list[dict]:
 # ---------------------------------------------------------------- 장기(롤업)
 
 
-@st.cache_data(ttl=30.0, show_spinner=False)
+@ttl_cache(30.0)
 def rollup(hours: float = 24.0) -> list[dict]:
     """장기 지표. **웜(Parquet)까지 읽는다.**
 
@@ -98,7 +140,7 @@ def rollup(hours: float = 24.0) -> list[dict]:
     return history.rollup_range(time.time() - hours * 3600)
 
 
-@st.cache_data(ttl=60.0, show_spinner=False)
+@ttl_cache(60.0)
 def rollup_span() -> dict | None:
     result = history.span("metrics")
     if result is None:
@@ -107,12 +149,12 @@ def rollup_span() -> dict | None:
     return {"lo": lo, "hi": hi, "n": buckets}
 
 
-@st.cache_data(ttl=60.0, show_spinner=False)
+@ttl_cache(60.0)
 def warm_exports() -> list[dict]:
     return query("SELECT * FROM warm_exports ORDER BY date_key DESC LIMIT 30")
 
 
-@st.cache_data(ttl=60.0, show_spinner=False)
+@ttl_cache(60.0)
 def warm_span() -> dict | None:
     """웜에 며칠치가 들어 있는지 `{days, lo, hi}`.
 
@@ -130,7 +172,7 @@ def warm_span() -> dict | None:
 # ---------------------------------------------------------------- 프로세스
 
 
-@st.cache_data(ttl=5.0, show_spinner=False)
+@ttl_cache(5.0)
 def top_processes(seconds: int = 60, limit: int = 20) -> list[dict]:
     """최근 창에서 프로세스별 평균 사용량.
 
@@ -147,7 +189,7 @@ def top_processes(seconds: int = 60, limit: int = 20) -> list[dict]:
     )
 
 
-@st.cache_data(ttl=10.0, show_spinner=False)
+@ttl_cache(10.0)
 def process_series(name: str, seconds: int = 1800) -> list[dict]:
     return query(
         "SELECT ts, SUM(cpu_percent) AS cpu, SUM(rss_mb) AS rss, SUM(handles) AS handles "
@@ -159,7 +201,7 @@ def process_series(name: str, seconds: int = 1800) -> list[dict]:
 # ---------------------------------------------------------------- 자기 계측
 
 
-@st.cache_data(ttl=5.0, show_spinner=False)
+@ttl_cache(5.0)
 def self_telemetry(hours: float = 8.0) -> list[dict]:
     return query(
         "SELECT * FROM self_telemetry WHERE ts > ? ORDER BY ts",
@@ -167,13 +209,13 @@ def self_telemetry(hours: float = 8.0) -> list[dict]:
     )
 
 
-@st.cache_data(ttl=30.0, show_spinner=False)
+@ttl_cache(30.0)
 def rollup_state() -> dict | None:
     rows = query("SELECT * FROM rollup_state WHERE name='metrics_1m'")
     return rows[0] if rows else None
 
 
-@st.cache_data(ttl=30.0, show_spinner=False)
+@ttl_cache(30.0)
 def table_counts() -> list[dict]:
     """테이블별 보유 구간. 보존 정책이 실제로 도는지 여기서 보인다."""
     out = []
@@ -221,7 +263,7 @@ def warm_size_bytes() -> int:
 # ---------------------------------------------------------------- 탐지·평가
 
 
-@st.cache_data(ttl=15.0, show_spinner=False)
+@ttl_cache(15.0)
 def anomaly_signals(hours: float = 24.0) -> list[dict]:
     """실시간 탐지 신호만. `run_id` 가 있는 것은 리플레이 평가 결과라 제외한다."""
     return query(
@@ -231,7 +273,7 @@ def anomaly_signals(hours: float = 24.0) -> list[dict]:
     )
 
 
-@st.cache_data(ttl=60.0, show_spinner=False)
+@ttl_cache(60.0)
 def fault_injections(hours: float = 24.0) -> list[dict]:
     return query(
         "SELECT * FROM fault_injections WHERE ts_start > ? ORDER BY ts_start",
@@ -239,12 +281,12 @@ def fault_injections(hours: float = 24.0) -> list[dict]:
     )
 
 
-@st.cache_data(ttl=60.0, show_spinner=False)
+@ttl_cache(60.0)
 def eval_runs(limit: int = 40) -> list[dict]:
     return query("SELECT * FROM eval_runs ORDER BY ts DESC, detector LIMIT ?", (limit,))
 
 
-@st.cache_data(ttl=10.0, show_spinner=False)
+@ttl_cache(10.0)
 def incidents(days: float = 7.0, limit: int = 200) -> list[dict]:
     return query(
         "SELECT * FROM incidents WHERE ts_start > ? ORDER BY ts_start DESC LIMIT ?",
@@ -252,7 +294,7 @@ def incidents(days: float = 7.0, limit: int = 200) -> list[dict]:
     )
 
 
-@st.cache_data(ttl=10.0, show_spinner=False)
+@ttl_cache(10.0)
 def incident_signals(incident_id: int) -> list[dict]:
     return query(
         "SELECT * FROM incident_signals WHERE incident_id = ? ORDER BY ts", (incident_id,)
@@ -278,7 +320,7 @@ def set_user_label(incident_id: int, label: str | None) -> None:
     incidents.clear()
 
 
-@st.cache_data(ttl=60.0, show_spinner=False)
+@ttl_cache(60.0)
 def system_events(hours: float = 24.0) -> list[dict]:
     return query(
         "SELECT * FROM system_events WHERE ts > ? ORDER BY ts DESC",

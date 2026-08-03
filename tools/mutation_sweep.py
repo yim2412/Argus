@@ -255,6 +255,18 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "realtime_cache_ttl",
+        "실시간 조회 캐시가 수집 주기를 넘지 않는다",
+        (
+            (
+                "argus/dashboard/data.py",
+                "@ttl_cache(1.0)\ndef latest_metrics() -> dict | None:",
+                "@ttl_cache(5.0)\ndef latest_metrics() -> dict | None:",
+            ),
+        ),
+        note="예광탄 실측: TTL 2초일 때 12초에 6개만 그렸다",
+    ),
+    Mutant(
         "dashboard_pythonpath",
         "대시보드에 sys.path 를 물려준다 (base 인터프리터엔 streamlit 이 없다)",
         (

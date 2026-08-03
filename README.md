@@ -62,12 +62,32 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 그대로 종료합니다(자동 시작과 수동 실행이 겹치는 것은 흔한 일이라 실패로 다루지 않습니다).
 `ARGUS_DATA_DIR` 로 분리한 인스턴스는 서로 막지 않습니다.
 
+### 네이티브 창 (개발 중)
+
+```powershell
+.venv\Scripts\python.exe -m argus.desktop.app
+.venv\Scripts\python.exe -m argus.desktop.app --seconds 12   # 검증: 그린 표본 수를 보고
+```
+
+대시보드를 브라우저가 아니라 데스크톱 앱(PySide6)으로 옮기는 중입니다. 지금은 실시간
+차트 하나만 있고, 나머지 페이지는 아직 Streamlit 쪽에 있습니다.
+
+**상주와 별도 프로세스입니다** — 창이 죽어도 수집은 계속됩니다. 개발 중 창 위치는
+`ARGUS_UI_SCREEN`(0-기반 모니터 번호)으로 지정합니다. 배포 exe 에는 영향이 없습니다.
+
 ### exe 로 묶기
 
 ```powershell
-.venv\Scripts\pyinstaller.exe packaging\argus.spec --noconfirm
+.venv\Scripts\pyinstaller.exe packaging\argus.spec --noconfirm      # 상주
 dist\argus\argus.exe --check
+
+.venv\Scripts\pyinstaller.exe packaging\argus_ui.spec --noconfirm   # 네이티브 창
+dist\argus-ui\argus-ui.exe --seconds 12
 ```
+
+실측: 상주 **195MB** · 창 **298MB**. 창 쪽이 큰 것은 Qt 런타임 때문이고,
+`argus_ui.spec` 의 `excludes` 가 WebEngine·3D·Multimedia 를 걷어내 설치본 643MB 에서
+그만큼 줄인 결과입니다.
 
 `--onedir` 입니다(onefile 은 시작이 느리고 DLL 문제가 잦습니다). 실측 **빌드 37~48초 ·
 `dist` 195MB · exe 9.9MB**. 격리 실행으로 검증하려면 `ARGUS_DATA_DIR` 을 지정하세요.

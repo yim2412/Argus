@@ -43,4 +43,6 @@ argus = ["config/*.yaml", "storage/migrations/*.sql"]
 [dependency-groups]
 dev = [
     "pyinstaller>=6.21.0",
+    "pyqtgraph>=0.14.0",
+    "pyside6>=6.11.1",
 ]
