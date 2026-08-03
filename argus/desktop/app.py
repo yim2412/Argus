@@ -16,6 +16,7 @@ import sys
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..dashboard import theme
+from .pages.incidents import IncidentPage
 from .pages.processes import ProcessPage
 from .pages.realtime import RealtimePage
 
@@ -58,6 +59,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.realtime = RealtimePage()
         self.processes = ProcessPage()
+        self.incidents = IncidentPage()
 
         # 왼쪽 탭 + 오른쪽 내용. 페이지가 늘어도 여기만 추가하면 된다.
         self._nav = QtWidgets.QListWidget()
@@ -72,7 +74,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._add_page("실시간", self.realtime)
         self._add_page("프로세스", self.processes)
-        for name in ("타임라인", "사건", "자기 상태"):
+        self._add_page("사건", self.incidents)
+        for name in ("타임라인", "자기 상태"):
             self._add_page(name, _Placeholder(name))
 
         self._nav.currentRowChanged.connect(self._stack.setCurrentIndex)
@@ -109,6 +112,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         self.realtime.stop()
         self.processes.stop()
+        self.incidents.stop()
         super().closeEvent(event)
 
 
@@ -160,7 +164,7 @@ def main(seconds: float | None = None) -> int:
         expected = max(1, int(seconds * 0.6))
         loads = window.processes.load_count
         print(f"  백필 {backfill}개 · 실시간 {live}개 ({seconds:.0f}초, 기대 {expected}개 이상)")
-        print(f"  프로세스 표 갱신 {loads}회")
+        print(f"  프로세스 표 갱신 {loads}회 · 사건 조회 {window.incidents.load_count}회")
         if live == 0:
             print("[FAIL] 실시간 표본이 하나도 없다 — 조회나 시그널 경계가 깨졌다")
             return 1

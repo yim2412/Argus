@@ -317,7 +317,10 @@ def set_user_label(incident_id: int, label: str | None) -> None:
         conn.commit()
     finally:
         conn.close()
-    incidents.clear()
+    # 방금 쓴 값이 곧바로 보이게 캐시를 비운다. **`st.cache_data` 시절에는 `.clear()`
+    # 였다** — `ttl_cache` 로 바꾸면서 이름이 `cache_clear` 가 됐고, 그대로 두었으면
+    # 피드백을 누를 때마다 AttributeError 가 났다(2026-08-03, 사건 페이지 이식 중 발견).
+    incidents.cache_clear()
 
 
 @ttl_cache(60.0)

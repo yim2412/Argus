@@ -287,6 +287,126 @@ def test_growth_text_stays_quiet_on_short_windows(qapp) -> None:
     assert "+100.0 MB/시간" in _growth_text(long)
 
 
+# ---------------------------------------------------------------- 사건 페이지
+
+
+def test_feedback_clears_the_incident_cache(monkeypatch, tmp_path) -> None:
+    """**피드백을 저장하면 캐시를 비워야 한다 — 그리고 그 이름이 맞아야 한다.**
+
+    `st.cache_data` 시절에는 `.clear()` 였는데 `ttl_cache` 로 바꾸면서 `cache_clear`
+    가 됐다. 호출부를 같이 고치지 않아 피드백 버튼이 `AttributeError` 로 죽는 상태였다
+    (2026-08-03, 사건 페이지 이식 중 발견).
+
+    **`cache_clear` 가 있는지만 보면 안 된다.** 처음에 그렇게 썼다가 mutation 에서
+    "안 잡힘"이 나왔다 — 존재 여부는 호출 여부를 말해 주지 않는다. 비우지 않으면
+    방금 남긴 피드백이 최대 10초 동안 화면에 반영되지 않는다.
+    """
+    import sqlite3
+
+    from argus.dashboard import data
+
+    database = tmp_path / "t.db"
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "CREATE TABLE incidents (id INTEGER PRIMARY KEY, user_label TEXT, labeled_at REAL)"
+        )
+        conn.execute("INSERT INTO incidents (id) VALUES (1)")
+
+    calls: list[int] = []
+    monkeypatch.setattr(data, "db_path", lambda: database)
+    monkeypatch.setattr(data.incidents, "cache_clear", lambda: calls.append(1))
+
+    data.set_user_label(1, "normal")
+
+    assert calls, "피드백을 저장하고도 캐시를 비우지 않았다"
+    with sqlite3.connect(database) as conn:
+        stored = conn.execute("SELECT user_label FROM incidents WHERE id = 1").fetchone()[0]
+    assert stored == "normal", "라벨이 저장되지 않았다"
+
+
+def _incident_page(qapp):
+    from argus.desktop.pages.incidents import IncidentPage
+
+    page = IncidentPage()
+    page.stop()
+    return _keep(page)
+
+
+def test_incident_list_row_formats_duration() -> None:
+    from argus.desktop.pages.incidents import _list_row
+
+    closed = _list_row({"id": 1, "ts_start": 1000.0, "ts_end": 1180.0,
+                        "severity": "warning", "title": "디스크 병목"})
+    assert closed["span"] == "3분"
+    assert closed["severity_ko"] == "경고"
+
+    short = _list_row({"id": 2, "ts_start": 1000.0, "ts_end": 1040.0,
+                       "severity": "info", "title": "짧은 사건"})
+    assert short["span"] == "40초", "1분 미만은 초로 보여야 읽힌다"
+
+    ongoing = _list_row({"id": 3, "ts_start": 1000.0, "ts_end": None,
+                         "severity": "critical", "title": "진행 중"})
+    assert ongoing["span"] == "진행 중"
+
+
+def test_contributor_hides_lead_for_minor_shares() -> None:
+    """**기여가 작으면 선행 시간을 붙이지 않는다.**
+
+    상승폭이 작으면 "오르기 시작한 시점"이 잡음에 좌우된다 — 실측에서 기여도 5% 짜리가
+    "255초 선행"으로 나왔다. 용의자가 아닌 것의 선행성은 잡음이다.
+    """
+    from argus.desktop.pages.incidents import _contributor_row
+
+    major = _contributor_row({"name": "chrome", "share": 0.68, "delta": 300.0,
+                              "pids": [1, 2], "lead_s": 40.0})
+    assert major["lead"] == "40초"
+    assert major["share_pct"] == pytest.approx(68.0)
+    assert major["pid_count"] == 2
+
+    minor = _contributor_row({"name": "noise", "share": 0.05, "delta": 3.0,
+                              "pids": [9], "lead_s": 255.0})
+    assert minor["lead"] == "", "기여도 5% 인데 선행 시간을 붙였다"
+
+
+def test_incident_detail_renders_markdown_report(qapp) -> None:
+    """리포트가 이미 마크다운이라 그대로 그린다 — 이식 전 유일한 미지수였다."""
+    page = _incident_page(qapp)
+    page._rows = [
+        {
+            "id": 7,
+            "ts_start": 1000.0,
+            "ts_end": 1200.0,
+            "severity": "warning",
+            "title": "디스크 병목 — chrome 68%",
+            "explanation_md": "## 무슨 일이\n\n디스크 응답이 **8ms → 71ms** 로 올랐다.",
+            "contributors": '[{"name": "chrome", "share": 0.68, "delta": 300.0, "pids": [1]}]',
+            "detectors": '["rules"]',
+            "signal_count": 12,
+        }
+    ]
+    page._render_detail(page._rows[0])
+
+    text = page._report.toPlainText()
+    assert "디스크 응답이" in text
+    assert "**" not in text, "마크다운이 그대로 문자로 남았다 — 렌더링되지 않았다"
+    assert page._contributors.model().rowCount() == 1
+    assert page._normal_btn.isEnabled(), "사건을 골랐는데 피드백을 못 준다"
+
+
+def test_empty_incident_list_explains_why(qapp) -> None:
+    """**빈 화면 대신 왜 비었는지 말한다.** 사건이 없는 것은 대개 정상이다."""
+    page = _incident_page(qapp)
+    page._on_rows([])
+    # `isVisible()` 은 부모 창이 `show()` 되어야 True 다 — 창을 띄우지 않는 테스트에서는
+    # 항상 False 라 아무것도 검증하지 못한다. 명시적 숨김 여부를 본다.
+    assert not page._notice.isHidden(), "사건이 없는데 안내를 숨겼다"
+    assert "정상" in page._notice.text()
+
+    page._on_rows([{"id": 1, "ts_start": 1000.0, "ts_end": 1100.0,
+                    "severity": "info", "title": "무언가"}])
+    assert page._notice.isHidden(), "사건이 있는데 안내가 남았다"
+
+
 # ---------------------------------------------------------------- 모니터 배치
 
 @pytest.mark.parametrize(

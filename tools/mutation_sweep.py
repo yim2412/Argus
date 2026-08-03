@@ -255,6 +255,30 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "feedback_cache_invalidation",
+        "피드백을 저장하면 캐시를 비운다 (이름이 어긋나면 조용히 죽는다)",
+        (
+            (
+                "argus/dashboard/data.py",
+                "    incidents.cache_clear()\n",
+                "    pass  # MUTANT: 캐시를 비우지 않는다\n",
+            ),
+        ),
+        note="st.cache_data 의 .clear() → ttl_cache 의 cache_clear() 로 바뀌며 어긋났다",
+    ),
+    Mutant(
+        "incident_lead_threshold",
+        "기여가 작은 후보에는 선행 시간을 붙이지 않는다",
+        (
+            (
+                "argus/desktop/pages/incidents.py",
+                '        "lead": f"{lead:.0f}초" if lead is not None and share >= 0.1 else "",\n',
+                '        "lead": f"{lead:.0f}초" if lead is not None else "",\n',
+            ),
+        ),
+        note="실측: 기여도 5% 짜리가 255초 선행으로 나왔다",
+    ),
+    Mutant(
         "table_query_order",
         "표는 조회가 준 순서를 지킨다 (setSortingEnabled 가 0번 열로 뒤집는다)",
         (
