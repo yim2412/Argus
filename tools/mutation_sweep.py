@@ -255,6 +255,18 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "component_contract",
+        "Component 규약 검사 — 없으면 스레드가 조용히 죽는다",
+        (
+            (
+                "argus/runtime/supervisor.py",
+                '        missing = [attr for attr in self._REQUIRED if not hasattr(component, attr)]\n',
+                "        missing = []  # MUTANT: 규약 검사 무력화\n",
+            ),
+        ),
+        note="2026-08-03 에 FingerprintBuilder 가 몇 주간 이 상태였다",
+    ),
+    Mutant(
         "notify_gate",
         "발송 게이트 — 판정(`notified`)과 실제 발송은 별개다",
         (

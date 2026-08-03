@@ -63,13 +63,50 @@ class Supervisor:
         self._multiplier_fn = multiplier_fn or (lambda: 1.0)
         self._error_counts: dict[str, int] = {}
 
+    # **`tick()` 을 감싼 try 바깥에서 읽는 것들만** 검사한다. 없으면 예외가 스레드를
+    # 그대로 죽이기 때문이다.
+    #
+    # `setup`·`teardown` 은 넣지 않는다 — 둘 다 try 안에서 불려 없어도 로그만 남고
+    # 계속 돈다. 규약 검사는 "없으면 조용히 죽는 것"만 막아야 하고, 과하게 잡으면
+    # 덕 타이핑으로 만든 테스트 대역까지 거부하게 된다(실제로 그랬다).
+    _REQUIRED = ("name", "interval_s", "tick", "throttleable")
+
     def add(self, component: Component) -> "Supervisor":
+        """컴포넌트를 등록한다. **규약 위반은 여기서 즉시 터뜨린다.**
+
+        2026-08-03 까지 `FingerprintBuilder` 가 `Component` 를 상속하지 않아
+        `throttleable` 이 없었고, 첫 틱 직후 `AttributeError` 로 스레드가 죽었다.
+        `pythonw` 에는 stderr 가 없어 **몇 주 동안 아무 신호도 없었다** — 지문 갱신이
+        기동 시 1회로 줄어든 채로 돌았다.
+
+        기동 시점의 시끄러운 실패가 런타임의 조용한 죽음보다 낫다.
+        """
+        missing = [attr for attr in self._REQUIRED if not hasattr(component, attr)]
+        if missing:
+            raise TypeError(
+                f"{type(component).__name__} 이 Component 규약을 어긴다 — 없는 것: {missing}. "
+                "`Component` 를 상속하면 기본값이 채워진다."
+            )
         self._components.append(component)
         return self
 
     # ------------------------------------------------------------------ 실행
 
     def _run_component(self, component: Component) -> None:
+        """컴포넌트 하나의 수명. **어떤 예외로도 조용히 끝나지 않는다.**
+
+        `tick()` 은 아래에서 따로 감싸지만, 그 바깥(주기 계산·대기)에서 터지는 예외는
+        스레드를 그대로 죽인다. 스레드 사망은 기본적으로 stderr 로만 알려지는데
+        `pythonw` 에는 stderr 가 없어 **아무 흔적도 남지 않는다.** 그래서 여기서
+        통째로 받아 로그와 크래시 파일에 남긴다 — 죽더라도 죽었다는 것은 알아야 한다.
+        """
+        try:
+            self._run_component_inner(component)
+        except Exception as e:
+            log.exception("컴포넌트 스레드가 죽었다", extra={"component": component.name})
+            write_crash(e, context=f"thread:{component.name}")
+
+    def _run_component_inner(self, component: Component) -> None:
         name = component.name
         try:
             component.setup()

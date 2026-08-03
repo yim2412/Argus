@@ -96,6 +96,63 @@ def test_system_collector_resets_rates() -> None:
         collector.teardown()
 
 
+def test_supervisor_rejects_components_missing_the_contract() -> None:
+    """**규약 위반은 등록 시점에 터져야 한다.**
+
+    2026-08-03 까지 `FingerprintBuilder` 가 `Component` 를 상속하지 않아 `throttleable`
+    이 없었다. 그 속성은 매 틱 `tick()` 을 감싼 try **바깥**에서 읽히므로 첫 틱 직후
+    `AttributeError` 로 스레드가 죽었고, `pythonw` 에는 stderr 가 없어 **아무 신호도
+    없었다** — 지문 갱신이 기동 시 1회로 줄어든 채 돌았다. exe 빌드가 콘솔을 띄운
+    덕에 드러났다.
+
+    기동 시점의 시끄러운 실패가 런타임의 조용한 죽음보다 낫다.
+    """
+    import pytest
+
+    class MissingThrottleable:
+        name = "broken"
+        interval_s = 1.0
+
+        def tick(self) -> None:
+            pass
+
+    with pytest.raises(TypeError, match="throttleable"):
+        Supervisor().add(MissingThrottleable())
+
+
+def test_supervisor_accepts_components_without_optional_hooks() -> None:
+    """`setup`·`teardown` 은 선택이다 — 둘 다 try 안에서 불려 없어도 조용히 죽지 않는다.
+
+    규약 검사가 이것까지 요구하면 덕 타이핑으로 만든 대역을 거부하게 된다.
+    """
+
+    class Minimal:
+        name = "minimal"
+        interval_s = 1.0
+        throttleable = True
+
+        def tick(self) -> None:
+            pass
+
+    Supervisor().add(Minimal())  # 예외가 나면 실패
+
+
+def test_fingerprint_builder_satisfies_the_component_contract() -> None:
+    """실제로 물렸던 그 컴포넌트를 직접 고정한다.
+
+    위 두 테스트는 규약 **검사**를 보고, 이건 그 검사를 통과해야 할 **당사자**를 본다.
+    """
+    from argus.detection.fingerprint import FingerprintBuilder
+    from argus.runtime.supervisor import Component
+
+    assert issubclass(FingerprintBuilder, Component), (
+        "Component 를 상속하지 않으면 throttleable 이 없어 첫 틱 직후 스레드가 죽는다"
+    )
+    builder = FingerprintBuilder(db=None)
+    for attr in Supervisor._REQUIRED:
+        assert hasattr(builder, attr), f"규약 속성 `{attr}` 이 없다"
+
+
 def test_supervisor_broadcast_isolates_failures() -> None:
     """한 컴포넌트의 복구 실패가 나머지를 막으면 안 된다."""
 

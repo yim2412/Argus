@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass
 
 from ..logging_setup import get_logger
+from ..runtime.supervisor import Component
 from ..storage import history
 
 log = get_logger(__name__)
@@ -209,8 +210,14 @@ def load(db, stat: str | None = None) -> dict[tuple[str, str], Fingerprint]:
     return out
 
 
-class FingerprintBuilder:
+class FingerprintBuilder(Component):
     """지문을 주기적으로 다시 만든다.
+
+    **`Component` 를 상속한다.** 덕 타이핑으로 `name`·`interval_s`·`tick` 만 갖추면
+    도는 것처럼 보이지만, 수퍼바이저는 매 틱 `throttleable` 도 읽는다. 그 참조는
+    `tick()` 을 감싼 `try` **바깥**이라 예외가 스레드를 그대로 죽인다 — 2026-08-03 까지
+    이 컴포넌트는 **첫 틱 직후 매번 죽고 있었고**, `pythonw` 에는 stderr 가 없어
+    아무도 몰랐다. exe 빌드가 콘솔을 띄운 덕에 드러났다.
 
     **자주 할 일이 아니다.** 3일 이상 관측된 것만 지문이 되므로 한 시간 사이에 결과가
     달라질 일이 없고, 웜(Parquet)까지 훑는 작업이라 싸지도 않다. 기본은 6시간이다.
