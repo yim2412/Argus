@@ -116,6 +116,27 @@ def test_surviving_dashboard_is_not_reported_as_failure(monkeypatch) -> None:
     assert not told, "정상 기동인데 실패라고 알렸다"
 
 
+def test_start_announcement_is_informational(monkeypatch) -> None:
+    """**기동 알림은 `info` 다.**
+
+    탐지가 조용하면 알림도 없어서(실측: 20번 수정 이후 8시간 0건) 그 상태로는 "알림이
+    켜져 있는지"를 사용자가 알 수 없다. 기동마다 한 번이면 하루 한두 번이라 소음이
+    아니다. 다만 이건 이상이 아니므로 `warning` 으로 올리면 안 된다 — 등급이 뜻을
+    잃는다.
+    """
+    tray = TrayIcon()
+    sent: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        tray, "notify", lambda t, m, s="warning": sent.append((t, m, s)) or True
+    )
+
+    assert tray.announce_start() is True
+    assert len(sent) == 1
+    title, message, severity = sent[0]
+    assert severity == "info", f"기동 알림이 {severity} 다 — 이상이 아닌데 등급이 높다"
+    assert "Argus" in title and message
+
+
 def test_notify_is_a_no_op_without_an_icon() -> None:
     """아이콘 등록에 실패했으면 알림도 없다 — 예외 대신 False 를 돌려준다.
 

@@ -385,6 +385,18 @@ def run(args: argparse.Namespace) -> int:
         sup.install_signal_handlers()
         sup.start()
 
+        # 기동 알림. **알림 경로가 살아 있는지 확인하는 유일한 방법이다** — 탐지가
+        # 조용하면 알림도 없어서, 그 상태로는 "켜져 있는지"를 사용자가 알 수 없다.
+        # `notify` 가 꺼져 있으면 사건 알림도 안 가므로 여기서도 띄우지 않는다.
+        if tray is not None and settings.detection.notify:
+            # 트레이 컴포넌트의 `setup()`(아이콘 등록)이 자기 스레드에서 돌므로 잠깐 기다린다.
+            # 못 기다리면 아이콘이 없는 상태라 알림이 조용히 버려진다.
+            for _ in range(20):
+                if tray._added:  # noqa: SLF001 - 같은 패키지의 기동 협력
+                    tray.announce_start()
+                    break
+                time.sleep(0.1)
+
         if args.duration:
             # 지정 시간 뒤 종료. 타이머 스레드로 걸어 Ctrl+C 도 계속 받게 둔다.
             threading.Timer(args.duration, sup.stop).start()

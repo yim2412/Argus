@@ -131,6 +131,16 @@ class TrayIcon(Component):
 
     # ------------------------------------------------------------------ 알림
 
+    def announce_start(self, detail: str = "") -> bool:
+        """기동을 한 번 알린다. **알림 경로가 살아 있는지 확인하는 유일한 방법이다.**
+
+        탐지가 조용하면 알림도 없다 — 실측에서 20번 수정 이후 8시간 동안 알림 대상이
+        0건이었다. 그건 좋은 일이지만, 그 상태에서는 "알림이 켜져 있는지" 자체를
+        사용자가 알 수 없다. 기동마다 한 번이면 하루 한두 번이라 소음이 아니고,
+        풍선이 안 뜨면 그 자체가 신호다.
+        """
+        return self.notify("Argus 감시 시작", detail or "성능 이상을 지켜봅니다.", "info")
+
     def notify(self, title: str, message: str, severity: str = "warning") -> bool:
         """풍선 알림을 띄운다. 띄웠으면 True.
 

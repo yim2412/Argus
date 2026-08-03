@@ -272,7 +272,9 @@ class DetectionSettings(BaseModel):
     # 이만큼 표본이 모여야 판정한다. 표본 3개의 중앙값은 중앙값이 아니라 우연이다.
     min_samples: int = Field(default=60, ge=2)
     # 알림 발송. Phase 9 까지는 꺼 둔다 — 오탐률이 검증되기 전에 알리면 되돌릴 수 없다.
-    notify: bool = False
+    # 알림 발송. 판정(`notified`)과는 별개다 — 판정은 항상 돌아 대시보드와 채점이 쓰고,
+    # 이 값은 사용자에게 실제로 띄울지만 정한다. 2026-08-03 에 켰다(근거는 defaults.yaml).
+    notify: bool = True
 
 
 class FingerprintSettings(BaseModel):
