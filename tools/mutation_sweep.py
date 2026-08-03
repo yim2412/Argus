@@ -255,6 +255,32 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "table_query_order",
+        "표는 조회가 준 순서를 지킨다 (setSortingEnabled 가 0번 열로 뒤집는다)",
+        (
+            (
+                "argus/desktop/widgets.py",
+                "            self.horizontalHeader().setSortIndicator(-1, QtCore.Qt.AscendingOrder)\n"
+                "            self._proxy.sort(-1)\n",
+                "            pass  # MUTANT: 기본 정렬을 그대로 둔다\n",
+            ),
+        ),
+        note="프로세스 표가 CPU 순이 아니라 이름 역순으로 떴다",
+    ),
+    Mutant(
+        "table_value_sort",
+        "정렬은 표시 문자열이 아니라 원본 값으로 (9MB 가 10MB 뒤로 가면 안 된다)",
+        (
+            (
+                "argus/desktop/widgets.py",
+                "        a = self.sourceModel().data(left, QtCore.Qt.UserRole)\n"
+                "        b = self.sourceModel().data(right, QtCore.Qt.UserRole)\n",
+                "        a = self.sourceModel().data(left, QtCore.Qt.DisplayRole)\n"
+                "        b = self.sourceModel().data(right, QtCore.Qt.DisplayRole)\n",
+            ),
+        ),
+    ),
+    Mutant(
         "realtime_live_count",
         "백필과 실시간 표본을 따로 센다 (합치면 갱신 판정이 무너진다)",
         (

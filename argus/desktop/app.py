@@ -16,6 +16,7 @@ import sys
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..dashboard import theme
+from .pages.processes import ProcessPage
 from .pages.realtime import RealtimePage
 
 # 개발 중 창을 띄울 모니터(0-기반). 배포 exe 에는 영향이 없다 — 값이 없으면
@@ -56,6 +57,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.resize(1240, 820)
 
         self.realtime = RealtimePage()
+        self.processes = ProcessPage()
 
         # 왼쪽 탭 + 오른쪽 내용. 페이지가 늘어도 여기만 추가하면 된다.
         self._nav = QtWidgets.QListWidget()
@@ -69,7 +71,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stack = QtWidgets.QStackedWidget()
 
         self._add_page("실시간", self.realtime)
-        for name in ("타임라인", "프로세스", "사건", "자기 상태"):
+        self._add_page("프로세스", self.processes)
+        for name in ("타임라인", "사건", "자기 상태"):
             self._add_page(name, _Placeholder(name))
 
         self._nav.currentRowChanged.connect(self._stack.setCurrentIndex)
@@ -105,6 +108,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         self.realtime.stop()
+        self.processes.stop()
         super().closeEvent(event)
 
 
@@ -154,12 +158,17 @@ def main(seconds: float | None = None) -> int:
         backfill = window.realtime.backfill_count
         # 기대치는 "초당 한 점"이다. 창을 여는 데 드는 시간이 있으므로 여유를 둔다.
         expected = max(1, int(seconds * 0.6))
+        loads = window.processes.load_count
         print(f"  백필 {backfill}개 · 실시간 {live}개 ({seconds:.0f}초, 기대 {expected}개 이상)")
+        print(f"  프로세스 표 갱신 {loads}회")
         if live == 0:
             print("[FAIL] 실시간 표본이 하나도 없다 — 조회나 시그널 경계가 깨졌다")
             return 1
         if live < expected:
             print("[FAIL] 실시간 갱신이 초당 한 점에 못 미친다")
+            return 1
+        if loads == 0:
+            print("[FAIL] 프로세스 표를 한 번도 못 채웠다")
             return 1
         print("[OK] desktop.app")
     return code
