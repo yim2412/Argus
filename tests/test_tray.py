@@ -40,10 +40,10 @@ class _Recorder:
         return b"", self._stderr
 
 
-def test_dashboard_inherits_the_current_interpreter_path(monkeypatch) -> None:
+def test_window_inherits_the_current_interpreter_path(monkeypatch) -> None:
     """**`sys.executable` 만으로는 부족하다.**
 
-    상주가 base 인터프리터로 돌면 그쪽에는 `streamlit` 이 없다. 현재 프로세스의
+    상주가 base 인터프리터로 돌면 그쪽에는 PySide6 가 없다. 현재 프로세스의
     `sys.path`(= `soak_entry` 가 venv 를 얹어 둔 것)를 `PYTHONPATH` 로 물려줘야
     자식이 찾을 수 있다. 실측으로 확인했다 — 물려주기 전 `exit 1`, 물려준 뒤 기동.
     """
@@ -52,10 +52,12 @@ def test_dashboard_inherits_the_current_interpreter_path(monkeypatch) -> None:
 
     TrayIcon()._open_dashboard()
 
-    assert recorder.args is not None, "대시보드를 띄우지 않았다"
-    assert recorder.args[1:] == ["-m", "argus.dashboard"]
+    assert recorder.args is not None, "창을 띄우지 않았다"
+    assert recorder.args[1:] == ["-m", "argus.desktop.app"], (
+        f"네이티브 창이 아니라 다른 것을 띄운다: {recorder.args}"
+    )
     assert recorder.env is not None and recorder.env.get("PYTHONPATH"), (
-        "PYTHONPATH 를 물려주지 않았다 — base 인터프리터에서 streamlit 을 못 찾는다"
+        "PYTHONPATH 를 물려주지 않았다 — base 인터프리터에서 PySide6 를 못 찾는다"
     )
 
     import sys
@@ -65,11 +67,38 @@ def test_dashboard_inherits_the_current_interpreter_path(monkeypatch) -> None:
     assert set(meaningful) <= set(inherited), "현재 sys.path 가 온전히 전달되지 않았다"
 
 
-def test_dashboard_is_not_launched_when_frozen(monkeypatch) -> None:
-    """exe 에는 대시보드를 아직 묶지 않았다. **조용히 실패하는 대신 말한다**(규칙 4)."""
+def test_frozen_looks_for_the_window_executable(monkeypatch, tmp_path) -> None:
+    """**묶인 상태에서는 창이 별도 exe 다.**
+
+    상주와 프로세스를 나눠 창이 죽어도 수집이 계속되게 했으므로, `argus-ui.exe` 를
+    찾아 실행한다. 상주 exe 옆이나 `argus-ui/` 하위 둘 다 본다 — 배포 폴더 구조가
+    아직 정해지지 않았다.
+    """
     recorder = _Recorder()
     monkeypatch.setattr(subprocess, "Popen", recorder)
     monkeypatch.setattr("argus.paths.is_frozen", lambda: True)
+
+    fake_exe = tmp_path / "argus" / "argus.exe"
+    fake_exe.parent.mkdir(parents=True)
+    fake_exe.touch()
+    window_exe = tmp_path / "argus-ui" / "argus-ui.exe"
+    window_exe.parent.mkdir(parents=True)
+    window_exe.touch()
+    monkeypatch.setattr("sys.executable", str(fake_exe))
+
+    TrayIcon()._open_dashboard()
+
+    assert recorder.args == [str(window_exe)], f"창 exe 를 못 찾았다: {recorder.args}"
+
+
+def test_missing_window_executable_is_reported(monkeypatch, tmp_path) -> None:
+    """창 exe 를 함께 배포하지 않은 경우. **조용히 실패하지 않는다**(규칙 4)."""
+    recorder = _Recorder()
+    monkeypatch.setattr(subprocess, "Popen", recorder)
+    monkeypatch.setattr("argus.paths.is_frozen", lambda: True)
+    lonely = tmp_path / "argus.exe"
+    lonely.touch()
+    monkeypatch.setattr("sys.executable", str(lonely))
 
     tray = TrayIcon()
     told: list[tuple[str, str, str]] = []
@@ -79,9 +108,9 @@ def test_dashboard_is_not_launched_when_frozen(monkeypatch) -> None:
 
     tray._open_dashboard()
 
-    assert recorder.args is None, "exe 에 없는 대시보드를 띄우려 했다"
+    assert recorder.args is None, "없는 exe 를 띄우려 했다"
     assert told, "띄우지 못한다는 사실을 사용자에게 알리지 않았다"
-    assert "exe" in told[0][1]
+    assert "argus-ui" in told[0][1]
 
 
 def test_immediate_dashboard_death_is_reported(monkeypatch) -> None:

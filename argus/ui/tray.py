@@ -200,7 +200,7 @@ class TrayIcon(Component):
 
         try:
             menu = win32gui.CreatePopupMenu()
-            win32gui.AppendMenu(menu, win32con.MF_STRING, _MENU_DASHBOARD, "대시보드 열기")
+            win32gui.AppendMenu(menu, win32con.MF_STRING, _MENU_DASHBOARD, "Argus 창 열기")
             win32gui.AppendMenu(menu, win32con.MF_SEPARATOR, 0, "")
             win32gui.AppendMenu(menu, win32con.MF_STRING, _MENU_STOP, "Argus 종료")
 
@@ -224,16 +224,42 @@ class TrayIcon(Component):
         elif command_id == _MENU_DASHBOARD:
             self._open_dashboard()
 
-    def _open_dashboard(self) -> None:
-        """대시보드를 별도 프로세스로 띄운다.
+    def _window_command(self) -> tuple[list[str], str] | None:
+        """창을 띄울 명령. `(argv, 설명)` 또는 못 찾으면 None.
 
-        **상주 프로세스 안에서 Streamlit 을 돌리지 않는다.** 자체 서버와 이벤트 루프를
-        갖고 있어 상주 스레드 모델과 섞이면 종료가 지저분해지고, 무엇보다 대시보드가
-        죽을 때 수집까지 끌고 내려간다.
+        **묶인 상태와 소스 실행이 다르다.**
+
+        - exe: 창은 `argus-ui.exe` 라는 **별도 실행 파일**이다(상주와 프로세스를 나눠
+          창이 죽어도 수집이 계속되게 했다). 상주 exe 옆이나 `argus-ui/` 하위에 있다.
+        - 소스: `python -m argus.desktop.app`.
+        """
+        import sys
+        from pathlib import Path
+
+        from ..paths import is_frozen
+
+        if not is_frozen():
+            return [sys.executable, "-m", "argus.desktop.app"], "소스"
+
+        here = Path(sys.executable).resolve().parent
+        for candidate in (
+            here / "argus-ui.exe",
+            here.parent / "argus-ui" / "argus-ui.exe",
+        ):
+            if candidate.exists():
+                return [str(candidate)], str(candidate)
+        return None
+
+    def _open_dashboard(self) -> None:
+        """창을 별도 프로세스로 띄운다.
+
+        **상주 프로세스 안에서 UI 를 돌리지 않는다.** Qt 는 메인 스레드에서
+        `QApplication.exec()` 를 요구하는데 상주는 그 자리를 수퍼바이저가 쓴다. 무엇보다
+        창이 죽을 때 수집까지 끌고 내려간다 — 관측자가 병목이 되면 안 된다(설계 규칙 1).
 
         **`sys.executable` 만으로는 안 된다.** 상주는 base `pythonw.exe` 로 도는 경우가
         있고(`tools/soak_entry.py` — venv 트램폴린이 콘솔 창을 만들기 때문), 그
-        인터프리터에는 `streamlit` 이 없다. 실측(2026-08-03): 메뉴를 눌러도 아무 일도
+        인터프리터에는 PySide6 가 없다. 실측(2026-08-03): 메뉴를 눌러도 아무 일도
         일어나지 않았고 `ModuleNotFoundError` 는 `CREATE_NO_WINDOW` 뒤에서 사라졌다.
         그래서 **현재 프로세스의 `sys.path` 를 `PYTHONPATH` 로 물려준다** — `soak_entry`
         가 `site.addsitedir` 로 세운 venv 경로가 그 안에 들어 있다.
@@ -243,15 +269,13 @@ class TrayIcon(Component):
         import sys
         import threading
 
-        from ..paths import is_frozen
-
-        if is_frozen():
-            # 대시보드는 아직 exe 에 묶지 않았다(Streamlit 은 자체 자원 파일과 동적
-            # import 가 많아 별도 문제). 조용히 실패하는 대신 그 사실을 말한다.
-            self.notify(
-                "Argus", "대시보드는 아직 exe 에 포함되지 않았습니다 (소스 실행 필요).", "info"
-            )
+        command = self._window_command()
+        if command is None:
+            # 창 exe 를 함께 배포하지 않은 경우. 조용히 실패하지 않는다(규칙 4).
+            log.warning("창 실행 파일을 찾지 못했다")
+            self.notify("Argus", "창 실행 파일(argus-ui.exe)을 찾지 못했습니다.", "warning")
             return
+        argv, where = command
 
         env = dict(os.environ)
         inherited = os.pathsep.join(p for p in sys.path if p)
@@ -262,27 +286,27 @@ class TrayIcon(Component):
         try:
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             proc = subprocess.Popen(
-                [sys.executable, "-m", "argus.dashboard"],
+                argv,
                 creationflags=creationflags,
                 env=env,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
             )
         except Exception as exc:
-            log.warning("대시보드를 띄우지 못했다", extra={"error": str(exc)})
-            self.notify("Argus", f"대시보드를 열지 못했습니다: {exc}", "warning")
+            log.warning("창을 띄우지 못했다", extra={"error": str(exc)})
+            self.notify("Argus", f"창을 열지 못했습니다: {exc}", "warning")
             return
 
-        log.info("대시보드 실행 요청")
+        log.info("창 실행 요청", extra={"target": where})
         # **띄운 것과 뜬 것은 다르다.** `Popen` 은 즉시 돌아오므로 여기서 성공을 선언하면
         # 실패가 그대로 묻힌다. 잠깐 지켜보다 곧바로 죽으면 사용자에게 말한다.
         # 감시는 별도 스레드에서 한다 — 트레이 메시지 펌프를 막으면 아이콘이 얼어붙는다.
         threading.Thread(
-            target=self._watch_dashboard, args=(proc,), name="dashboard-watch", daemon=True
+            target=self._watch_dashboard, args=(proc,), name="window-watch", daemon=True
         ).start()
 
     def _watch_dashboard(self, proc) -> None:
-        """대시보드가 뜨자마자 죽는지 지켜본다. 정상 기동이면 계속 살아 있다."""
+        """창이 뜨자마자 죽는지 지켜본다. 정상 기동이면 계속 살아 있다."""
         import subprocess
 
         try:
@@ -296,8 +320,8 @@ class TrayIcon(Component):
             return
         detail = (err or b"").decode("utf-8", "replace").strip().splitlines()
         reason = detail[-1] if detail else f"종료 코드 {proc.returncode}"
-        log.warning("대시보드가 곧바로 종료됐다", extra={"reason": reason})
-        self.notify("Argus", f"대시보드를 열지 못했습니다 — {reason}", "warning")
+        log.warning("창이 곧바로 종료됐다", extra={"reason": reason})
+        self.notify("Argus", f"창을 열지 못했습니다 — {reason}", "warning")
 
     def describe(self) -> dict[str, str]:
         """규칙 4 — 조용히 실패하지 않는다. 상태를 드러낸다."""
