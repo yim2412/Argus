@@ -10,6 +10,7 @@ private 은 85.4MB 유지). 그래서 둘을 같이 그리고 증가율은 priva
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime
 
@@ -31,9 +32,11 @@ class SelfStateLoader(QtCore.QThread):
         self._hours = hours
 
     def run(self) -> None:
-        payload: dict = {"rows": [], "storage": {}}
+        payload: dict = {"rows": [], "storage": {}, "events": [], "runs": []}
         try:
             payload["rows"] = data.self_telemetry(hours=self._hours)
+            payload["events"] = data.system_events(hours=self._hours)
+            payload["runs"] = data.eval_runs(limit=12)
             payload["storage"] = {
                 "db_bytes": data.db_size_bytes(),
                 "warm_bytes": data.warm_size_bytes(),
@@ -152,6 +155,41 @@ class SelfStatePage(QtWidgets.QWidget):
         hint.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 10px;")
         outer.addWidget(hint)
 
+        # --- 시스템 사건 + 스코어보드
+        bottom = QtWidgets.QHBoxLayout()
+        bottom.setSpacing(12)
+
+        left = QtWidgets.QVBoxLayout()
+        left.addWidget(QtWidgets.QLabel("시스템 사건"))
+        self._events = DataTable(
+            [
+                Column("when", "시각", width=120),
+                Column("event", "사건", width=150),
+                Column("gap", "공백(초)", fmt=".0f", align_right=True, width=80),
+                Column("cause", "추정 원인", width=130),
+            ]
+        )
+        self._events.setMaximumHeight(180)
+        left.addWidget(self._events)
+        bottom.addLayout(left)
+
+        right = QtWidgets.QVBoxLayout()
+        right.addWidget(QtWidgets.QLabel("탐지기 스코어보드"))
+        self._runs = DataTable(
+            [
+                Column("detector", "탐지기", width=110),
+                Column("f1", "F1", fmt=".3f", align_right=True, width=60),
+                Column("precision", "정밀도", fmt=".0f", suffix="%", align_right=True, width=70),
+                Column("recall", "재현율", fmt=".0f", suffix="%", align_right=True, width=70),
+                Column("fp_per_hour", "오탐/h", fmt=".2f", align_right=True, width=70),
+                Column("when", "실행", width=100),
+            ]
+        )
+        self._runs.setMaximumHeight(180)
+        right.addWidget(self._runs)
+        bottom.addLayout(right)
+        outer.addLayout(bottom, stretch=2)
+
         self._notice = message("자기 계측 기록을 불러오는 중…")
         outer.addWidget(self._notice)
 
@@ -169,6 +207,8 @@ class SelfStatePage(QtWidgets.QWidget):
         self._loads += 1
         rows = payload.get("rows") or []
         self._fill_storage(payload.get("storage") or {})
+        self._fill_events(payload.get("events") or [])
+        self._fill_runs(payload.get("runs") or [])
         if not rows:
             self._notice.setText(
                 "자기 계측 기록이 없습니다. `python -m argus` 로 수집을 시작하세요."
@@ -278,6 +318,40 @@ class SelfStatePage(QtWidgets.QWidget):
             ]
         )
 
+    def _fill_events(self, events: list[dict]) -> None:
+        """절전·재부팅·크래시 이력.
+
+        **사건 이름만으로는 "왜"가 안 보인다.** 절전인지 재부팅인지 강제 종료인지가
+        사후 진단의 전부라, `detail` 안의 추정 원인을 끌어올린다.
+        """
+        self._events.set_rows(
+            [
+                {
+                    "when": datetime.fromtimestamp(float(e["ts"])).strftime("%m-%d %H:%M:%S"),
+                    "event": e.get("event") or "",
+                    "gap": e.get("gap_seconds"),
+                    "cause": _cause_ko(e.get("detail")),
+                }
+                for e in events[:15]
+            ]
+        )
+
+    def _fill_runs(self, runs: list[dict]) -> None:
+        """탐지기 채점 이력. `python -m argus.eval --detector all --save` 로 갱신된다."""
+        self._runs.set_rows(
+            [
+                {
+                    "detector": r.get("detector") or "",
+                    "f1": r.get("f1"),
+                    "precision": r.get("precision_pct"),
+                    "recall": r.get("recall_pct"),
+                    "fp_per_hour": r.get("fp_per_hour"),
+                    "when": datetime.fromtimestamp(float(r["ts"])).strftime("%m-%d %H:%M"),
+                }
+                for r in runs
+            ]
+        )
+
     # ------------------------------------------------------------------ 상태
 
     @property
@@ -287,6 +361,28 @@ class SelfStatePage(QtWidgets.QWidget):
     def stop(self) -> None:
         if self._loader is not None:
             self._loader.wait(5000)
+
+
+_CAUSE_KO = {
+    "suspend_or_stall": "절전·정지",
+    "clock_change": "시각 변경",
+    "clock_backwards": "시각 역행",
+    "reboot_or_power_loss": "재부팅·전원 차단",
+    "process_killed_or_crash": "강제 종료·크래시",
+    "unknown": "불명",
+}
+
+
+def _cause_ko(detail: str | None) -> str:
+    """`detail` JSON 에서 추정 원인을 사람 말로. 못 읽으면 조용히 빈 칸이다 —
+    진단 보조 정보 하나 때문에 표 전체가 비면 안 된다."""
+    if not detail:
+        return ""
+    try:
+        cause = json.loads(detail).get("likely_cause")
+    except (ValueError, AttributeError, TypeError):
+        return ""
+    return _CAUSE_KO.get(cause, cause or "")
 
 
 def _private_growth(rows: list[dict]) -> str:

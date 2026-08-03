@@ -567,6 +567,44 @@ def test_selfstate_shows_cpu_against_budget(qapp) -> None:
     assert "50%" in page._tiles["cpu"]._note.text(), page._tiles["cpu"]._note.text()
 
 
+def test_system_event_cause_is_translated(qapp) -> None:
+    """**사건 이름만으로는 "왜"가 안 보인다.**
+
+    절전인지 재부팅인지 강제 종료인지가 사후 진단의 전부다. `detail` 안의 추정 원인을
+    끌어올리고, 못 읽으면 조용히 빈 칸으로 둔다 — 진단 보조 하나 때문에 표 전체가
+    비면 안 된다.
+    """
+    from argus.desktop.pages.selfstate import _cause_ko
+
+    assert _cause_ko('{"likely_cause": "reboot_or_power_loss"}') == "재부팅·전원 차단"
+    assert _cause_ko('{"likely_cause": "suspend_or_stall"}') == "절전·정지"
+    assert _cause_ko("깨진 json") == ""
+    assert _cause_ko(None) == ""
+    # 모르는 원인은 원문이라도 보여 준다 — 번역표에 없다고 숨기면 진단이 막힌다.
+    assert _cause_ko('{"likely_cause": "새로운_원인"}') == "새로운_원인"
+
+
+def test_selfstate_fills_events_and_scoreboard(qapp) -> None:
+    page = _selfstate_page(qapp)
+    page._on_loaded(
+        {
+            "rows": [],
+            "storage": {},
+            "events": [
+                {"ts": 1000.0, "event": "unclean_shutdown", "gap_seconds": 120.0,
+                 "detail": '{"likely_cause": "process_killed_or_crash"}'}
+            ],
+            "runs": [
+                {"ts": 2000.0, "detector": "procleak", "f1": 0.889,
+                 "precision_pct": 80.0, "recall_pct": 100.0, "fp_per_hour": 0.32}
+            ],
+        }
+    )
+    assert page._events.model().rowCount() == 1
+    assert page._runs.model().rowCount() == 1
+    assert page._events.model().index(0, 3).data() == "강제 종료·크래시"
+
+
 def test_missing_rollup_state_is_surfaced(qapp) -> None:
     """**롤업이 멈추면 원본 정리도 함께 멈춘다.** 그 사실이 화면에 드러나야 한다."""
     page = _selfstate_page(qapp)
