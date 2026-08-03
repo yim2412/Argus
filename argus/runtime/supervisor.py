@@ -51,7 +51,12 @@ class Component:
 class Supervisor:
     """컴포넌트들을 각자의 스레드에서 돌린다."""
 
-    def __init__(self, *, multiplier_fn: Callable[[], float] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        multiplier_fn: Callable[[], float] | None = None,
+        wake_granularity_s: float = 5.0,
+    ) -> None:
         self._components: list[Component] = []
         self._threads: list[threading.Thread] = []
         self._stop = threading.Event()
@@ -61,6 +66,9 @@ class Supervisor:
         self._joined = False
         self._join_lock = threading.Lock()
         self._multiplier_fn = multiplier_fn or (lambda: 1.0)
+        if wake_granularity_s <= 0:
+            raise ValueError("wake_granularity_s 는 0보다 커야 한다 (대기 루프가 돌지 않는다)")
+        self._wake_granularity_s = wake_granularity_s
         self._error_counts: dict[str, int] = {}
 
     # **`tick()` 을 감싼 try 바깥에서 읽는 것들만** 검사한다. 없으면 예외가 스레드를
@@ -139,18 +147,37 @@ class Supervisor:
                     log.info("컴포넌트 회복", extra={"component": name})
                 backoff = 0.0
 
-            interval = component.interval_s
-            if component.throttleable:
-                interval *= self._multiplier_fn()
-            elapsed = time.perf_counter() - started
-            wait = backoff if backoff else max(0.0, interval - elapsed)
-            self._stop.wait(wait)
+            self._sleep(component, started, backoff)
 
         try:
             component.teardown()
         except Exception:
             log.exception("컴포넌트 teardown 실패", extra={"component": name})
         log.debug("컴포넌트 종료", extra={"component": name})
+
+    def _sleep(self, component: Component, started: float, backoff: float) -> None:
+        """다음 틱까지 기다린다. **대기 중에 바뀐 스로틀 배수에 반응한다.**
+
+        한 번에 `self._stop.wait(interval)` 로 자면 그 사이 스로틀이 풀려도 깨지 않는다.
+        2026-08-04 에 스로틀 3(배수 10.0)에서 5분 롤업이 3000초 대기에 들어갔고,
+        24분 뒤 스로틀이 0 으로 회복됐는데도 **46분간 롤업이 멈춰 있었다.**
+        스로틀은 주기를 늦추라는 뜻이지, 회복된 뒤까지 늦춘 채로 두라는 뜻이 아니다.
+
+        그래서 남은 시간을 매번 다시 계산하며 잘게 자른다. 배수가 내려가면 일찍 깨고,
+        올라가면 그만큼 더 잔다. 백오프 대기는 스로틀과 무관하므로 자르지 않는다.
+        """
+        if backoff:
+            self._stop.wait(backoff)
+            return
+
+        while not self._stop.is_set():
+            interval = component.interval_s
+            if component.throttleable:
+                interval *= self._multiplier_fn()
+            remaining = interval - (time.perf_counter() - started)
+            if remaining <= 0:
+                return
+            self._stop.wait(min(remaining, self._wake_granularity_s))
 
     def start(self) -> None:
         for component in self._components:

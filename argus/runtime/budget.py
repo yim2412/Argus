@@ -108,7 +108,8 @@ class BudgetGuard:
                     log.warning(
                         "리소스 예산 초과 — 수집 주기를 늦춘다",
                         extra={
-                            "level": self._level,
+                            # `level` 이라고 쓰면 JSON 로그의 로그레벨 자리와 부딪힌다.
+                            "throttle_level": self._level,
                             "cpu_percent": round(cpu, 2),
                             "rss_mb": round(rss_mb, 1),
                             "limit_cpu": s.cpu_percent,
@@ -121,7 +122,10 @@ class BudgetGuard:
                 if self._calm_streak >= s.calm_streak_to_relax and self._level > 0:
                     self._level -= 1
                     self._calm_streak = 0
-                    log.info("리소스 여유 — 수집 주기를 되돌린다", extra={"level": self._level})
+                    log.info(
+                        "리소스 여유 — 수집 주기를 되돌린다",
+                        extra={"throttle_level": self._level},
+                    )
             return self._level
 
     # ------------------------------------------------------------------ 조회

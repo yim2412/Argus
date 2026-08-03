@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import logging
 import sys
 from pathlib import Path
@@ -59,6 +60,27 @@ def test_no_log_extra_overwrites_reserved_record_attributes():
     assert not offenders, (
         "LogRecord 예약 속성을 덮어쓴다 (DEBUG 레벨에서 KeyError):\n" + "\n".join(offenders)
     )
+
+
+def test_json_formatter_keeps_levelname_when_extra_collides():
+    """**JSON 출력의 자리 충돌은 예외가 아니라 값만 틀어진다** — 그래서 위 테스트가 못 잡았다.
+
+    `level` 은 `LogRecord` 속성이 아니라(속성명은 `levelname`) 예약 검사를 통과하는데,
+    포매터에서는 로그레벨 자리와 이름이 같다. 2026-08-04 에 `extra={"level": 3}`
+    (스로틀 단계)이 `WARNING` 을 3 으로 덮어써, `level=WARNING` 으로 거른 점검에서
+    예산 초과 경고가 통째로 빠졌다. 롤업이 46분 멈춘 것을 그래서 늦게 알았다.
+    """
+    from argus.logging_setup import JsonFormatter
+
+    record = logging.LogRecord("argus.x", logging.WARNING, "p", 1, "예산 초과", None, None)
+    record.level = 3  # type: ignore[attr-defined]  # extra={"level": 3} 과 같은 상태
+    record.rss_mb = 472.0  # type: ignore[attr-defined]
+
+    payload = json.loads(JsonFormatter().format(record))
+
+    assert payload["level"] == "WARNING", "로그레벨 자리를 extra 가 덮어썼다"
+    assert payload["extra_level"] == 3, "덮어쓰기를 막으면서 extra 값을 버렸다"
+    assert payload["rss_mb"] == 472.0, "충돌하지 않는 extra 는 그대로 있어야 한다"
 
 
 def test_logging_really_raises_on_reserved_key():

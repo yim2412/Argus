@@ -478,6 +478,28 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    Mutant(
+        "throttle_wakeup",
+        "스로틀이 풀리면 자던 스레드가 깬다 (안 깨면 관측이 조용히 빈다)",
+        (
+            (
+                "argus/runtime/supervisor.py",
+                "            self._stop.wait(min(remaining, self._wake_granularity_s))\n",
+                "            self._stop.wait(remaining)  # MUTANT: 한 번에 자 버린다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "log_level_field",
+        "로그레벨 자리를 extra 가 덮어쓰지 못한다 (거르면 통째로 누락된다)",
+        (
+            (
+                "argus/logging_setup.py",
+                '            payload[f"extra_{key}" if key in self._RESERVED else key] = value\n',
+                "            payload[key] = value  # MUTANT: 예약 자리 보호 제거\n",
+            ),
+        ),
+    ),
 ]
 
 

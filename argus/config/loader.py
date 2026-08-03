@@ -54,6 +54,7 @@ class BudgetSettings(BaseModel):
     breach_streak_to_throttle: int = Field(default=3, ge=1)
     calm_streak_to_relax: int = Field(default=12, ge=1)
     throttle_multipliers: list[float] = Field(default=[1.0, 2.0, 4.0, 10.0])
+    wake_granularity_s: float = Field(default=5.0, gt=0)
 
     @field_validator("throttle_multipliers")
     @classmethod

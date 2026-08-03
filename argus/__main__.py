@@ -237,7 +237,10 @@ def run(args: argparse.Namespace) -> int:
 
         guard = BudgetGuard(settings.budget)
         queue = SampleQueue(maxsize=settings.storage.queue_max_rows)
-        sup = Supervisor(multiplier_fn=lambda: guard.multiplier)
+        sup = Supervisor(
+            multiplier_fn=lambda: guard.multiplier,
+            wake_granularity_s=settings.budget.wake_granularity_s,
+        )
 
         # 직전 세션이 소비하지 못하고 남긴 종료 신호를 먼저 치운다. 그대로 두면 뜨자마자
         # 다시 죽어 사용자는 "실행이 안 된다"만 보게 된다.

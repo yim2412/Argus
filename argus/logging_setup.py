@@ -36,6 +36,15 @@ _STD_ATTRS = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) |
 class JsonFormatter(logging.Formatter):
     """LogRecord → JSON 한 줄."""
 
+    # 이 포매터가 스스로 채우는 자리. `extra` 로 같은 이름이 들어오면 **덮어쓰지 않고**
+    # 접두사를 붙여 옆에 둔다. 로그 자체가 관측 도구이므로, 필드 하나를 잃으면
+    # 그 필드로 거르는 조회가 전부 조용히 비어서 나온다.
+    #
+    # 2026-08-04 에 `extra={"level": 3}`(스로틀 단계) 이 `levelname` 을 덮어써
+    # 예산 초과 경고가 `"level": 3` 으로 찍혔고, `level=WARNING` 으로 거른
+    # 점검에서 통째로 누락됐다. 롤업이 46분 멈춘 것을 그래서 늦게 알았다.
+    _RESERVED = frozenset({"ts", "level", "logger", "msg", "thread", "exc"})
+
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
             "ts": round(record.created, 3),
@@ -49,8 +58,9 @@ class JsonFormatter(logging.Formatter):
 
         # logger.info("...", extra={"pid": 123}) 로 넘어온 구조화 필드
         for key, value in record.__dict__.items():
-            if key not in _STD_ATTRS and not key.startswith("_"):
-                payload[key] = value
+            if key in _STD_ATTRS or key.startswith("_"):
+                continue
+            payload[f"extra_{key}" if key in self._RESERVED else key] = value
 
         return json.dumps(payload, ensure_ascii=False, default=str)
 
