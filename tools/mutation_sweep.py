@@ -255,6 +255,29 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "dashboard_pythonpath",
+        "대시보드에 sys.path 를 물려준다 (base 인터프리터엔 streamlit 이 없다)",
+        (
+            (
+                "argus/ui/tray.py",
+                '            env["PYTHONPATH"] = f"{inherited}{os.pathsep}{existing}"'
+                " if existing else inherited\n",
+                "            pass  # MUTANT: 경로를 물려주지 않는다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "dashboard_death_report",
+        "대시보드가 곧바로 죽으면 사용자에게 말한다 (띄운 것과 뜬 것은 다르다)",
+        (
+            (
+                "argus/ui/tray.py",
+                '        self.notify("Argus", f"대시보드를 열지 못했습니다 — {reason}", "warning")\n',
+                "        pass  # MUTANT: 조용히 삼킨다\n",
+            ),
+        ),
+    ),
+    Mutant(
         "component_contract",
         "Component 규약 검사 — 없으면 스레드가 조용히 죽는다",
         (

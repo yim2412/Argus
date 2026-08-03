@@ -220,19 +220,74 @@ class TrayIcon(Component):
         **상주 프로세스 안에서 Streamlit 을 돌리지 않는다.** 자체 서버와 이벤트 루프를
         갖고 있어 상주 스레드 모델과 섞이면 종료가 지저분해지고, 무엇보다 대시보드가
         죽을 때 수집까지 끌고 내려간다.
+
+        **`sys.executable` 만으로는 안 된다.** 상주는 base `pythonw.exe` 로 도는 경우가
+        있고(`tools/soak_entry.py` — venv 트램폴린이 콘솔 창을 만들기 때문), 그
+        인터프리터에는 `streamlit` 이 없다. 실측(2026-08-03): 메뉴를 눌러도 아무 일도
+        일어나지 않았고 `ModuleNotFoundError` 는 `CREATE_NO_WINDOW` 뒤에서 사라졌다.
+        그래서 **현재 프로세스의 `sys.path` 를 `PYTHONPATH` 로 물려준다** — `soak_entry`
+        가 `site.addsitedir` 로 세운 venv 경로가 그 안에 들어 있다.
         """
+        import os
         import subprocess
         import sys
+        import threading
+
+        from ..paths import is_frozen
+
+        if is_frozen():
+            # 대시보드는 아직 exe 에 묶지 않았다(Streamlit 은 자체 자원 파일과 동적
+            # import 가 많아 별도 문제). 조용히 실패하는 대신 그 사실을 말한다.
+            self.notify(
+                "Argus", "대시보드는 아직 exe 에 포함되지 않았습니다 (소스 실행 필요).", "info"
+            )
+            return
+
+        env = dict(os.environ)
+        inherited = os.pathsep.join(p for p in sys.path if p)
+        if inherited:
+            existing = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = f"{inherited}{os.pathsep}{existing}" if existing else inherited
 
         try:
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 [sys.executable, "-m", "argus.dashboard"],
                 creationflags=creationflags,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
-            log.info("대시보드 실행 요청")
         except Exception as exc:
             log.warning("대시보드를 띄우지 못했다", extra={"error": str(exc)})
+            self.notify("Argus", f"대시보드를 열지 못했습니다: {exc}", "warning")
+            return
+
+        log.info("대시보드 실행 요청")
+        # **띄운 것과 뜬 것은 다르다.** `Popen` 은 즉시 돌아오므로 여기서 성공을 선언하면
+        # 실패가 그대로 묻힌다. 잠깐 지켜보다 곧바로 죽으면 사용자에게 말한다.
+        # 감시는 별도 스레드에서 한다 — 트레이 메시지 펌프를 막으면 아이콘이 얼어붙는다.
+        threading.Thread(
+            target=self._watch_dashboard, args=(proc,), name="dashboard-watch", daemon=True
+        ).start()
+
+    def _watch_dashboard(self, proc) -> None:
+        """대시보드가 뜨자마자 죽는지 지켜본다. 정상 기동이면 계속 살아 있다."""
+        import subprocess
+
+        try:
+            _out, err = proc.communicate(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            return  # 5초를 살아남았으면 뜬 것으로 본다
+        except Exception:
+            return
+
+        if proc.returncode in (0, None):
+            return
+        detail = (err or b"").decode("utf-8", "replace").strip().splitlines()
+        reason = detail[-1] if detail else f"종료 코드 {proc.returncode}"
+        log.warning("대시보드가 곧바로 종료됐다", extra={"reason": reason})
+        self.notify("Argus", f"대시보드를 열지 못했습니다 — {reason}", "warning")
 
     def describe(self) -> dict[str, str]:
         """규칙 4 — 조용히 실패하지 않는다. 상태를 드러낸다."""
