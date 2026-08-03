@@ -85,6 +85,70 @@ def test_realtime_ttl_matches_collection_period() -> None:
     assert data.latest_gpu.cache_ttl <= 1.0
 
 
+# ---------------------------------------------------------------- 실시간 페이지
+#
+# **창을 띄우지 않는다.** `QT_QPA_PLATFORM=offscreen` 으로 위젯만 만들고 슬롯을 직접
+# 부른다 — 화면도 마우스도 쓰지 않으면서 "무엇이 몇 번 불렸는가"는 전부 확인된다.
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6 import QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    yield app
+
+
+def _page(qapp):
+    from argus.desktop.pages.realtime import RealtimePage
+
+    page = RealtimePage()
+    page.stop()  # 폴러를 멈추고 슬롯만 직접 부른다 (DB 를 건드리지 않는다)
+    return page
+
+
+def test_backfill_is_not_counted_as_live_samples(qapp) -> None:
+    """**백필과 실시간을 합쳐 세면 판정이 무너진다.**
+
+    첫 측정에서 608개가 나왔는데 그중 600개가 백필이었다. "창을 열었다"와 "갱신이
+    돈다"는 다른 사실인데 한 숫자에 섞여 있었고, 실시간이 8개뿐이라는 것이 그
+    숫자에 가려졌다.
+    """
+    page = _page(qapp)
+    rows = [
+        {"ts": 1000.0 + i, "cpu_total": 20.0, "cpu_max_core": 40.0, "mem_percent": 50.0}
+        for i in range(600)
+    ]
+
+    page._on_backfill({"metrics": rows, "gpu": []})
+    assert page.backfill_count == 600
+    assert page.sample_count == 0, "백필을 실시간 표본으로 셌다"
+
+    page._on_sample({"metrics": {"ts": 1600.0, "cpu_total": 30.0}, "gpu": []})
+    assert page.sample_count == 1
+
+
+def test_repeated_timestamp_is_ignored(qapp) -> None:
+    """수집이 멈추면 같은 행이 계속 온다. 다시 그리면 차트가 제자리에서 늘어난다."""
+    page = _page(qapp)
+    page._on_sample({"metrics": {"ts": 500.0, "cpu_total": 10.0}, "gpu": []})
+    page._on_sample({"metrics": {"ts": 500.0, "cpu_total": 10.0}, "gpu": []})
+    page._on_sample({"metrics": {"ts": 499.0, "cpu_total": 10.0}, "gpu": []})
+    assert page.sample_count == 1, "같은(또는 더 오래된) 표본을 다시 세었다"
+
+
+def test_missing_gpu_does_not_break_the_page(qapp) -> None:
+    """GPU 가 없는 PC 에서도 나머지는 그려져야 한다(하드웨어를 가정하지 않는다)."""
+    page = _page(qapp)
+    page._on_sample({"metrics": {"ts": 1.0, "cpu_total": 5.0}, "gpu": []})
+    assert page.sample_count == 1
+    assert "없음" in page._tiles["gpu"]._value.text()
+
+
 # ---------------------------------------------------------------- 모니터 배치
 
 @pytest.mark.parametrize(

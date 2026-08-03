@@ -1,31 +1,22 @@
-"""예광탄 — 창 하나, 실시간 차트 하나.
+"""창 골격. **페이지를 담기만 하고 데이터는 모른다.**
 
-이 파일의 목적은 기능이 아니라 **판정**이다. 다음 넷을 확인하면 본격 이식을 시작할지
-정할 수 있고, 아니면 여기서 방향을 바꾼다.
+Streamlit 판은 페이지마다 파일 하나였고 사이드바가 그것을 묶었다. 여기서는 왼쪽
+탭 목록이 그 역할을 한다 — 페이지가 다섯이 될 예정이라 지금 자리를 잡아 둔다.
 
-    1. 창이 뜨는가 (고DPI·한글 폰트 포함)
-    2. 1초 주기 실시간 갱신이 부드러운가 (Streamlit 이 못 하던 것)
-    3. 조회가 UI 를 막지 않는가 (워커 스레드 경계)
-    4. exe 로 묶이는가, 그리고 얼마나 커지는가
-
-**조회를 메인 스레드에서 하지 않는다.** SQLite 읽기가 수십 ms 걸리면 그동안 창이
-멈춘다. 1초마다 그러면 사용자는 "무거운 프로그램"으로 느끼고, 그건 성능 모니터가
-줄 수 있는 최악의 인상이다.
+**상주 프로세스와 별개다.** 여기에 Qt 이벤트 루프가 있고 상주는 자기 수퍼바이저를
+쓴다. 한 프로세스에 넣으면 메인 스레드를 다투고, 창이 죽을 때 수집까지 끌고
+내려간다 — 관측자가 병목이 되면 안 된다는 설계 규칙 1 이 여기에도 적용된다.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import time
-from collections import deque
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..dashboard import data, theme
-
-# 실시간 창에 유지할 표본 수. 1초 주기이므로 곧 초 단위 길이다.
-_WINDOW_S = 600
+from ..dashboard import theme
+from .pages.realtime import RealtimePage
 
 # 개발 중 창을 띄울 모니터(0-기반). 배포 exe 에는 영향이 없다 — 값이 없으면
 # Windows 가 정하는 기본 위치를 그대로 쓴다.
@@ -58,135 +49,78 @@ def place_on_configured_screen(window: QtWidgets.QWidget) -> str:
     return f"모니터 {index} ({screens[index].name()})"
 
 
-class _Poller(QtCore.QThread):
-    """DB 조회 전담 스레드. **UI 를 막지 않는 것이 유일한 존재 이유다.**"""
-
-    sampled = QtCore.Signal(dict)
-
-    def __init__(self, interval_s: float = 1.0) -> None:
-        super().__init__()
-        self.interval_s = interval_s
-        self._stop = False
-
-    def run(self) -> None:
-        while not self._stop:
-            try:
-                latest = data.latest_metrics()
-                gpus = data.latest_gpu()
-            except Exception:
-                latest, gpus = None, []
-            if latest:
-                self.sampled.emit({"metrics": latest, "gpus": gpus})
-            self.msleep(int(self.interval_s * 1000))
-
-    def stop(self) -> None:
-        self._stop = True
-        self.wait(3000)
-
-
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Argus")
-        self.resize(1100, 700)
+        self.resize(1240, 820)
 
-        self._ts: deque[float] = deque(maxlen=_WINDOW_S)
-        self._cpu: deque[float] = deque(maxlen=_WINDOW_S)
-        self._mem: deque[float] = deque(maxlen=_WINDOW_S)
+        self.realtime = RealtimePage()
 
-        central = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(central)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-
-        self._tiles = _StatRow()
-        layout.addWidget(self._tiles)
-
-        # pyqtgraph 는 여기서 import 한다 — Qt 애플리케이션이 만들어진 뒤에 설정을
-        # 건드려야 배경색 지정이 먹는다.
-        import pyqtgraph as pg
-
-        pg.setConfigOptions(antialias=True, background=theme.SURFACE, foreground=theme.INK_MUTED)
-        self._plot = pg.PlotWidget()
-        self._plot.showGrid(x=False, y=True, alpha=0.15)
-        self._plot.setYRange(0, 100)
-        self._plot.setLabel("left", "사용률 %")
-        self._plot.addLegend(offset=(-10, 10))
-        self._cpu_curve = self._plot.plot([], [], pen=pg.mkPen(theme.SERIES[0], width=2), name="CPU")
-        self._mem_curve = self._plot.plot(
-            [], [], pen=pg.mkPen(theme.SERIES[2], width=2), name="메모리"
+        # 왼쪽 탭 + 오른쪽 내용. 페이지가 늘어도 여기만 추가하면 된다.
+        self._nav = QtWidgets.QListWidget()
+        self._nav.setFixedWidth(150)
+        self._nav.setStyleSheet(
+            f"QListWidget {{ background: {theme.SURFACE}; border: none;"
+            f" color: {theme.INK_SECONDARY}; font-size: 13px; padding: 8px 0; }}"
+            f"QListWidget::item {{ padding: 10px 14px; }}"
+            f"QListWidget::item:selected {{ background: {theme.GRID}; color: {theme.INK}; }}"
         )
-        layout.addWidget(self._plot, stretch=1)
+        self._stack = QtWidgets.QStackedWidget()
 
-        self.setCentralWidget(central)
+        self._add_page("실시간", self.realtime)
+        for name in ("타임라인", "프로세스", "사건", "자기 상태"):
+            self._add_page(name, _Placeholder(name))
+
+        self._nav.currentRowChanged.connect(self._stack.setCurrentIndex)
+        self._nav.setCurrentRow(0)
+
+        body = QtWidgets.QWidget()
+        row = QtWidgets.QHBoxLayout(body)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        row.addWidget(self._nav)
+
+        content = QtWidgets.QWidget()
+        content_box = QtWidgets.QVBoxLayout(content)
+        content_box.setContentsMargins(16, 16, 16, 8)
+        content_box.addWidget(self._stack)
+        row.addWidget(content, stretch=1)
+
+        self.setCentralWidget(body)
         self.statusBar().showMessage("연결 중…")
 
-        self._poller = _Poller()
-        self._poller.sampled.connect(self._on_sample)
-        self._poller.start()
+        # 상태 표시줄은 1초마다 갱신한다. 데이터 조회가 아니라 이미 받은 값을 읽는
+        # 것뿐이라 UI 스레드에서 해도 된다.
+        self._clock = QtCore.QTimer(self)
+        self._clock.timeout.connect(self._refresh_status)
+        self._clock.start(1000)
 
-    @QtCore.Slot(dict)
-    def _on_sample(self, sample: dict) -> None:
-        """워커가 보낸 표본을 그린다. **이 함수는 메인 스레드에서 돈다**(Qt 시그널 규약)."""
-        metrics = sample["metrics"]
-        ts = float(metrics.get("ts") or time.time())
-        if self._ts and ts <= self._ts[-1]:
-            return  # 같은 행을 다시 그리지 않는다 (수집이 잠깐 멈춘 경우)
+    def _add_page(self, name: str, widget: QtWidgets.QWidget) -> None:
+        self._nav.addItem(name)
+        self._stack.addWidget(widget)
 
-        self._ts.append(ts)
-        self._cpu.append(float(metrics.get("cpu_total") or 0.0))
-        self._mem.append(float(metrics.get("mem_percent") or 0.0))
-
-        base = self._ts[-1]
-        xs = [t - base for t in self._ts]  # 오른쪽 끝이 0(지금)
-        self._cpu_curve.setData(xs, list(self._cpu))
-        self._mem_curve.setData(xs, list(self._mem))
-
-        gpu = (sample.get("gpus") or [{}])[0]
-        self._tiles.update_values(
-            cpu=self._cpu[-1],
-            mem=self._mem[-1],
-            gpu=gpu.get("util_percent"),
-            temp=gpu.get("temp_c"),
-        )
-        age = time.time() - ts
-        self.statusBar().showMessage(
-            f"표본 {len(self._ts)}개 · 최신 {age:.0f}초 전"
-            + ("  — 수집이 멈춘 것 같습니다" if age > 30 else "")
-        )
+    def _refresh_status(self) -> None:
+        self.statusBar().showMessage(self.realtime.status_text())
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
-        self._poller.stop()
+        self.realtime.stop()
         super().closeEvent(event)
 
 
-class _StatRow(QtWidgets.QWidget):
-    """상단 수치 타일. 지금 값이 한눈에 보여야 한다."""
+class _Placeholder(QtWidgets.QWidget):
+    """아직 이식하지 않은 페이지. **빈 화면 대신 어디서 볼 수 있는지 말한다.**"""
 
-    def __init__(self) -> None:
+    def __init__(self, name: str) -> None:
         super().__init__()
-        row = QtWidgets.QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(12)
-        self._labels: dict[str, QtWidgets.QLabel] = {}
-        for key, title in (("cpu", "CPU"), ("mem", "메모리"), ("gpu", "GPU"), ("temp", "GPU 온도")):
-            tile = QtWidgets.QFrame()
-            tile.setFrameShape(QtWidgets.QFrame.StyledPanel)
-            box = QtWidgets.QVBoxLayout(tile)
-            caption = QtWidgets.QLabel(title)
-            caption.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 11px;")
-            value = QtWidgets.QLabel("—")
-            value.setStyleSheet(f"color: {theme.INK}; font-size: 24px; font-weight: 600;")
-            box.addWidget(caption)
-            box.addWidget(value)
-            self._labels[key] = value
-            row.addWidget(tile)
-
-    def update_values(self, *, cpu: float, mem: float, gpu, temp) -> None:
-        self._labels["cpu"].setText(f"{cpu:.0f}%")
-        self._labels["mem"].setText(f"{mem:.0f}%")
-        self._labels["gpu"].setText("—" if gpu is None else f"{gpu:.0f}%")
-        self._labels["temp"].setText("—" if temp is None else f"{temp:.0f}°C")
+        box = QtWidgets.QVBoxLayout(self)
+        label = QtWidgets.QLabel(
+            f"{name} 페이지는 아직 옮기는 중입니다.\n"
+            "지금은 `python -m argus.dashboard` 에서 볼 수 있습니다."
+        )
+        label.setAlignment(QtCore.Qt.AlignCenter)
+        label.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 13px;")
+        box.addWidget(label)
 
 
 def main(seconds: float | None = None) -> int:
@@ -198,8 +132,6 @@ def main(seconds: float | None = None) -> int:
     """
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName("Argus")
-    # 어두운 배경을 기본으로. 대시보드 테마와 같은 색을 쓴다 — 두 UI 가 공존하는
-    # 동안 색이 갈리면 같은 프로그램으로 보이지 않는다.
     app.setStyleSheet(
         f"QMainWindow, QWidget {{ background: {theme.PAGE}; color: {theme.INK}; }}"
         f"QFrame {{ background: {theme.SURFACE}; border: 1px solid {theme.GRID};"
@@ -218,10 +150,16 @@ def main(seconds: float | None = None) -> int:
     code = app.exec()
 
     if seconds:
-        drawn = len(window._ts)
-        print(f"  {seconds:.0f}초 동안 그린 표본 {drawn}개")
-        if drawn == 0:
-            print("[FAIL] 한 점도 그리지 못했다 — 조회나 시그널 경계가 깨졌다")
+        live = window.realtime.sample_count
+        backfill = window.realtime.backfill_count
+        # 기대치는 "초당 한 점"이다. 창을 여는 데 드는 시간이 있으므로 여유를 둔다.
+        expected = max(1, int(seconds * 0.6))
+        print(f"  백필 {backfill}개 · 실시간 {live}개 ({seconds:.0f}초, 기대 {expected}개 이상)")
+        if live == 0:
+            print("[FAIL] 실시간 표본이 하나도 없다 — 조회나 시그널 경계가 깨졌다")
+            return 1
+        if live < expected:
+            print("[FAIL] 실시간 갱신이 초당 한 점에 못 미친다")
             return 1
         print("[OK] desktop.app")
     return code

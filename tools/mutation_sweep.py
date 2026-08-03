@@ -255,6 +255,29 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "realtime_live_count",
+        "백필과 실시간 표본을 따로 센다 (합치면 갱신 판정이 무너진다)",
+        (
+            (
+                "argus/desktop/pages/realtime.py",
+                "            self._backfilled = len(ts)\n",
+                "            self._live = len(ts)  # MUTANT: 백필을 실시간으로 센다\n",
+            ),
+        ),
+        note="첫 측정에서 608개 중 600개가 백필이었다",
+    ),
+    Mutant(
+        "realtime_duplicate_guard",
+        "같은 타임스탬프를 다시 그리지 않는다 (수집이 멈추면 같은 행이 계속 온다)",
+        (
+            (
+                "argus/desktop/pages/realtime.py",
+                "        if self._last_ts is not None and ts <= self._last_ts:\n            return",
+                "        if False:\n            return",
+            ),
+        ),
+    ),
+    Mutant(
         "realtime_cache_ttl",
         "실시간 조회 캐시가 수집 주기를 넘지 않는다",
         (
