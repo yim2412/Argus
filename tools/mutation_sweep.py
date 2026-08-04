@@ -531,6 +531,53 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "per_program_split",
+        "프로그램별로 나눠 학습한다 (안 나누면 조용히 전역으로만 돈다)",
+        (
+            (
+                "argus/detection/baseline.py",
+                "            if self.per_program and program and name in self.program_metrics:\n"
+                "                self._get_program(program, name).add(ts, float(value))\n",
+                "            # MUTANT: 프로그램별 학습 제거\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "per_program_fallback",
+        "표본이 설 때까지만 전역으로 (문턱을 지우면 표본 3개로 판정한다)",
+        (
+            (
+                "argus/detection/baseline.py",
+                "                if baseline is not None and baseline.ready:\n",
+                "                if baseline is not None:  # MUTANT: 표본 문턱 제거\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "per_program_lru_cap",
+        "프로그램 수 상한 (없으면 메모리가 무한히 는다 — 규칙 1)",
+        (
+            (
+                "argus/detection/baseline.py",
+                "            while len(self._by_program) >= self.max_programs:\n"
+                "                self._by_program.pop(next(iter(self._by_program)))\n",
+                "            pass  # MUTANT: 상한 제거\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "rules_registry_config",
+        "레지스트리가 생성자를 등록한다 (클래스를 등록하면 config 가 통째로 무시된다)",
+        (
+            (
+                "argus/detection/registry.py",
+                '    register("rules", build_rules)\n',
+                "    from .rules import RuleEngine\n"
+                '    register("rules", RuleEngine)  # MUTANT: config 배선 제거\n',
+            ),
+        ),
+    ),
+    Mutant(
         "log_level_field",
         "로그레벨 자리를 extra 가 덮어쓰지 못한다 (거르면 통째로 누락된다)",
         (

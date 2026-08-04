@@ -46,11 +46,13 @@ def _ensure_loaded() -> None:
 
     from ..eval import baselines
     from .procleak import build as build_procleak
-    from .rules import RuleEngine
+    from .rules import build as build_rules
 
     for baseline_name, builder in baselines.REGISTRY.items():
         register(baseline_name, builder)
-    register("rules", RuleEngine)
+    # **클래스가 아니라 생성자를 등록한다.** 클래스를 직접 등록하면 `build(name)` 이
+    # 인자 없이 불러 config 가 통째로 무시된다 — 2026-08-04 까지 그 상태였다.
+    register("rules", build_rules)
     # 프로세스 누수. 룰 엔진이 보는 `obs.metrics`(시스템 전역)에는 드러나지 않는
     # 프로세스별 지표를 담당한다. 채택 여부는 스코어보드가 정한다.
     register("procleak", build_procleak)

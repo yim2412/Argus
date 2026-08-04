@@ -82,6 +82,22 @@ class Observation:
         value = self.metrics.get(key)
         return default if value is None else value
 
+    @property
+    def foreground_program(self) -> str | None:
+        """지금 사용자가 보고 있는 프로그램 이름. 없으면 None.
+
+        **규칙을 한 곳에 둔다.** 조건부 베이스라인이 학습할 때와 판정할 때 다른
+        규칙을 쓰면, 학습된 적 없는 이름으로 조회해 전역으로만 떨어진다 — 예외도
+        안 나고 조건부 축이 있으나 마나가 된다. `flatten_gpus` 를 한 곳에 둔 이유와 같다.
+
+        이름은 소문자로 맞춘다. 수집 경로에 따라 대소문자가 갈리면 같은 프로그램이
+        둘로 세어져 표본이 절반씩 나뉜다.
+        """
+        for view in self.processes:
+            if view.foreground and view.name:
+                return view.name.lower()
+        return None
+
     def top_by(self, key: str, limit: int = 5) -> list[ProcessView]:
         """지정한 지표 기준 상위 프로세스. 귀인 후보 뽑기용."""
         def sort_key(p: ProcessView) -> float:

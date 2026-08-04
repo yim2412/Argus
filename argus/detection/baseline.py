@@ -85,6 +85,7 @@ class MetricBaseline:
         min_samples: int = DEFAULT_MIN_SAMPLES,
         sigma_floor: float = 0.0,
         sigma_floor_ratio: float = 0.05,
+        min_interval_s: float = 0.0,
     ) -> None:
         self.metric = metric
         self.window_s = window_s
@@ -93,10 +94,22 @@ class MetricBaseline:
         # 절대값만 쓰면 스케일이 다른 메트릭(응답 0.1ms vs 대역폭 1e8)에 하나로 못 맞춘다.
         self.sigma_floor = sigma_floor
         self.sigma_floor_ratio = sigma_floor_ratio
+        # 표본 간 최소 간격. 0 이면 오는 대로 다 넣는다(전역 베이스라인의 기존 동작).
+        #
+        # 프로그램별 베이스라인은 창이 길어야 표본이 서는데, 1초마다 다 넣으면
+        # 프로그램 수만큼 메모리가 곱해진다 — 관측자가 무거워지면 제품은 실패다(규칙 1).
+        # 중앙값·MAD 는 표본을 솎아도 거의 변하지 않으므로 여기서 줄이는 것이 싸다.
+        self.min_interval_s = min_interval_s
         self._samples: deque[tuple[float, float]] = deque()
 
     def add(self, ts: float, value: float | None) -> None:
         if value is None:
+            return
+        if (
+            self.min_interval_s > 0
+            and self._samples
+            and ts - self._samples[-1][0] < self.min_interval_s
+        ):
             return
         self._samples.append((ts, float(value)))
         self._trim(ts)
@@ -133,7 +146,20 @@ class MetricBaseline:
 
 
 class BaselineSet:
-    """전 메트릭의 베이스라인 묶음."""
+    """전 메트릭의 베이스라인 묶음.
+
+    **프로그램 조건부(선택).** "게임 중 CPU 60%"와 "브라우징 중 CPU 60%"는 다른
+    사건이다. 2026-08-04 실측에서 포어그라운드 프로그램으로 나누면 변동계수가
+    0.61 → 0.38 로 줄었다 — 같은 편차에 대해 z 가 약 1.6배가 된다는 뜻이다.
+    (레짐을 리소스로 클러스터링해 나누는 방식은 오히려 나빴다. 근거는 `docs/DONE.md`)
+
+    **전역은 항상 함께 채운다.** 프로그램별 표본이 서지 않았거나 처음 보는
+    프로그램이면 전역으로 돌아간다 — **모르는 것을 막는 방향으로는 틀지 않는다**
+    (지문 억제와 같은 원칙).
+
+    조건부 축은 기본으로 꺼져 있다. 켜는 것은 탐지 동작을 바꾸는 일이라
+    리플레이 before/after 로 채택을 판정한 뒤다.
+    """
 
     def __init__(
         self,
@@ -141,14 +167,33 @@ class BaselineSet:
         window_s: float = 1800.0,
         min_samples: int = DEFAULT_MIN_SAMPLES,
         sigma_floors: Mapping[str, float] | None = None,
+        per_program: bool = False,
+        program_metrics: Iterable[str] | None = None,
+        program_window_s: float = 3600.0,
+        program_min_interval_s: float = 5.0,
+        program_min_samples: int = DEFAULT_MIN_SAMPLES,
+        max_programs: int = 16,
     ) -> None:
         self.window_s = window_s
         self.min_samples = min_samples
         self.sigma_floors = dict(sigma_floors or {})
         self._metrics: dict[str, MetricBaseline] = {}
 
+        self.per_program = per_program
+        # **룰이 상대 조건으로 쓰는 메트릭만** 나눈다. 전부 나누면 메모리가
+        # 프로그램 수만큼 곱해지는데, 실측에서 그 대상은 6개뿐이었다(나머지는
+        # 절대 조건이라 조건부화해도 쓰이지 않는다). 목록은 호출자가 룰에서 뽑아 준다.
+        self.program_metrics = set(program_metrics or ())
+        self.program_window_s = program_window_s
+        self.program_min_interval_s = program_min_interval_s
+        self.program_min_samples = program_min_samples
+        self.max_programs = max_programs
+        # 프로그램 → {메트릭: 베이스라인}. 삽입 순서가 곧 LRU 순서다.
+        self._by_program: dict[str, dict[str, MetricBaseline]] = {}
+
     def reset(self) -> None:
         self._metrics.clear()
+        self._by_program.clear()
 
     def _get(self, metric: str) -> MetricBaseline:
         baseline = self._metrics.get(metric)
@@ -162,14 +207,61 @@ class BaselineSet:
             self._metrics[metric] = baseline
         return baseline
 
-    def observe(self, ts: float, metrics: Mapping[str, object]) -> None:
-        for name, value in metrics.items():
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                self._get(name).add(ts, float(value))
+    def _get_program(self, program: str, metric: str) -> MetricBaseline:
+        bucket = self._by_program.get(program)
+        if bucket is None:
+            # 상한을 넘으면 가장 오래 안 쓴 것을 버린다. 프로그램 수에 상한이 없으면
+            # 브라우저 탭처럼 이름이 계속 바뀌는 환경에서 메모리가 무한히 는다.
+            while len(self._by_program) >= self.max_programs:
+                self._by_program.pop(next(iter(self._by_program)))
+            bucket = {}
+            self._by_program[program] = bucket
+        else:
+            # 최근 사용으로 올린다. dict 는 삽입 순서를 유지하므로 재삽입이 곧 LRU 갱신이다.
+            self._by_program[program] = self._by_program.pop(program)
+        baseline = bucket.get(metric)
+        if baseline is None:
+            baseline = MetricBaseline(
+                metric,
+                window_s=self.program_window_s,
+                min_samples=self.program_min_samples,
+                sigma_floor=self.sigma_floors.get(metric, 0.0),
+                min_interval_s=self.program_min_interval_s,
+            )
+            bucket[metric] = baseline
+        return baseline
 
-    def stats(self, metric: str) -> Stats | None:
+    def observe(
+        self, ts: float, metrics: Mapping[str, object], program: str | None = None
+    ) -> None:
+        for name, value in metrics.items():
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                continue
+            self._get(name).add(ts, float(value))
+            if self.per_program and program and name in self.program_metrics:
+                self._get_program(program, name).add(ts, float(value))
+
+    def stats(self, metric: str, program: str | None = None) -> Stats | None:
+        """프로그램별 기준이 섰으면 그것, 아니면 전역.
+
+        폴백을 조용히 하는 것이 의도다 — 처음 보는 프로그램에서 판정이 통째로
+        멈추면, 새 게임을 깔 때마다 몇 시간씩 탐지 공백이 생긴다.
+        """
+        if self.per_program and program:
+            bucket = self._by_program.get(program)
+            if bucket is not None:
+                baseline = bucket.get(metric)
+                if baseline is not None and baseline.ready:
+                    return baseline.stats()
         baseline = self._metrics.get(metric)
         return baseline.stats() if baseline is not None else None
+
+    def program_readiness(self) -> dict[str, dict[str, int]]:
+        """프로그램별 표본 수. 조건부 축이 실제로 서 있는지 눈으로 보기 위한 것."""
+        return {
+            program: {m: len(b._samples) for m, b in bucket.items()}  # noqa: SLF001
+            for program, bucket in self._by_program.items()
+        }
 
     @property
     def ready(self) -> bool:

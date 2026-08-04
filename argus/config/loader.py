@@ -277,6 +277,24 @@ class DetectionSettings(BaseModel):
     # 이 값은 사용자에게 실제로 띄울지만 정한다. 2026-08-03 에 켰다(근거는 defaults.yaml).
     notify: bool = True
 
+    # --- 프로그램 조건부 베이스라인 (Phase 4-B) ---
+    # "게임 중 CPU 60%"와 "브라우징 중 CPU 60%"를 다르게 본다. 2026-08-04 실측에서
+    # 포어그라운드로 나누면 변동계수가 0.61 → 0.38 로 줄었다(z 가 약 1.6배).
+    #
+    # **기본은 꺼짐.** 켜는 것은 탐지 동작을 바꾸는 일이라 리플레이 before/after 로
+    # 채택을 판정한 뒤다. 민감도만 올리는 변경은 규칙 1(오탐이 미탐보다 비싸다)에 걸린다.
+    per_program: bool = False
+    # 프로그램별 창은 전역보다 길어야 한다 — 같은 프로그램을 계속 보고 있지 않으므로
+    # 30분 창에는 표본이 몇 개 안 남는다.
+    program_window_s: float = Field(default=3600.0, gt=0)
+    # 표본 간 최소 간격. 프로그램 수만큼 메모리가 곱해지므로 솎아서 담는다.
+    # 중앙값·MAD 는 표본을 솎아도 거의 변하지 않는다.
+    program_min_interval_s: float = Field(default=5.0, ge=0)
+    program_min_samples: int = Field(default=60, ge=2)
+    # 동시에 들고 있을 프로그램 수 상한(LRU). 상한이 없으면 이름이 계속 바뀌는
+    # 환경에서 메모리가 무한히 는다. 16개 × 6메트릭 기준 약 7MB.
+    max_programs: int = Field(default=16, ge=1)
+
 
 class FingerprintSettings(BaseModel):
     """프로세스 지문(Phase 6-B). "이 프로그램의 평소는 어디까지인가"를 학습한다.

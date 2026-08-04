@@ -103,7 +103,7 @@ class Condition:
             has = str(self.value).lower() in str(actual).lower()
             return has if self.op == "contains" else not has
 
-        stats = baselines.stats(self.metric)
+        stats = baselines.stats(self.metric, obs.foreground_program)
         if self._compiled is not None:
             if stats is None:
                 return None      # 베이스라인이 아직 없으면 상대 임계값을 못 만든다
@@ -225,6 +225,21 @@ class Rule:
         return None if any(r is None for r in results) else False
 
 
+def relative_metrics(rules: Sequence[Rule]) -> set[str]:
+    """베이스라인을 **실제로 쓰는** 메트릭. 조건부 축을 여기에만 둔다.
+
+    절대 조건(`disk_queue > 2` 처럼 단위가 하드웨어 독립적인 것)은 프로그램별로
+    나눠 봐야 쓰이지 않는데, 나누면 메모리는 프로그램 수만큼 곱해진다.
+    실측(2026-08-04)에서 전체 9개 중 상대 조건은 6개였다.
+    """
+    return {
+        c.metric
+        for rule in rules
+        for c in rule.conditions
+        if c._compiled is not None  # noqa: SLF001 — 표현식이 컴파일된 것이 곧 상대 조건이다
+    }
+
+
 def load_rules(path: Any = None) -> list[Rule]:
     """룰 파일을 읽고 **전부 검증한다.**
 
@@ -274,6 +289,32 @@ def load_rules(path: Any = None) -> list[Rule]:
     return rules
 
 
+def build() -> "RuleEngine":
+    """레지스트리용 생성자. 설정을 못 읽어도 기본값으로 돈다.
+
+    **2026-08-04 까지 레지스트리에 `RuleEngine` 클래스가 그대로 등록돼 있어
+    `detection.*` 설정이 룰 엔진에 전달된 적이 없다.** 코드 기본값과 YAML 기본값이
+    우연히 같아서(1800초/60표본) 아무 신호도 없었다 — `baseline_window_s` 를 고쳐도
+    판정이 안 바뀌는 상태였다(규칙 3 위반). `procleak` 은 처음부터 이 형태였다.
+    """
+    from ..config.loader import load_settings
+
+    try:
+        cfg = load_settings().detection
+        return RuleEngine(
+            window_s=cfg.baseline_window_s,
+            min_samples=cfg.min_samples,
+            per_program=cfg.per_program,
+            program_window_s=cfg.program_window_s,
+            program_min_interval_s=cfg.program_min_interval_s,
+            program_min_samples=cfg.program_min_samples,
+            max_programs=cfg.max_programs,
+        )
+    except Exception as exc:  # 설정 오류가 탐지기 로드를 막으면 안 된다
+        log.warning("detection 설정을 읽지 못해 기본값을 쓴다", extra={"error": str(exc)})
+        return RuleEngine()
+
+
 class RuleEngine(BaseDetector):
     """룰 전체를 하나의 탐지기로 본다.
 
@@ -290,10 +331,26 @@ class RuleEngine(BaseDetector):
         window_s: float = 1800.0,
         min_samples: int = 60,
         warmup_s: float = 0.0,
+        per_program: bool = False,
+        program_window_s: float = 3600.0,
+        program_min_interval_s: float = 5.0,
+        program_min_samples: int = 60,
+        max_programs: int = 16,
     ) -> None:
         super().__init__(warmup_s=warmup_s)
         self.rules = list(rules) if rules is not None else load_rules()
-        self.baselines = BaselineSet(window_s=window_s, min_samples=min_samples)
+        self.baselines = BaselineSet(
+            window_s=window_s,
+            min_samples=min_samples,
+            per_program=per_program,
+            # **목록을 코드에 박지 않고 룰에서 뽑는다**(규칙 3). 상대 조건을 쓰는
+            # 메트릭만 조건부화하면 되고, 룰이 바뀌면 이 목록도 따라가야 한다.
+            program_metrics=relative_metrics(self.rules),
+            program_window_s=program_window_s,
+            program_min_interval_s=program_min_interval_s,
+            program_min_samples=program_min_samples,
+            max_programs=max_programs,
+        )
         self._since: dict[str, float] = {}      # 룰 이름 → 조건이 참이 된 시각
         self._last_fired: dict[str, float] = {}
 
@@ -310,7 +367,7 @@ class RuleEngine(BaseDetector):
         return super().observe(obs.flatten_gpus())
 
     def learn(self, obs: Observation) -> None:
-        self.baselines.observe(obs.ts, obs.metrics)
+        self.baselines.observe(obs.ts, obs.metrics, obs.foreground_program)
 
     def evaluate(self, obs: Observation) -> Detection | None:
         if not self.baselines.ready:
