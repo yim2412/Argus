@@ -578,6 +578,28 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "warm_inline_params",
+        "웜 조회는 값을 박아 넣는다 (바인딩하면 Parquet 을 통째로 메모리에 올린다)",
+        (
+            (
+                "argus/storage/warm.py",
+                "        return con.execute(_inline_params(sql, list(params or []))).fetchall()\n",
+                "        return con.execute(sql, params or []).fetchall()  # MUTANT: 바인딩으로\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "warm_union_by_name",
+        "파티션을 이름으로 합친다 (없으면 스키마가 바뀐 날 과거가 사라진다)",
+        (
+            (
+                "argus/storage/warm.py",
+                '                "hive_partitioning = true, union_by_name = true)"\n',
+                '                "hive_partitioning = true)"  # MUTANT: 이름 병합 제거\n',
+            ),
+        ),
+    ),
+    Mutant(
         "log_level_field",
         "로그레벨 자리를 extra 가 덮어쓰지 못한다 (거르면 통째로 누락된다)",
         (

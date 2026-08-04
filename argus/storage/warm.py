@@ -84,6 +84,42 @@ def partition_days(kind: str = "metrics") -> list[str]:
     return sorted(days)
 
 
+def _inline_params(sql: str, params: list[Any]) -> str:
+    """`?` 를 값으로 치환한다. **숫자만 허용한다.**
+
+    **DuckDB 는 파라미터를 바인딩하면 `read_parquet` 의 필터 푸시다운을 하지 못해
+    Parquet 을 통째로 메모리에 올린다.** 2026-08-04 실측 — 지문 빌드의 웜 조회가
+    바인딩이면 private **+416MB / 0.36초**, 리터럴이면 **+18MB / 0.06초**이고
+    결과는 1,396칸 전부 같았다. 메모리 23배, 속도 6배 차이가 값의 표현 방식 하나에서 났다.
+
+    이것이 상주가 예산 300MB 를 1.7배 넘긴 원인이었다. 기동 10초 만에 private 이
+    506MB 로 뛰었고, 그 커밋된 메모리가 워킹셋에 들어올 때마다 RSS 가 700MB 까지
+    올라 스로틀이 걸렸다. 스로틀은 증상이고 원인은 여기였다.
+
+    **숫자 외에는 거부한다.** 문자열을 박으면 인젝션 경로가 생기고, 조용히 바인딩으로
+    되돌아가면 이 문제가 되살아난다 — 느려지는 것보다 터지는 것이 낫다.
+    (SQLite 쪽은 그대로 바인딩한다. 이 문제는 DuckDB + Parquet 조합에서만 난다.)
+    """
+    if not params:
+        return sql
+    chunks = sql.split("?")
+    if len(chunks) - 1 != len(params):
+        raise ValueError(
+            f"플레이스홀더 {len(chunks) - 1}개와 값 {len(params)}개가 맞지 않는다"
+        )
+    out = [chunks[0]]
+    for value, tail in zip(params, chunks[1:]):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(
+                f"웜 조회 파라미터는 숫자만 가능하다 (받은 값: {value!r}). "
+                "문자열이 필요하면 값을 검증한 뒤 SQL 에 직접 넣어라 — "
+                "바인딩으로 돌아가면 Parquet 전체를 메모리에 올린다."
+            )
+        out.append(repr(float(value)))
+        out.append(tail)
+    return "".join(out)
+
+
 def query(sql: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]:
     """DuckDB 로 웜 스토어를 조회한다.
 
@@ -108,9 +144,17 @@ def query(sql: str, params: list[Any] | None = None) -> list[tuple[Any, ...]]:
             pattern = str(warm_dir() / "**" / f"{kind}.parquet").replace("\\", "/")
             con.execute(
                 f"CREATE VIEW {view} AS SELECT * FROM read_parquet('{pattern}', "
-                "hive_partitioning = true)"
+                # **`union_by_name` 이 없으면 스키마가 바뀐 날 과거가 통째로 사라진다.**
+                # 컬럼을 추가하면 그 이전 파티션에는 그 컬럼이 없고, DuckDB 는 여러
+                # 파일을 위치 기준으로 합치다 `Binder Error` 로 터진다. 2026-08-03 에
+                # `gpu_clock_sm_*` 을 넣은 뒤 타임라인의 웜 구간(이틀 지난 날짜)이
+                # 그렇게 조용히 비어 있었다 — 예외가 UI 안에서 삼켜져 화면만 비었다.
+                # 이름 기준으로 합치면 없는 컬럼은 NULL 로 들어온다.
+                "hive_partitioning = true, union_by_name = true)"
             )
-        return con.execute(sql, params or []).fetchall()
+        # **값을 SQL 에 박아 넣는다.** 이유는 `_inline_params` 에 있다 —
+        # 바인딩하면 Parquet 을 통째로 메모리에 올린다(실측 +416MB).
+        return con.execute(_inline_params(sql, list(params or []))).fetchall()
     finally:
         con.close()
 
