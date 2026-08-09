@@ -22,28 +22,18 @@
 
 from __future__ import annotations
 
-import sqlite3
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from argus.paths import db_path  # noqa: E402
 from argus.storage import history  # noqa: E402
 
 # ---------------------------------------------------------------- 판정 기준
 #
 # 여기 숫자는 탐지 임계값이 아니라 **작업 착수 기준**이라 config 로 빼지 않는다.
 # 사용자가 튜닝할 대상이 아니고, 근거가 바뀌면 숫자가 아니라 이 주석이 바뀌어야 한다.
-
-# ② 알람 품질: 정해야 하는 것이 "warning 인데 점수 낮은 것"의 하한선이라, 판단 재료는
-# 전체 사건 수가 아니라 warning 이상 표본 수다. 4건으로 선을 그으면 그 4건에 과적합된다.
-MIN_ACTIONABLE_INCIDENTS = 10
-
-# 하루만 보면 그날의 사용 패턴을 전체로 착각한다. 실측 첫날 사건 10건은 거의 전부 게임
-# 세션에서 나왔다 — 유휴 위주의 날이 섞여야 "게임 아닌 날의 점수 분포"를 알 수 있다.
-MIN_DISTINCT_DAY_KINDS = 2
 
 # 하루 중 GPU 가 이만큼 돌아간 시간이 이 이상이면 '고부하 날'로 본다. 게임·렌더링을
 # 구분하려는 것이 아니라 **부하 있는 날과 없는 날을 가르는 것**이 목적이라 느슨하게 잡는다.
@@ -68,8 +58,14 @@ FINGERPRINT_MIN_PROCS = 15
 # p99 를 세우려면 최소 100 표본은 있어야 하고, 5분 버킷으로 100개면 8.3시간이다.
 FINGERPRINT_MIN_BUCKETS = 100
 
-# Phase 4-B 레짐: GMM + HMM 이 요일 효과까지 잡으려면 주말과 평일이 모두 들어와야 한다.
-REGIME_MIN_DAYS = 7
+# 10번 현재 손실 축: "같은 부하에서 클럭이 얼마나 깎였나"는 날짜 간 비교라, 부하가 있던
+# 날이 여러 날 있어야 기준선이 선다. 하루치로는 그날의 냉각 상태가 곧 기준선이 된다.
+# 3일인 이유는 지문(`FINGERPRINT_MIN_DAYS`)과 같다 — 이상치 하루를 나머지 둘이 가른다.
+LOSS_AXIS_MIN_DAYS = 3
+
+# 클럭 컬럼은 2026-08-03 에 롤업에 추가됐다. 그 전 날짜는 값이 NULL 이라 부하가 있었어도
+# 비교에 쓸 수 없다 — 그래서 '부하 있는 날'이 아니라 '부하 + 클럭이 있는 날'을 센다.
+LOSS_AXIS_COLUMN = "gpu_clock_sm_mean"
 
 
 @dataclass
@@ -88,24 +84,18 @@ class Readiness:
     name: str
     note: str
     checks: list[Check] = field(default_factory=list)
-    # 이미 끝난 작업. 조건은 계속 보여 주되 "착수 가능"으로는 세지 않는다 —
+    # 이미 끝났거나 기각된 작업. 조건은 계속 보여 주되 "착수 가능"으로는 세지 않는다 —
     # 끝난 것을 할 일로 계속 내밀면 다음 세션이 잘못 이어간다.
+    #
+    # **기각된 것을 지우지 않고 남기는 이유**는 그 판정이 실측이었기 때문이다. 항목이
+    # 사라지면 다음 세션이 계획서 원문을 보고 같은 조건을 다시 세운다 (2026-08-06 의
+    # 점수 하한이 정확히 그런 경우다 — 계획서에는 아직 "가치 높음"으로 적혀 있다).
     done: str | None = None
+    mark: str = "[완료]"
 
     @property
     def ok(self) -> bool:
         return self.done is None and all(c.ok for c in self.checks)
-
-
-def _connect() -> sqlite3.Connection:
-    path = db_path()
-    if not path.exists():
-        print(f"[FAIL] DB 를 찾지 못했다: {path}", file=sys.stderr)
-        raise SystemExit(1)
-    # 상주 인스턴스가 쓰고 있으므로 읽기 전용으로만 연다.
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 @dataclass
@@ -154,36 +144,28 @@ def _has_gpu() -> bool:
     return history.has_column_data("gpu_util_mean")
 
 
-def check_alarm_quality(conn: sqlite3.Connection, days: dict[str, Day]) -> Readiness:
-    """② 심각도-점수 게이트."""
-    rows = conn.execute(
-        "SELECT severity, peak_score FROM incidents WHERE severity IN ('warning','critical')"
-    ).fetchall()
-    scored = [r["peak_score"] for r in rows if r["peak_score"] is not None]
+def closed_alarm_quality() -> Readiness:
+    """② 발송 게이트 점수 하한 — 실측으로 기각됐다.
 
-    # 사건은 그날 켜져 있던 시간에 비례해 나오므로, 짧은 날도 표본으로는 유효하다.
-    # 여기서만 MIN_DAY_HOURS 를 적용하지 않는 이유다.
-    distinct = sorted({v.kind for v in days.values()})
-    result = Readiness(
-        "② 알람 품질 — 심각도·점수 역전",
-        "발송 게이트의 점수 하한을 정한다. 판단 재료는 warning 이상 표본이다.",
+    조건을 고치는 대신 항목을 내린 이유가 둘이다.
+
+    - **판정 자체가 뒤집혔다.** 하한 0.3 을 걸면 걸러지는 것은 GPU 발열 8건이고
+      살아남는 것은 op.gg(peak_score 0.910) 다 — 계획서가 "가치 높음"이라 부른 쪽을
+      정확히 죽인다. `peak_score` 는 "평소와 얼마나 다른가"지 "얼마나 손해인가"가
+      아니라서 심각도의 대리 지표로 쓸 수 없다.
+    - **조건이 영영 충족되지 않았다.** "유휴 위주 날이 섞여야 한다"였는데 관측 14일이
+      전부 고부하다. 매일 게임하는 사용자에게는 도달 불가능한 조건이고, 그런 조건은
+      기다림이 아니라 판정의 결함이다(2026-07-29 Phase 6 과 같은 유형).
+    """
+    return Readiness(
+        "② 알람 품질 — 발송 게이트 점수 하한",
+        "등급 역전을 점수 하한으로 막으려 했다.",
+        done=(
+            "2026-08-06 기각. `peak_score` 는 이례성이지 손해가 아니다 — 하한을 걸면 "
+            "op.gg 가 남고 GPU 발열이 걸러진다. 정답은 10번의 현재 손실 축이다."
+        ),
+        mark="[기각]",
     )
-    result.checks.append(
-        Check(
-            f"warning 이상 사건 {MIN_ACTIONABLE_INCIDENTS}건 이상",
-            len(rows) >= MIN_ACTIONABLE_INCIDENTS,
-            f"현재 {len(rows)}건"
-            + (f" (점수 {min(scored):.2f}~{max(scored):.2f})" if scored else ""),
-        )
-    )
-    result.checks.append(
-        Check(
-            "고부하 날과 유휴 위주 날이 모두 포함",
-            len(distinct) >= MIN_DISTINCT_DAY_KINDS,
-            f"관측 {len(days)}일: " + _day_summary(days),
-        )
-    )
-    return result
 
 
 def check_fingerprint(days: dict[str, Day]) -> Readiness:
@@ -222,46 +204,73 @@ def check_fingerprint(days: dict[str, Day]) -> Readiness:
     return result
 
 
-def check_regime(days: dict[str, Day]) -> Readiness:
-    """Phase 4-B 레짐 추론."""
-    counted = _counted(days)
-    result = Readiness(
+def closed_regime() -> Readiness:
+    """Phase 4-B 레짐 추론 — 구현됐고, 여기 있던 조건은 그 구현의 조건이 아니었다.
+
+    조건이 "롤업 7일"이었던 것은 GMM + HMM 을 전제했기 때문이다. 그 방식은 예광탄
+    3회 뒤 기각됐고(근거는 `docs/DONE.md`), 실제로 만든 것은 베이스라인을
+    `(program, metric)` 별로 나누는 것이다 — 요일도 주말/평일도 쓰지 않는다.
+    **조건이 채워져서 착수한 것이 아니라 조건 자체가 다른 설계의 것이었다.**
+    """
+    return Readiness(
         "Phase 4-B — 레짐 추론",
-        "GMM + HMM. 요일 효과를 잡으려면 주말과 평일이 모두 들어와야 한다.",
+        "부하 상태에 따라 '평소'를 나눈다.",
+        done=(
+            "2026-08-04 완료. 프로그램별 베이스라인으로 구현했다(GMM+HMM 은 기각). "
+            "이 PC 에만 켜져 있고 배포 기본값은 아직 꺼짐 — 근거가 한 대뿐이다."
+        ),
+    )
+
+
+def check_loss_axis(days: dict[str, Day]) -> Readiness:
+    """10번 등급 — 현재 손실 축(GPU 클럭).
+
+    `thermal.py` 와 같은 기준으로 부하 날을 가르되, 클럭 컬럼이 실제로 들어 있는 날만
+    센다. 컬럼은 2026-08-03 에 추가돼 그 전 날짜는 부하가 있었어도 값이 없다.
+    """
+    clocked = history.busy_minutes(LOSS_AXIS_COLUMN, 0.0)
+    counted = set(_counted(days))
+    usable = sorted(
+        day
+        for day, buckets in clocked.items()
+        if buckets and day in counted and days[day].kind == "고부하"
+    )
+
+    result = Readiness(
+        "10 — 등급의 현재 손실 축",
+        "같은 부하에서 클럭이 얼마나 깎였나. 위험 축은 2026-08-03 에 끝났다.",
     )
     result.checks.append(
         Check(
-            f"롤업 관측 {REGIME_MIN_DAYS}일 이상 ({MIN_DAY_HOURS:g}시간 이상 관측된 날만)",
-            len(counted) >= REGIME_MIN_DAYS,
-            f"현재 {len(counted)}일"
-            + (f" (관측은 {len(days)}일)" if len(days) != len(counted) else ""),
+            f"클럭이 기록된 고부하 날 {LOSS_AXIS_MIN_DAYS}일 이상",
+            len(usable) >= LOSS_AXIS_MIN_DAYS,
+            f"현재 {len(usable)}일"
+            + (f": {', '.join(d[5:] for d in usable)}" if usable else " (컬럼은 08-03 추가)"),
         )
     )
     return result
 
 
 def main() -> int:
-    conn = _connect()
-    try:
-        days = _days()
-        if not days:
-            print("[대기] 롤업 데이터가 아직 없다. 상주 인스턴스가 도는지 먼저 확인할 것.")
-            return 0
+    days = _days()
+    if not days:
+        print("[대기] 롤업 데이터가 아직 없다. 상주 인스턴스가 도는지 먼저 확인할 것.")
+        return 0
 
-        if not _has_gpu():
-            print("  참고: GPU 지표가 없어 '고부하/유휴' 구분이 성립하지 않는다.")
-            print("        사용 패턴 다양성은 사람이 판단할 것.\n")
+    print(f"관측 {len(days)}일: {_day_summary(days)}\n")
+    if not _has_gpu():
+        print("  참고: GPU 지표가 없어 '고부하/유휴' 구분이 성립하지 않는다.")
+        print("        사용 패턴 다양성은 사람이 판단할 것.\n")
 
-        reports = [
-            check_alarm_quality(conn, days),
-            check_fingerprint(days),
-            check_regime(days),
-        ]
-    finally:
-        conn.close()
+    reports = [
+        check_loss_axis(days),
+        check_fingerprint(days),
+        closed_regime(),
+        closed_alarm_quality(),
+    ]
 
     for report in reports:
-        mark = "[완료]" if report.done else ("[OK]" if report.ok else "[대기]")
+        mark = report.mark if report.done else ("[OK]" if report.ok else "[대기]")
         print(f"{mark} {report.name}")
         print(f"      {report.note}")
         if report.done:
