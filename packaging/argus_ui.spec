@@ -55,9 +55,6 @@ excludes = [
     "PySide6.QtHelp",
     "PySide6.QtTest",
     # 상주 쪽과 같은 이유로 뺀다
-    "streamlit",
-    "plotly",
-    "altair",
     "torch",
     "sklearn",
     "matplotlib",

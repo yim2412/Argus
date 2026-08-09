@@ -1,4 +1,4 @@
-"""대시보드 색과 차트 기본값.
+"""화면 색. **UI 프레임워크를 모른다** — 값과 규칙뿐이다.
 
 **색은 다크 서피스 기준으로 검증된 값만 쓴다.** `dataviz` 스킬의 검증기를 실제로
 돌려서 통과한 조합이며, 눈으로 고른 것이 아니다.
@@ -37,66 +37,3 @@ GRID = "#2c2c2a"
 AXIS = "#383835"
 
 FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
-
-
-def layout(height: int = 260, **overrides) -> dict:
-    """plotly 공통 레이아웃.
-
-    격자와 축은 뒤로 물린다 — 읽어야 할 것은 데이터지 눈금이 아니다.
-    hover 는 x 통합이라 한 시점의 모든 계열이 한 번에 보인다.
-    """
-    base = {
-        "height": height,
-        "margin": {"l": 48, "r": 16, "t": 8, "b": 32},
-        "paper_bgcolor": SURFACE,
-        "plot_bgcolor": SURFACE,
-        "font": {"family": FONT, "color": INK_SECONDARY, "size": 12},
-        "hovermode": "x unified",
-        "hoverlabel": {"bgcolor": PAGE, "bordercolor": AXIS, "font": {"color": INK}},
-        "xaxis": {
-            "gridcolor": GRID,
-            "linecolor": AXIS,
-            "zeroline": False,
-            "tickfont": {"color": INK_MUTED},
-        },
-        "yaxis": {
-            "gridcolor": GRID,
-            "linecolor": AXIS,
-            "zeroline": False,
-            "tickfont": {"color": INK_MUTED},
-            "rangemode": "tozero",
-        },
-        "legend": {
-            "orientation": "h",
-            "yanchor": "bottom",
-            "y": 1.0,
-            "x": 0,
-            "font": {"color": INK_SECONDARY},
-        },
-        "showlegend": False,
-    }
-    base.update(overrides)
-    return base
-
-
-def line(name: str, x, y, slot: int = 0, **kwargs) -> dict:
-    """2px 얇은 선. 점 표시는 기본으로 끄고 hover 로 읽는다."""
-    trace = {
-        "type": "scatter",
-        "mode": "lines",
-        "name": name,
-        "x": x,
-        "y": y,
-        "line": {"color": SERIES[slot % len(SERIES)], "width": 2},
-    }
-    trace.update(kwargs)
-    return trace
-
-
-def severity_color(value: float, warn: float, crit: float) -> str:
-    """예산 대비 상태색. 값이 클수록 나쁜 지표에 쓴다."""
-    if value >= crit:
-        return STATUS["critical"]
-    if value >= warn:
-        return STATUS["warning"]
-    return STATUS["good"]

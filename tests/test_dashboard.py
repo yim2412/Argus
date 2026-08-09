@@ -1,72 +1,51 @@
-"""대시보드 검증 — 프로세스·HTTP·반환값으로만 확인한다.
+"""조회 계층(`argus/dashboard/`) 검증.
 
-**마우스를 움직이는 자동화를 쓰지 않는다**(CLAUDE.md). 창이 떴는지·오류가 없는지·
-데이터가 맞는지는 프로세스와 응답으로 알 수 있다.
+**Streamlit 판을 지운 뒤(2026-08-09) 남은 것은 조회와 색뿐이다.** 그전까지 이 파일은
+페이지를 헤드리스로 실행해 렌더링 예외를 잡았는데, 그 대상이 없어졌다. 창(PySide6)
+쪽 검증은 `tests/test_desktop.py` 에 있다.
 
 여기서 잡으려는 실패는 둘이다.
-- import 시점 오류(오타·잘못된 참조) — 페이지를 열어야만 터지므로 눈으로는 늦게 발견된다
-- 조회 계층이 쓰기를 시도하는 것 — 대시보드는 읽기 전용이어야 한다
+- **조회 계층이 쓰기를 시도하는 것** — 관측 대상을 바꾸면 그건 더 이상 관측이 아니다
+- **없는 테이블 하나가 화면 전체를 죽이는 것** — 마이그레이션 이전 DB 를 열었을 때다
 """
 
 from __future__ import annotations
 
 import sqlite3
-import sys
 from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-DASHBOARD = ROOT / "argus" / "dashboard"
 
+def test_query_layer_needs_no_ui_framework() -> None:
+    """**조회 계층은 자기를 그리는 것이 무엇인지 몰라야 한다.**
 
-def test_pages_exist() -> None:
-    """페이지 파일명이 곧 사이드바에 보이는 이름이다.
-
-    Streamlit 은 `pages/` 의 파일명에서 메뉴 항목을 만든다. 그래서 한국어 UI 를
-    위해서는 파일명 자체가 한국어여야 한다 — 파일 안의 제목만 바꾸면 메뉴는
-    영어로 남는다.
+    2026-08-03 까지 캐시가 `st.cache_data` 라 `data.py` 가 Streamlit 없이는 import 도
+    안 됐다. 그 상태로 UI 를 갈아 끼웠다면 조회 코드까지 따라 옮겨야 했을 것이고,
+    지금 이 삭제도 그만큼 커졌을 것이다.
     """
-    pages = sorted(p.name for p in (DASHBOARD / "pages").glob("*.py"))
-    assert pages == [
-        "1_실시간.py",
-        "2_타임라인.py",
-        "3_프로세스.py",
-        "4_자기상태.py",
-        "5_사건.py",
-    ]
+    from argus.dashboard import data, theme
+
+    for module in (data, theme):
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        for framework in ("import streamlit", "import plotly", "import PySide6"):
+            assert framework not in source, f"{module.__name__} 이 {framework} 에 묶였다"
 
 
-def test_modules_import() -> None:
-    """페이지가 아닌 모듈은 streamlit 런타임 없이도 import 되어야 한다."""
-    pytest.importorskip("streamlit")
-    pytest.importorskip("plotly")
+def test_theme_keeps_the_verified_palette() -> None:
+    """색은 눈으로 고른 것이 아니라 검증기를 통과한 값이다(모듈 주석에 명령과 결과).
 
-    from argus.dashboard import common, data, theme  # noqa: F401
+    슬롯이 줄거나 순서가 바뀌면 색각 분리 검증이 무효가 된다.
+    """
+    from argus.dashboard import theme
 
+    assert theme.SERIES[0] == "#3987e5"
     assert len(theme.SERIES) == 4
-    assert theme.layout()["paper_bgcolor"] == theme.SURFACE
-    assert theme.line("x", [1], [2], slot=0)["line"]["width"] == 2
-
-
-def test_pages_compile() -> None:
-    """페이지 파일의 문법·참조 오류를 실행 없이 잡는다.
-
-    streamlit 페이지는 실행하면 `st.set_page_config` 부터 런타임을 요구하므로
-    컴파일까지만 확인한다. 오타는 여기서 다 걸린다.
-    """
-    for page in (DASHBOARD / "pages").glob("*.py"):
-        source = page.read_text(encoding="utf-8")
-        compile(source, str(page), "exec")
+    assert set(theme.STATUS) == {"good", "warning", "serious", "critical"}
 
 
 def test_query_layer_is_read_only(tmp_path: Path, monkeypatch) -> None:
-    """조회 계층은 쓰기를 할 수 없어야 한다.
-
-    대시보드가 관측 대상을 바꾸면 그건 더 이상 관측이 아니다.
-    """
-    pytest.importorskip("streamlit")
-
+    """조회 계층은 쓰기를 할 수 없어야 한다."""
     from argus.storage.hot import Database
 
     db_file = tmp_path / "t.db"
@@ -89,11 +68,9 @@ def test_query_layer_is_read_only(tmp_path: Path, monkeypatch) -> None:
 def test_missing_table_returns_empty(tmp_path: Path, monkeypatch) -> None:
     """없는 테이블을 물어도 화면 하나가 비는 데서 그쳐야 한다.
 
-    마이그레이션 이전 DB 를 열었을 때 대시보드 전체가 죽으면, 정작 무엇이
-    잘못됐는지 볼 방법이 사라진다.
+    마이그레이션 이전 DB 를 열었을 때 창 전체가 죽으면, 정작 무엇이 잘못됐는지
+    볼 방법이 사라진다.
     """
-    pytest.importorskip("streamlit")
-
     from argus.storage.hot import Database
 
     db_file = tmp_path / "t.db"
@@ -103,49 +80,3 @@ def test_missing_table_returns_empty(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(data_module, "db_path", lambda: db_file)
     assert data_module.query("SELECT * FROM table_that_does_not_exist") == []
-
-
-@pytest.mark.parametrize(
-    "page",
-    [
-        "app.py",
-        "pages/1_실시간.py",
-        "pages/2_타임라인.py",
-        "pages/3_프로세스.py",
-        "pages/4_자기상태.py",
-        "pages/5_사건.py",
-    ],
-)
-def test_pages_run_without_exception(page: str, tmp_path: Path, monkeypatch) -> None:
-    """페이지를 **실제로 실행**해 예외가 없는지 본다.
-
-    HTTP 200 은 증거가 되지 않는다 — Streamlit 은 SPA 라 페이지 스크립트가 터져도
-    셸 HTML 은 정상으로 돌아온다. `AppTest` 는 스크립트를 헤드리스로 돌리고 예외를
-    수집하므로, 마우스를 움직이지 않고도 렌더링 실패를 잡는다.
-
-    빈 DB 로 돌리는 이유: 데이터가 없을 때가 가장 잘 깨진다(첫 실행 직후가 그렇다).
-    """
-    at = pytest.importorskip("streamlit.testing.v1", reason="streamlit 필요").AppTest
-    pytest.importorskip("plotly")
-
-    from argus.storage.hot import Database
-
-    db_file = tmp_path / "argus.db"
-    Database(db_file).open().close()
-    monkeypatch.setenv("ARGUS_DATA_DIR", str(tmp_path))
-
-    app = at.from_file(str(DASHBOARD / page), default_timeout=30)
-    app.run()
-    assert not app.exception, f"{page}: {[e.value for e in app.exception]}"
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="개발 환경 기준 경로")
-def test_streamlit_config_is_dark() -> None:
-    """테마가 다크로 고정돼 있어야 한다.
-
-    팔레트는 다크 서피스에서 전 항목 통과, 라이트에서는 3:1 미만 슬롯이 생긴다.
-    설정이 바뀌면 검증하지 않은 색으로 그리게 된다.
-    """
-    config = (ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8")
-    assert 'base = "dark"' in config
-    assert "#3987e5" in config  # 검증된 계열 1번

@@ -2,9 +2,9 @@
 #
 # 빌드:  .venv\Scripts\pyinstaller.exe packaging\argus.spec --noconfirm
 #
-# **대시보드(Streamlit)는 넣지 않는다.** 배포의 최소 단위는 "수집하고 탐지하는 상주
-# 프로세스"이고, Streamlit 은 자체 자원 파일·동적 import 가 많아 별도 문제다. 그것 때문에
-# 전체 빌드가 막히면 무엇이 진짜 장애물인지 알 수 없게 된다.
+# **창(PySide6)은 넣지 않는다.** 배포의 최소 단위는 "수집하고 탐지하는 상주 프로세스"이고,
+# 창은 `argus_ui.spec` 이 따로 묶는다 — 별도 프로세스여야 창이 죽어도 수집이 계속된다.
+# 트레이 메뉴가 그 exe 를 찾아 띄운다(`tray._window_command`).
 #
 # **리소스는 `paths.resource_path()` 가 `_MEIPASS` 를 거쳐 찾는다.** 그래서 datas 의
 # 목적지 경로가 소스 트리에서의 상대경로와 **정확히 같아야** 한다:
@@ -53,10 +53,9 @@ hiddenimports = [
 hiddenimports += collect_submodules("argus")
 
 # 넣지 않는 것. 빌드 크기와 시간을 좌우한다.
+# streamlit·plotly·altair 는 2026-08-09 에 뺐다 — import 하는 코드 자체가 없어졌으므로
+# 여기 남겨 두면 "이 앱이 아직 그것을 쓴다"고 잘못 읽힌다.
 excludes = [
-    "streamlit",
-    "plotly",
-    "altair",
     "torch",
     "sklearn",
     "matplotlib",

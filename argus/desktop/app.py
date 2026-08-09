@@ -1,7 +1,6 @@
 """창 골격. **페이지를 담기만 하고 데이터는 모른다.**
 
-Streamlit 판은 페이지마다 파일 하나였고 사이드바가 그것을 묶었다. 여기서는 왼쪽
-탭 목록이 그 역할을 한다 — 페이지가 다섯이 될 예정이라 지금 자리를 잡아 둔다.
+왼쪽 탭 목록이 페이지를 묶는다. 페이지가 늘어도 `_add_page` 한 줄만 는다.
 
 **상주 프로세스와 별개다.** 여기에 Qt 이벤트 루프가 있고 상주는 자기 수퍼바이저를
 쓴다. 한 프로세스에 넣으면 메인 스레드를 다투고, 창이 죽을 때 수집까지 끌고
@@ -212,21 +211,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timeline.stop()
         self.selfstate.stop()
         super().closeEvent(event)
-
-
-class _Placeholder(QtWidgets.QWidget):
-    """아직 이식하지 않은 페이지. **빈 화면 대신 어디서 볼 수 있는지 말한다.**"""
-
-    def __init__(self, name: str) -> None:
-        super().__init__()
-        box = QtWidgets.QVBoxLayout(self)
-        label = QtWidgets.QLabel(
-            f"{name} 페이지는 아직 옮기는 중입니다.\n"
-            "지금은 `python -m argus.dashboard` 에서 볼 수 있습니다."
-        )
-        label.setAlignment(QtCore.Qt.AlignCenter)
-        label.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 13px;")
-        box.addWidget(label)
 
 
 def main(seconds: float | None = None) -> int:

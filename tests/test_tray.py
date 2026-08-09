@@ -4,9 +4,9 @@
 마우스를 움직이는 자동화는 쓰지 않는다(CLAUDE.md). 여기서 고정하는 것은 "어떤
 프로세스를 어떤 환경으로 띄우는가"이고, 그건 `Popen` 을 가로채면 전부 확인된다.
 
-**왜 이 파일이 생겼나 (2026-08-03)**: 트레이 메뉴의 "대시보드 열기"가 아무 일도 하지
+**왜 이 파일이 생겼나 (2026-08-03)**: 트레이 메뉴의 "창 열기"가 아무 일도 하지
 않았다. 상주는 base `pythonw.exe` 로 도는데(`tools/soak_entry.py` — venv 트램폴린이
-콘솔 창을 만들기 때문) 그 인터프리터에는 `streamlit` 이 없고, `CREATE_NO_WINDOW` 뒤에서
+콘솔 창을 만들기 때문) 그 인터프리터에는 창이 쓰는 패키지가 없고, `CREATE_NO_WINDOW` 뒤에서
 `ModuleNotFoundError` 가 그대로 묻혔다. **조용한 실패를 내가 만들었다**(규칙 4).
 """
 
@@ -119,7 +119,7 @@ def test_immediate_dashboard_death_is_reported(monkeypatch) -> None:
     `Popen` 은 즉시 돌아오므로 거기서 성공을 선언하면 실패가 묻힌다. 정확히 그래서
     이 버그가 조용했다.
     """
-    proc = _Recorder(returncode=1, stderr="ModuleNotFoundError: streamlit".encode())
+    proc = _Recorder(returncode=1, stderr="ModuleNotFoundError: PySide6".encode())
     tray = TrayIcon()
     told: list[tuple[str, str, str]] = []
     monkeypatch.setattr(
@@ -128,8 +128,8 @@ def test_immediate_dashboard_death_is_reported(monkeypatch) -> None:
 
     tray._watch_dashboard(proc)
 
-    assert told, "대시보드가 곧바로 죽었는데 아무 말도 하지 않았다"
-    assert "streamlit" in told[0][1], f"실패 이유가 전달되지 않았다: {told[0][1]}"
+    assert told, "창이 곧바로 죽었는데 아무 말도 하지 않았다"
+    assert "PySide6" in told[0][1], f"실패 이유가 전달되지 않았다: {told[0][1]}"
     assert told[0][2] == "warning"
 
 

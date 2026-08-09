@@ -409,7 +409,7 @@ MUTANTS: list[Mutant] = [
     ),
     Mutant(
         "dashboard_pythonpath",
-        "대시보드에 sys.path 를 물려준다 (base 인터프리터엔 streamlit 이 없다)",
+        "창에 sys.path 를 물려준다 (base 인터프리터엔 PySide6 가 없다)",
         (
             (
                 "argus/ui/tray.py",
