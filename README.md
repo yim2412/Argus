@@ -62,16 +62,19 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 그대로 종료합니다(자동 시작과 수동 실행이 겹치는 것은 흔한 일이라 실패로 다루지 않습니다).
 `ARGUS_DATA_DIR` 로 분리한 인스턴스는 서로 막지 않습니다.
 
-### 네이티브 창 (개발 중)
+### 창
 
 ```powershell
 .venv\Scripts\python.exe -m argus.desktop.app
 .venv\Scripts\python.exe -m argus.desktop.app --seconds 12   # 검증: 그린 표본 수를 보고
 ```
 
-대시보드를 브라우저가 아니라 데스크톱 앱(PySide6)으로 옮기는 중입니다. **다섯 페이지
-(실시간 · 프로세스 · 타임라인 · 사건 · 자기 상태)가 모두 동작합니다.** Streamlit 판은
-비교·되돌리기를 위해 당분간 함께 둡니다.
+화면은 브라우저가 아니라 데스크톱 앱(PySide6)입니다. **여섯 페이지 — 실시간 · 프로세스 ·
+타임라인 · 사건 · 자기 상태 · 설정.** 트레이 메뉴에서도 열 수 있습니다.
+
+브라우저 판(Streamlit)은 2026-08-09 에 지웠습니다. 조회 계층(`argus/dashboard/data.py`)만
+남아 창이 그대로 씁니다 — 그 계층이 UI 를 모르게 만들어 둔 덕에 화면을 갈아 끼우는 데
+조회 코드를 건드리지 않았습니다.
 
 **상주와 별도 프로세스입니다** — 창이 죽어도 수집은 계속됩니다. 개발 중 창 위치는
 `ARGUS_UI_SCREEN`(0-기반 모니터 번호)으로 지정합니다. 배포 exe 에는 영향이 없습니다.
@@ -86,16 +89,21 @@ dist\argus\argus.exe --check
 dist\argus-ui\argus-ui.exe --seconds 12
 ```
 
-실측: 상주 **195MB** · 창 **298MB**. 창 쪽이 큰 것은 Qt 런타임 때문이고,
+실측(2026-08-09): 상주 **198MB** · 창 **299MB**. 창 쪽이 큰 것은 Qt 런타임 때문이고,
 `argus_ui.spec` 의 `excludes` 가 WebEngine·3D·Multimedia 를 걷어내 설치본 643MB 에서
 그만큼 줄인 결과입니다.
 
-`--onedir` 입니다(onefile 은 시작이 느리고 DLL 문제가 잦습니다). 실측 **빌드 37~48초 ·
-`dist` 195MB · exe 9.9MB**. 격리 실행으로 검증하려면 `ARGUS_DATA_DIR` 을 지정하세요.
+> **상주에는 PySide6 를 넣지 않습니다.** `collect_submodules("argus")` 가 `argus.desktop`
+> 까지 끌어와 한동안 **상주 exe 에 Qt 102MB 가 들어 있었습니다**(301MB). 창은 별도
+> 프로세스로만 뜨므로 이름으로 걸러내고 `excludes` 에도 넣었습니다 — 거르기만 하면
+> 다른 경로로 다시 딸려 옵니다.
 
-**Streamlit 대시보드는 묶지 않습니다.** 자체 자원 파일과 동적 import 가 많아 별도
-문제이고, 그것 때문에 전체 빌드가 막히면 무엇이 진짜 장애물인지 알 수 없게 됩니다.
-화면은 네이티브 창(`argus-ui.exe`)이 대신합니다. 트레이와 알림 발송은 켜져 있습니다.
+`--onedir` 입니다(onefile 은 시작이 느리고 DLL 문제가 잦습니다). 실측 **빌드 30~73초 ·
+`dist` 198MB · exe 11.8MB**. 격리 실행으로 검증하려면 `ARGUS_DATA_DIR` 을 지정하세요.
+
+**상주 exe 에는 창을 넣지 않습니다.** 별도 프로세스여야 창이 죽어도 수집이 계속되고,
+배포의 최소 단위는 "수집하고 탐지하는 상주"입니다. 트레이 메뉴가 `argus-ui.exe` 를 찾아
+띄웁니다. 트레이와 알림 발송은 켜져 있습니다.
 
 **아이콘은 두 경로로 들어갑니다.** `icon=` 은 exe 파일 자체의 아이콘(탐색기가 보는 것)
 이고, `datas` 의 `assets/argus.ico` 는 트레이가 런타임에 `LoadImage` 로 읽는 파일입니다.
@@ -163,10 +171,10 @@ p95"가 되어 "크롬 전체"와 30배 어긋납니다.
 때문입니다. 롤업이 멈추면 삭제도 멈추고 DB 가 커지는데, 그게 맞는 선택입니다 — 디스크가
 차는 건 눈에 보이지만 지워진 2주치는 되돌릴 수 없습니다.
 
-### 대시보드 (Phase 10)
+### 화면 (Phase 10)
 
 ```powershell
-.venv\Scripts\python.exe -m argus.dashboard      # http://localhost:8501
+.venv\Scripts\python.exe -m argus.desktop.app
 ```
 
 | 페이지 | 내용 |
@@ -176,14 +184,15 @@ p95"가 되어 "크롬 전체"와 30배 어긋납니다.
 | **프로세스** | 프로세스별 사용량 랭킹, 포어그라운드, 개별 추이 |
 | **자기 상태** | Argus 자신의 상태 — 관측자가 병목이 되고 있지 않은지 |
 | **사건** | 무슨 일이 있었고 **왜** 그랬는가 · 피드백 버튼 |
+| **설정** | 알림 켜고 끄기 — 재시작 없이 반영됩니다 |
 
 준비 중: 레짐(Phase 4-B) · 모델(학습 후). 데이터가 없는 페이지를 미리 만들어
 두지 않는 이유는 "아직 없음"과 "고장남"이 구분되지 않기 때문입니다.
 
-> 사이드바 메뉴 이름은 `pages/` 의 **파일명**에서 나옵니다. 그래서 한국어 UI 를 위해
-> 파일명 자체가 한국어입니다 — 파일 안의 제목만 바꾸면 메뉴는 영어로 남습니다.
+DB 가 없으면 창이 **찾은 경로와 시작 방법을 말합니다.** "데이터 없음"과 "고장남"이
+같은 화면이면 처음 켠 사용자는 무엇이 잘못됐는지 알 수 없습니다.
 
-대시보드는 **읽기 전용 연결**로 붙고 조회 결과를 캐시합니다. "PC 가 느린 이유"를 찾는
+화면은 **읽기 전용 연결**로 붙고 조회 결과를 캐시합니다. "PC 가 느린 이유"를 찾는
 프로그램의 화면이 CPU 를 먹으면 자기가 만든 이상을 자기가 관측하게 됩니다.
 
 ### 검증
@@ -191,7 +200,7 @@ p95"가 되어 "크롬 전체"와 30배 어긋납니다.
 ```powershell
 .venv\Scripts\python.exe -m argus.collector.process   # 모듈별 스모크 ([OK]/[FAIL])
 .venv\Scripts\python.exe -m argus.storage.history     # 핫+웜 병합 조회 (중복 계상 검출)
-.venv\Scripts\python.exe -m pytest tests -q           # 정상 종료·DB 무결성·대시보드 렌더
+.venv\Scripts\python.exe -m pytest tests -q           # 정상 종료·DB 무결성·조회 계층·창
 ```
 
 각 모듈은 단독 실행하면 자기 점검 결과를 출력합니다.
@@ -284,7 +293,7 @@ CPU 병목 — 14:41:35 ~ 14:45:59 (4분 23초)
 ## 기술 스택 (예정)
 
 Python 3.11 · psutil · pywin32(PDH) · pynvml · SQLite(WAL) · DuckDB/Parquet ·
-scikit-learn · river · PyTorch→ONNX Runtime · Streamlit · PyInstaller
+scikit-learn · river · PyTorch→ONNX Runtime · PySide6/pyqtgraph · PyInstaller
 
 ---
 

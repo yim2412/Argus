@@ -12,7 +12,7 @@ authors = [{ name = "yim2412" }]
 #   Phase 4-A: pyarrow, duckdb (웜 스토어)
 #   Phase 5+ : scikit-learn, river
 #   Phase 7  : torch, onnxruntime
-#   Phase 10 : streamlit, plotly
+#   Phase 10 : PySide6, pyqtgraph (창. 2026-08-09 에 Streamlit 판을 지웠다)
 dependencies = [
     "psutil>=6.0",
     "pywin32>=306",
@@ -26,6 +26,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# 창. **상주의 의존성이 아니다** — 별도 프로세스라 창이 없어도 수집은 돈다.
+# Streamlit 판이 있을 때는 어느 쪽도 선언돼 있지 않았는데, 이제 화면이 이것 하나뿐이라
+# 소스에서 창을 띄우려는 사람에게 무엇이 필요한지 말해 줘야 한다.
+ui = ["PySide6>=6.11", "pyqtgraph>=0.13"]
 
 [project.scripts]
 argus = "argus.__main__:main"

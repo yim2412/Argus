@@ -7,7 +7,7 @@
 
 Windows 상주형 모니터링 exe (Python 3.11 + PyInstaller). psutil/pynvml/PDH 로 리소스를 수집해
 SQLite 에 쌓고, 통계 + ML 로 "평소와 다른" 성능 이상을 탐지한 뒤 원인 프로세스를 지목한다.
-UI 는 시스템 트레이 + Streamlit 대시보드.
+UI 는 시스템 트레이 + 네이티브 창(PySide6).
 
 **전제: 남에게 배포한다.** 개발 환경(RTX 3080 / RAM 64GB)은 기준이 아니라 한 사례일 뿐이다.
 
@@ -31,7 +31,7 @@ UI 는 시스템 트레이 + Streamlit 대시보드.
 | `machine/` | 이 PC 의 능력·성능 기준 | 절대 임계값 대신 여기 값을 기준으로 상대화한다 |
 | `ui/` | 트레이 아이콘 + 풍선 알림 | `Shell_NotifyIcon` 직접(의존성 0). 알림 전달자 규약은 `notify(title, message, severity) -> bool` 하나뿐 |
 | `desktop/` | 네이티브 창 (PySide6) | `python -m argus.desktop.app`. **상주와 별도 프로세스** — 창이 죽어도 수집은 계속된다. 검증은 `--seconds N` 이 그린 표본 수로 |
-| `dashboard/` | Streamlit UI (이식 중) + **조회 계층** | `python -m argus.dashboard`. `data.py` 는 UI 독립(`ttl_cache`)이라 네이티브 창도 그대로 쓴다 |
+| `dashboard/` | **조회 계층** (이름만 대시보드로 남았다) | `data.py`(조회)·`theme.py`(색)뿐. UI 독립(`ttl_cache`)이라 창이 그대로 쓴다. Streamlit 판은 2026-08-09 에 삭제 |
 | `config/` | `defaults.yaml` + `rules.yaml` | 임계값이 코드에 박혀 있으면 규칙 3 위반이다 |
 | `tools/` | 단독 실행 도구 | `fault_injector`(결함 주입) · `inject_progress`(주입 진행·판정) · `eval_snapshot`(평가 입력 고정) · `rescore_incidents`(사건 재분석) · `readiness`(착수 판정) · `pyc_audit`(캐시 검사) · `mutation_sweep`(규칙 무력화 측정) |
 
@@ -138,7 +138,7 @@ UI 는 시스템 트레이 + Streamlit 대시보드.
   그 순간부터 테스트도 상주 프로세스도 무력화된 값으로 돈다. 2026-07-30 에 `_SCORE_SATURATION_Z`
   가 8.0 대신 1.0 으로 돌아 모든 룰 점수가 1.0 이었고, 그날의 mutation 측정 자체가 오염됐다.
   `.venv\Scripts\python.exe tools\pyc_audit.py` 로 확인하고, 같은 검사가 테스트에도 있다.
-- **GUI 창(트레이·대시보드)은 2번(보조) 모니터에만 띄워 테스트한다.** 개발 실행 시 환경변수로
+- **GUI(트레이·창)는 2번(보조) 모니터에만 띄워 테스트한다.** 개발 실행 시 환경변수로
   위치를 지정하고, 배포 exe 에는 영향이 없게 한다.
 - **진행 상황·시간을 추측해서 보고하지 않는다.** 실제 출력·시계로 확인한 것만 말한다.
   (세 프로젝트가 공통으로 강조한 원칙 — 빌드/수집이 정체돼 보여도 추측 보고 금지.)

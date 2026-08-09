@@ -50,12 +50,23 @@ hiddenimports = [
     "pyarrow",
     "pyarrow.parquet",
 ]
-hiddenimports += collect_submodules("argus")
+# **`argus.desktop` 은 뺀다.** 상주는 창을 in-process 로 부르지 않는다 — 트레이가
+# `argus-ui.exe` 를 별도 프로세스로 띄운다. 그런데 `collect_submodules` 는 그 사정을
+# 모르고 전부 끌어와, 그 한 줄 때문에 **상주 exe 에 PySide6 102MB 가 들어 있었다**
+# (2026-08-09 실측 301MB → 뺀 뒤 아래 수치). 이름으로 거르는 이유는 하위 모듈이
+# 늘어도 따라오게 하기 위해서다.
+hiddenimports += [
+    name for name in collect_submodules("argus") if not name.startswith("argus.desktop")
+]
 
 # 넣지 않는 것. 빌드 크기와 시간을 좌우한다.
 # streamlit·plotly·altair 는 2026-08-09 에 뺐다 — import 하는 코드 자체가 없어졌으므로
-# 여기 남겨 두면 "이 앱이 아직 그것을 쓴다"고 잘못 읽힌다.
+# 여기 남겨 두면 "이 앱이 아직 그것을 쓴다"고 잘못 읽힌다. 대신 창 쪽 런타임을 넣었다:
+# **위에서 걸러도 excludes 가 없으면 다른 경로로 다시 딸려 온다.**
 excludes = [
+    "PySide6",
+    "shiboken6",
+    "pyqtgraph",
     "torch",
     "sklearn",
     "matplotlib",
