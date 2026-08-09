@@ -38,6 +38,8 @@ log = get_logger(__name__)
 _INFO_FLAGS = {"info": 0x01, "warning": 0x02, "critical": 0x03}  # NIIF_INFO/WARNING/ERROR
 
 _WM_TRAY = 0x0400 + 20  # WM_APP + 20. 트레이 아이콘이 보내는 콜백 메시지
+# 풍선을 클릭했을 때 오는 알림. pywin32 상수에 없어 직접 적는다(shellapi.h).
+_NIN_BALLOONUSERCLICK = 0x0405
 _MENU_DASHBOARD = 1001
 _MENU_STOP = 1002
 _MENU_NOTIFY = 1003
@@ -87,6 +89,9 @@ class TrayIcon(Component):
     # 전용 아이콘 파일을 실제로 썼는가. False 면 시스템 아이콘으로 떨어진 것이다.
     _own_icon: bool = False
     _added: bool = False
+    # 마지막으로 띄운 풍선이 가리키는 사건. 클릭 알림에는 아무 정보도 실려 오지 않아,
+    # 띄우는 쪽에서 붙잡아 두는 것 말고는 방법이 없다.
+    _balloon_incident: int | None = None
     _failed: str = ""
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -220,8 +225,19 @@ class TrayIcon(Component):
         """
         return self.notify("Argus 감시 시작", detail or "성능 이상을 지켜봅니다.", "info")
 
-    def notify(self, title: str, message: str, severity: str = "warning") -> bool:
+    def notify(
+        self,
+        title: str,
+        message: str,
+        severity: str = "warning",
+        incident_id: int | None = None,
+    ) -> bool:
         """풍선 알림을 띄운다. 띄웠으면 True.
+
+        `incident_id` 는 **그 풍선을 누르면 어디로 갈 것인가**다. 이것이 없으면 사용자는
+        알림을 보고도 평가할 방법이 없다 — 창을 열고 사건 목록에서 그 시각을 손으로
+        찾아야 한다. 실제로 14일 동안 피드백이 **0건**이었고, 그래서 "이 알림이 맞았나"에
+        답할 근거가 없었다. 라벨이 없으면 문턱을 고칠 근거도 없다.
 
         **보낼지 말지는 여기서 정하지 않는다** — `decide/budget.py` 가 예산과 심각도 컷을
         이미 판단한다. 이 함수는 전달만 하고, 전달 실패를 삼키지 않는다.
@@ -237,6 +253,10 @@ class TrayIcon(Component):
 
         if not self._added:
             return False
+
+        # **풍선이 뜬 시점에 기억한다.** Windows 는 클릭 알림에 아무 정보도 실어 주지
+        # 않으므로, 지금 띄우는 것이 무엇인지 여기서 붙잡아 두는 수밖에 없다.
+        self._balloon_incident = incident_id
 
         with self._lock:
             try:
@@ -293,6 +313,10 @@ class TrayIcon(Component):
         import win32con
         import win32gui
 
+        if msg == _WM_TRAY and lparam == _NIN_BALLOONUSERCLICK:
+            # 알림을 눌렀다 = "이게 뭔데?" 다. 그 사건을 바로 연다.
+            self._open_dashboard(incident_id=self._balloon_incident)
+            return 0
         if msg == _WM_TRAY and lparam in (win32con.WM_RBUTTONUP, win32con.WM_LBUTTONDBLCLK):
             self._show_menu(hwnd)
             return 0
@@ -391,8 +415,8 @@ class TrayIcon(Component):
                 return [str(candidate)], str(candidate)
         return None
 
-    def _open_dashboard(self) -> None:
-        """창을 별도 프로세스로 띄운다.
+    def _open_dashboard(self, incident_id: int | None = None) -> None:
+        """창을 별도 프로세스로 띄운다. `incident_id` 를 주면 그 사건을 펴고 시작한다.
 
         **상주 프로세스 안에서 UI 를 돌리지 않는다.** Qt 는 메인 스레드에서
         `QApplication.exec()` 를 요구하는데 상주는 그 자리를 수퍼바이저가 쓴다. 무엇보다
@@ -417,6 +441,8 @@ class TrayIcon(Component):
             self.notify("Argus", "창 실행 파일(argus-ui.exe)을 찾지 못했습니다.", "warning")
             return
         argv, where = command
+        if incident_id is not None:
+            argv = [*argv, "--incident", str(incident_id)]
 
         env = dict(os.environ)
         inherited = os.pathsep.join(p for p in sys.path if p)

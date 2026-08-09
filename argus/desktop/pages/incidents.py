@@ -48,6 +48,9 @@ class IncidentPage(QtWidgets.QWidget):
         super().__init__()
         self._rows: list[dict] = []
         self._selected_id: int | None = None
+        # 알림에서 넘어온 사건. 목록이 도착하기 전에는 고를 수 없으므로 들고 있는다.
+        self._pending_id: int | None = None
+        self._widened = False
         self._loader: IncidentLoader | None = None
         self._loads = 0
 
@@ -191,8 +194,58 @@ class IncidentPage(QtWidgets.QWidget):
         self._table.set_rows([_list_row(r) for r in rows])
         self._update_summary(rows)
 
+        if self._pending_id is not None:
+            # 골랐든 · 구간을 넓혔든 · 못 찾았다고 말했든 **여기서 끝난다.**
+            # 아래 기본 동작(첫 줄 선택)으로 흘러가면 방금 띄운 "못 찾았습니다"를
+            # 엉뚱한 사건이 덮어쓴다 — 사용자는 그것을 방금 누른 알림으로 읽는다.
+            self._select_pending()
+            return
         if self._selected_id is None:
             self._table.selectRow(0)
+
+    def focus_incident(self, incident_id: int) -> None:
+        """그 사건을 골라 놓는다. **알림을 누르고 들어온 사람이 도착하는 자리다.**
+
+        목록은 비동기로 온다. 여기서 할 수 있는 것은 "오면 이걸 고른다"까지이고,
+        실제 선택은 `_on_rows` 가 한다.
+        """
+        self._pending_id = incident_id
+        self._widened = False
+        if self._rows:
+            self._select_pending()
+
+    def _select_pending(self) -> None:
+        """대기 중인 사건을 고르거나, 구간을 넓히거나, 못 찾았다고 말한다.
+
+        **구간 밖이면 한 번 넓힌다.** 기본 구간은 7일인데 알림은 그보다 오래된 것을
+        가리킬 수 있다(창을 며칠 만에 열면 그렇다). 그때 빈손으로 두면 사용자는
+        무엇을 눌렀는지도 모른 채 목록 앞에 서게 된다. **한 번만** 넓히는 이유는
+        30일에도 없으면 보존 정리로 사라진 것이고, 그때는 다시 넓혀도 소용없다.
+        """
+        target = self._pending_id
+        if target is None:
+            return
+
+        for index, row in enumerate(self._rows):
+            if row.get("id") == target:
+                self._pending_id = None
+                self._table.selectRow(index)
+                return
+
+        widest = max(days for days, _ in _DAY_CHOICES)
+        if not self._widened and int(self._days.currentData()) != widest:
+            self._widened = True
+            self._days.setCurrentIndex(
+                next(i for i, (days, _) in enumerate(_DAY_CHOICES) if days == widest)
+            )
+            return  # 구간 변경이 재조회를 부른다. 그때 다시 찾는다.
+
+        # 30일 안에도 없다. **조용히 목록 앞으로 보내지 않는다**(규칙 4).
+        self._pending_id = None
+        self._detail_head.setText(f"사건 #{target} 을 찾지 못했습니다")
+        self._detail_meta.setText(
+            "보존 기간이 지나 정리됐거나, 다른 데이터 폴더의 사건입니다."
+        )
 
     def _update_summary(self, rows: list[dict]) -> None:
         open_now = sum(1 for r in rows if r.get("ts_end") is None)

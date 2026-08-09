@@ -257,3 +257,61 @@ def test_describe_exposes_failure() -> None:
     state = TrayIcon().describe()
     assert set(state) == {"active", "icon", "notify", "suppressed", "error"}
     assert state["active"] == "False"
+
+
+# ---------------------------------------------------------------- 알림 → 사건
+#
+# **알림을 눌러도 갈 곳이 없으면 평가는 일어나지 않는다.** 14일 동안 사건 158건 ·
+# 알림 11건에 피드백이 **0건**이었다. 창을 열고 목록에서 그 시각을 손으로 찾아야
+# 했기 때문이고, 라벨이 없으니 "이 알림이 맞았나"에 답할 근거도 없었다.
+
+
+def test_balloon_click_opens_that_incident(monkeypatch) -> None:
+    """풍선을 누르면 **그 사건**이 열려야 한다. 목록 첫 줄이 아니라."""
+    recorder = _Recorder()
+    monkeypatch.setattr(subprocess, "Popen", recorder)
+
+    tray = TrayIcon()
+    tray._balloon_incident = 156
+
+    from argus.ui import tray as tray_module
+
+    tray._on_message(0, tray_module._WM_TRAY, 0, tray_module._NIN_BALLOONUSERCLICK)
+
+    assert recorder.args is not None, "풍선을 눌렀는데 창이 뜨지 않았다"
+    assert recorder.args[-2:] == ["--incident", "156"], (
+        f"어느 사건인지 전달되지 않았다: {recorder.args}"
+    )
+
+
+def test_menu_open_does_not_pin_an_incident(monkeypatch) -> None:
+    """메뉴로 연 창은 평소처럼 열려야 한다 — 지난 알림에 묶이면 안 된다."""
+    recorder = _Recorder()
+    monkeypatch.setattr(subprocess, "Popen", recorder)
+
+    tray = TrayIcon()
+    tray._balloon_incident = 156
+    tray._open_dashboard()
+
+    assert recorder.args is not None
+    assert "--incident" not in recorder.args, f"메뉴로 열었는데 사건이 붙었다: {recorder.args}"
+
+
+def test_notify_remembers_which_incident_the_balloon_shows(monkeypatch) -> None:
+    """**Windows 는 클릭 알림에 아무것도 실어 주지 않는다.**
+
+    띄우는 시점에 붙잡아 두지 않으면 눌렸을 때 어디로 갈지 알 방법이 없다.
+
+    `_added=True` 로 두는 이유: 아이콘이 없으면 풍선 자체가 안 뜨므로 기억할 것도
+    없다. 실제 `Shell_NotifyIcon` 은 hwnd 가 0 이라 실패하고, 그 실패는 이미
+    `notify` 안에서 삼켜지지 않고 로그로 남는다(다른 테스트가 그걸 본다).
+    """
+    from argus.ui import tray as tray_module
+
+    monkeypatch.setattr(tray_module, "notifications_suppressed", lambda: False)
+    tray = TrayIcon()
+    tray._added = True
+
+    tray.notify("제목", "내용", "warning", incident_id=42)
+
+    assert tray._balloon_incident == 42

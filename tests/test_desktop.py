@@ -909,3 +909,89 @@ def test_banner_hides_itself_when_there_is_nothing_to_say(qapp) -> None:
 
     banner.update_text(None)
     assert banner.isHidden()
+
+
+# ---------------------------------------------------------------- 알림 → 사건
+#
+# 알림을 눌러서 들어온 사람은 **평가하러 온 것**이다. 그 사건을 찾는 일이 남아 있으면
+# 거기서 그만둔다 — 실제로 14일간 사건 158건 · 알림 11건에 피드백이 0건이었다.
+
+
+def _rows(*ids: int) -> list[dict]:
+    return [
+        {
+            "id": i,
+            "ts_start": 1000.0 + i,
+            "ts_end": 1200.0 + i,
+            "severity": "warning",
+            "title": f"사건 {i}",
+            "contributors": "[]",
+            "detectors": "[]",
+            "signal_count": 1,
+        }
+        for i in ids
+    ]
+
+
+def test_focus_selects_that_incident_not_the_first(qapp) -> None:
+    """**목록 첫 줄로 보내면 안 된다.** 그건 "못 찾았다"와 구분되지 않는다."""
+    page = _incident_page(qapp)
+    page.focus_incident(7)
+    page._on_rows(_rows(9, 8, 7, 6))
+
+    assert page._selected_id == 7, f"엉뚱한 사건이 열렸다: {page._selected_id}"
+
+
+def test_focus_widens_the_range_when_the_incident_is_older(qapp) -> None:
+    """기본 구간은 7일인데 알림은 그보다 오래된 것을 가리킬 수 있다.
+
+    (창을 며칠 만에 열면 그렇다.) 빈손으로 두면 사용자는 자기가 무엇을 눌렀는지도
+    모른 채 목록 앞에 서게 된다.
+    """
+    page = _incident_page(qapp)
+    before = int(page._days.currentData())
+    page.focus_incident(99)
+    page._on_rows(_rows(3, 2, 1))  # 99 가 없다
+
+    assert int(page._days.currentData()) > before, "구간 밖 사건인데 넓히지 않았다"
+    assert page._pending_id == 99, "다시 찾을 대상을 잃어버렸다"
+
+    page._on_rows(_rows(99, 3, 2, 1))
+    assert page._selected_id == 99
+
+
+def test_focus_says_so_when_the_incident_is_gone(qapp) -> None:
+    """**조용히 목록 앞으로 보내지 않는다**(설계 규칙 4).
+
+    30일 안에도 없으면 보존 정리로 사라진 것이다. 그때 아무 말 없이 다른 사건을
+    펴 두면, 사용자는 그것을 방금 누른 알림으로 알고 **틀린 라벨**을 남긴다 —
+    없는 것보다 나쁜 데이터다.
+    """
+    page = _incident_page(qapp)
+    page._days.setCurrentIndex(page._days.count() - 1)  # 이미 최대 구간
+    page.focus_incident(1234)
+    page._on_rows(_rows(3, 2, 1))
+
+    assert page._selected_id != 1234
+    assert "1234" in page._detail_head.text(), "못 찾았다는 말을 하지 않았다"
+    assert page._pending_id is None, "찾을 수 없는 것을 계속 기다린다"
+
+
+def test_cli_passes_the_incident_through(monkeypatch) -> None:
+    """**진입점이 인자를 흘리면 알림 클릭이 조용히 평범한 창 열기가 된다.**
+
+    exe 도 이 경로를 탄다 — 여기가 끊기면 배포판에서만 안 되는 상태가 된다.
+    """
+    import sys
+
+    from argus.desktop import app
+
+    seen: dict = {}
+    monkeypatch.setattr(app, "main", lambda seconds=None, incident_id=None: seen.update(
+        seconds=seconds, incident_id=incident_id
+    ) or 0)
+    monkeypatch.setattr(sys, "argv", ["argus-ui", "--incident", "156"])
+
+    app.cli()
+
+    assert seen.get("incident_id") == 156, f"사건 id 가 전달되지 않았다: {seen}"

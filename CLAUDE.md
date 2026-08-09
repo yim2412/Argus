@@ -29,7 +29,7 @@ UI 는 시스템 트레이 + 네이티브 창(PySide6).
 | `eval/` | 리플레이 + 채점 | `python -m argus.eval`. 탐지기를 건드렸으면 여기를 돌린다 |
 | `runtime/` | 스레드·자기예산·자기계측 | `budget` 이 예산 초과 시 스스로 샘플링을 낮춘다 |
 | `machine/` | 이 PC 의 능력·성능 기준 | 절대 임계값 대신 여기 값을 기준으로 상대화한다 |
-| `ui/` | 트레이 아이콘 + 풍선 알림 | `Shell_NotifyIcon` 직접(의존성 0). 알림 전달자 규약은 `notify(title, message, severity) -> bool` 하나뿐 |
+| `ui/` | 트레이 아이콘 + 풍선 알림 | `Shell_NotifyIcon` 직접(의존성 0). 알림 전달자 규약은 `notify(title, message, severity, incident_id=None) -> bool` 하나뿐. `incident_id` 는 풍선을 눌렀을 때 열 사건이다 |
 | `desktop/` | 네이티브 창 (PySide6) | `python -m argus.desktop.app`. **상주와 별도 프로세스** — 창이 죽어도 수집은 계속된다. 검증은 `--seconds N` 이 그린 표본 수로 |
 | `dashboard/` | **조회 계층** (이름만 대시보드로 남았다) | `data.py`(조회)·`theme.py`(색)뿐. UI 독립(`ttl_cache`)이라 창이 그대로 쓴다. Streamlit 판은 2026-08-09 에 삭제 |
 | `config/` | `defaults.yaml` + `rules.yaml` | 임계값이 코드에 박혀 있으면 규칙 3 위반이다 |

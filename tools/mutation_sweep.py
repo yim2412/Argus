@@ -852,6 +852,53 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    # ---- 2026-08-09: 알림 → 사건 → 평가. 라벨이 이 경로로만 들어온다.
+    # **전부 조용히 되돌아간다** — 끊겨도 알림은 그대로 뜨고 창도 그대로 열린다.
+    # 안 생기는 것은 피드백뿐이고, 그건 원래도 0건이라 아무 신호가 없다.
+    Mutant(
+        "notify_incident_id",
+        "알림이 자기 사건 id 를 들고 간다 (없으면 눌러도 갈 곳이 없다)",
+        (
+            (
+                "argus/decide/fusion.py",
+                "severity, incident_id=incident_id)",
+                "severity)  # MUTANT: 사건 id 를 버린다",
+            ),
+        ),
+    ),
+    Mutant(
+        "balloon_click_route",
+        "풍선을 누르면 그 사건이 열린다 (id 를 안 넘기면 평범한 창 열기가 된다)",
+        (
+            (
+                "argus/ui/tray.py",
+                "            self._open_dashboard(incident_id=self._balloon_incident)\n",
+                "            self._open_dashboard()  # MUTANT: 어느 사건인지 버린다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "focus_beats_default_selection",
+        "알림으로 연 사건이 첫 줄 자동 선택에 덮이지 않는다 (덮이면 틀린 라벨이 남는다)",
+        (
+            (
+                "argus/desktop/pages/incidents.py",
+                "            self._select_pending()\n            return\n",
+                "            self._select_pending()  # MUTANT: 아래로 흘려보낸다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "focus_widens_range",
+        "구간 밖 사건이면 한 번 넓혀 본다 (안 넓히면 오래된 알림은 영영 못 찾는다)",
+        (
+            (
+                "argus/desktop/pages/incidents.py",
+                "        if not self._widened and int(self._days.currentData()) != widest:",
+                "        if False:  # MUTANT: 구간을 넓히지 않는다",
+            ),
+        ),
+    ),
     Mutant(
         "spec_icon_resource",
         "빌드가 아이콘을 동봉한다 (빠지면 트레이가 런타임에 못 읽는다)",

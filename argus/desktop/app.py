@@ -138,7 +138,7 @@ class _Banner(QtWidgets.QLabel):
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, incident_id: int | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Argus")
         self.resize(*_initial_size())
@@ -195,9 +195,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._clock.start(1000)
         self._refresh_status()
 
+        # 알림을 눌러서 들어온 경우. **평가하러 온 사람을 목록 앞에 세우지 않는다** —
+        # 그 사건을 찾는 일이 남아 있으면 거기서 그만둔다(14일간 피드백 0건이 그 결과다).
+        if incident_id is not None:
+            self._nav.setCurrentRow(self._page_index(self.incidents))
+            self.incidents.focus_incident(incident_id)
+
     def _add_page(self, name: str, widget: QtWidgets.QWidget) -> None:
         self._nav.addItem(name)
         self._stack.addWidget(widget)
+
+    def _page_index(self, widget: QtWidgets.QWidget) -> int:
+        return self._stack.indexOf(widget)
 
     def _refresh_status(self) -> None:
         self.statusBar().showMessage(self.realtime.status_text())
@@ -213,7 +222,7 @@ class MainWindow(QtWidgets.QMainWindow):
         super().closeEvent(event)
 
 
-def main(seconds: float | None = None) -> int:
+def main(seconds: float | None = None, incident_id: int | None = None) -> int:
     """`seconds` 를 주면 그만큼 돌고 스스로 닫는다.
 
     **GUI 검증을 마우스로 하지 않기 위한 것이다**(CLAUDE.md). 창이 떴는지·갱신이
@@ -233,7 +242,7 @@ def main(seconds: float | None = None) -> int:
         app.setWindowIcon(QtGui.QIcon(str(icon)))
     apply_theme(app)
 
-    window = MainWindow()
+    window = MainWindow(incident_id=incident_id)
     placement = place_on_configured_screen(window)
     window.show()
     print(f"  창 위치: {placement}")
@@ -278,8 +287,11 @@ def cli() -> int:
     parser.add_argument(
         "--seconds", type=float, default=None, help="이만큼 돌고 자동 종료 (검증용)"
     )
+    parser.add_argument(
+        "--incident", type=int, default=None, help="이 사건을 펴고 시작 (알림 클릭)"
+    )
     args, _qt_args = parser.parse_known_args()
-    return main(args.seconds)
+    return main(args.seconds, incident_id=args.incident)
 
 
 if __name__ == "__main__":

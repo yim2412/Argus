@@ -69,15 +69,23 @@ def test_many_signals_become_one_incident(db: Database) -> None:
 
 
 class _FakeNotifier:
-    """`notify(title, message, severity) -> bool` 만 있으면 된다."""
+    """`notify(title, message, severity, incident_id=None) -> bool` 만 있으면 된다."""
 
     def __init__(self, *, fail: bool = False, returns: bool = True) -> None:
         self.calls: list[tuple[str, str, str]] = []
+        self.incident_ids: list[int | None] = []
         self.fail = fail
         self.returns = returns
 
-    def notify(self, title: str, message: str, severity: str = "warning") -> bool:
+    def notify(
+        self,
+        title: str,
+        message: str,
+        severity: str = "warning",
+        incident_id: int | None = None,
+    ) -> bool:
         self.calls.append((title, message, severity))
+        self.incident_ids.append(incident_id)
         if self.fail:
             raise RuntimeError("알림 채널이 죽었다")
         return self.returns
@@ -122,6 +130,27 @@ def test_notification_is_sent_when_enabled(db: Database) -> None:
     assert title and title != "분석 중", f"제목이 비었거나 미완성이다: {title!r}"
     assert message, "본문이 비었다"
     assert severity in {"info", "warning", "critical"}
+
+
+def test_notification_carries_the_incident_it_is_about(db: Database) -> None:
+    """**알림에 사건 id 가 실려야 풍선을 눌렀을 때 갈 곳이 있다.**
+
+    없으면 사용자는 창을 열고 목록에서 그 시각을 손으로 찾아야 한다. 실제로 14일
+    동안 피드백이 0건이었고, 라벨이 없으니 문턱을 고칠 근거도 없었다.
+    **이 배선이 끊겨도 알림은 그대로 뜬다** — 조용히 되돌아가는 자리다.
+    """
+    now = time.time()
+    _one_incident(db, now)
+    notifier = _FakeNotifier()
+
+    fusion = Fusion(db, FusionSettings(notify_enabled=True), notifier=notifier)
+    fusion._set_watermark(now - 601)
+    fusion.run_once(now=now)
+
+    stored = db.query("SELECT id FROM incidents ORDER BY id")[0]["id"]
+    assert notifier.incident_ids == [stored], (
+        f"알림이 가리키는 사건이 저장된 사건과 다르다: {notifier.incident_ids} vs {stored}"
+    )
 
 
 def test_notifier_failure_does_not_break_fusion(db: Database) -> None:

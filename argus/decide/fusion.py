@@ -533,7 +533,7 @@ class Fusion(Component):
         # 트레이에서 껐는데도 다음 알림이 나간다.
         self.live = live
         self.interval_s = 30.0
-        # 알림 전달자. `notify(title, message, severity) -> bool` 만 있으면 된다.
+        # 알림 전달자. `notify(title, message, severity, incident_id=None) -> bool`.
         # 인터페이스를 좁게 잡아 두면 트레이 말고 다른 채널(Discord 등)을 붙일 때
         # 여기를 고치지 않아도 된다. 없으면 기록만 하고 넘어간다.
         self.notifier = notifier
@@ -663,7 +663,9 @@ class Fusion(Component):
         message = explanation.splitlines()[0] if explanation else "대시보드에서 확인하세요."
 
         try:
-            sent = self.notifier.notify(title, message, severity)
+            # **사건 id 를 함께 넘긴다.** 풍선을 눌렀을 때 갈 곳이 있어야 사용자가
+            # 평가할 수 있고, 그 라벨이 없으면 "이 알림이 맞았나"에 영영 답할 수 없다.
+            sent = self.notifier.notify(title, message, severity, incident_id=incident_id)
         except Exception as exc:
             # 알림 실패가 융합을 죽이면 사건 기록이 통째로 멈춘다. 탐지가 알림보다 중요하다.
             log.warning("알림 발송 실패", extra={"incident": incident_id, "error": str(exc)})
