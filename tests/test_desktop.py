@@ -831,3 +831,81 @@ def test_window_never_opens_larger_than_the_screen(qapp) -> None:
     width, height = _initial_size()
     available = QtWidgets.QApplication.primaryScreen().availableGeometry()
     assert width <= available.width() and height <= available.height()
+
+
+# ---------------------------------------------------------------- 첫 실행 안내
+#
+# **"데이터 없음"과 "고장남"을 구분해 주는 화면이다**(설계 규칙 4). Streamlit 홈에만
+# 있던 것을 2026-08-09 에 창으로 옮겼다 — 그전까지 네이티브는 페이지마다
+# "…기다리는 중"만 띄웠고, 배포 사용자가 처음 보는 화면이 정확히 그것이다.
+
+
+def test_first_run_notice_names_the_path_it_looked_at(tmp_path, monkeypatch) -> None:
+    """**경로가 안내의 본체다.**
+
+    "수집이 시작되지 않았습니다"만으로는 상주를 안 켠 것인지 창이 엉뚱한 곳을 보는
+    것인지 가릴 수 없다. 셋을 가르는 정보는 찾은 위치뿐이다.
+    """
+    from argus.dashboard import data
+    from argus.desktop import app
+
+    missing = tmp_path / "없는곳" / "argus.db"
+    monkeypatch.setattr(data, "db_path", lambda: missing)
+
+    notice = app.first_run_notice()
+    assert notice is not None
+    assert str(missing) in notice
+
+
+def test_first_run_notice_is_silent_once_the_db_exists(tmp_path, monkeypatch) -> None:
+    """DB 가 생기면 사라져야 한다 — 창을 열어 둔 채 상주를 켜는 경우가 있다."""
+    from argus.dashboard import data
+    from argus.desktop import app
+
+    present = tmp_path / "argus.db"
+    present.write_bytes(b"")
+    monkeypatch.setattr(data, "db_path", lambda: present)
+
+    assert app.first_run_notice() is None
+
+
+def test_first_run_notice_tells_frozen_users_a_command_they_can_run(
+    tmp_path, monkeypatch
+) -> None:
+    """**배포판 사용자에게 `python -m argus` 는 실행할 수 없는 명령이다.**
+
+    같은 문구를 양쪽에 쓰면 exe 사용자는 안내를 따라도 아무 데도 못 간다.
+    """
+    from argus.dashboard import data
+    from argus.desktop import app
+
+    monkeypatch.setattr(data, "db_path", lambda: tmp_path / "argus.db")
+
+    monkeypatch.setattr(app, "is_frozen", lambda: True)
+    frozen = app.first_run_notice()
+    monkeypatch.setattr(app, "is_frozen", lambda: False)
+    source = app.first_run_notice()
+
+    assert frozen is not None and source is not None
+    assert "python -m argus" not in frozen, "exe 사용자에게 소스 실행 명령을 안내했다"
+    assert "python -m argus" in source
+    assert frozen != source
+
+
+def test_banner_hides_itself_when_there_is_nothing_to_say(qapp) -> None:
+    """**`isVisible()` 이 아니라 `isHidden()` 으로 본다**(CLAUDE.md).
+
+    부모 창을 띄우지 않는 테스트에서 `isVisible()` 은 항상 False 라 아무것도
+    검증하지 못한다.
+    """
+    from argus.desktop.app import _Banner
+
+    banner = _keep(_Banner())
+    assert banner.isHidden()
+
+    banner.update_text("무슨 일이 있었다")
+    assert not banner.isHidden()
+    assert banner.text() == "무슨 일이 있었다"
+
+    banner.update_text(None)
+    assert banner.isHidden()

@@ -816,6 +816,42 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    # ---- 2026-08-09: 첫 실행 안내. Streamlit 홈에만 있던 것을 창으로 옮겼다.
+    # **조용히 되돌아간다** — 안내가 사라져도 창은 정상 동작하고, 처음 켠 사용자만
+    # "…기다리는 중" 앞에서 막힌다. 개발 PC 에는 DB 가 있어 영영 안 보이는 경로다.
+    Mutant(
+        "first_run_path",
+        "안내가 찾은 경로를 말한다 (없으면 '안 켠 것'과 '엉뚱한 곳을 보는 것'이 같아진다)",
+        (
+            (
+                "argus/desktop/app.py",
+                'return f"수집이 아직 시작되지 않았습니다 — {how}.\\n찾은 위치: {path}"',
+                'return f"수집이 아직 시작되지 않았습니다 — {how}."  # MUTANT: 경로 제거',
+            ),
+        ),
+    ),
+    Mutant(
+        "first_run_frozen_command",
+        "exe 사용자에게 실행 가능한 명령을 안내한다 (`python -m argus` 는 그들에게 없다)",
+        (
+            (
+                "argus/desktop/app.py",
+                '    how = "argus.exe 를 실행하세요" if is_frozen() else "`python -m argus` 로 시작하세요"',
+                '    how = "`python -m argus` 로 시작하세요"  # MUTANT: 실행 형태 무시',
+            ),
+        ),
+    ),
+    Mutant(
+        "first_run_banner_clears",
+        "DB 가 생기면 안내가 사라진다 (남으면 정상 상태에 경고가 붙박인다)",
+        (
+            (
+                "argus/desktop/app.py",
+                "        if text is None:\n            self.hide()\n            return\n",
+                "        if text is None:\n            return  # MUTANT: 숨기지 않는다\n",
+            ),
+        ),
+    ),
     Mutant(
         "spec_icon_resource",
         "빌드가 아이콘을 동봉한다 (빠지면 트레이가 런타임에 못 읽는다)",

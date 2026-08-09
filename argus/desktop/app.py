@@ -16,8 +16,8 @@ import sys
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..branding import APP_TITLE, set_app_id
-from ..dashboard import theme
-from ..paths import icon_path
+from ..dashboard import data, theme
+from ..paths import icon_path, is_frozen
 from .pages.incidents import IncidentPage
 from .pages.processes import ProcessPage
 from .pages.realtime import RealtimePage
@@ -98,6 +98,46 @@ def _initial_size() -> tuple[int, int]:
     )
 
 
+def first_run_notice() -> str | None:
+    """DB 가 없을 때 사람이 읽는 안내. 있으면 `None`.
+
+    **"데이터 없음"과 "고장남"을 구분해 준다**(설계 규칙 4). 페이지마다 "…기다리는 중"만
+    띄우면 처음 켠 사용자는 무엇이 잘못됐는지 알 수 없다 — 상주를 아직 안 켠 것인지,
+    켰는데 안 되는 것인지, 창이 엉뚱한 곳을 보고 있는 것인지가 전부 같은 화면이다.
+    그래서 **찾은 경로를 함께 보여 준다** — 셋을 가르는 정보가 그것뿐이다.
+
+    시작 방법은 **실행 형태에 따라 다르다.** 배포판 사용자에게 `python -m argus` 는
+    실행할 수 없는 명령이다.
+    """
+    path = data.db_path()
+    if path.exists():
+        return None
+    how = "argus.exe 를 실행하세요" if is_frozen() else "`python -m argus` 로 시작하세요"
+    return f"수집이 아직 시작되지 않았습니다 — {how}.\n찾은 위치: {path}"
+
+
+class _Banner(QtWidgets.QLabel):
+    """페이지 위에 걸리는 한 줄 안내. **어느 페이지를 보든 보여야 한다.**"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWordWrap(True)
+        self.setStyleSheet(
+            f"background: {theme.SURFACE}; color: {theme.INK};"
+            f" border: 1px solid {theme.STATUS['warning']}; border-radius: 6px;"
+            f" padding: 10px 14px; font-size: 12px;"
+        )
+        self.hide()
+
+    def update_text(self, text: str | None) -> None:
+        """안내가 사라지는 경우도 있다 — 창을 열어 둔 채 상주를 켜면 DB 가 생긴다."""
+        if text is None:
+            self.hide()
+            return
+        self.setText(text)
+        self.show()
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -141,6 +181,8 @@ class MainWindow(QtWidgets.QMainWindow):
         content = QtWidgets.QWidget()
         content_box = QtWidgets.QVBoxLayout(content)
         content_box.setContentsMargins(16, 16, 16, 8)
+        self._banner = _Banner()
+        content_box.addWidget(self._banner)
         content_box.addWidget(self._stack)
         row.addWidget(content, stretch=1)
 
@@ -152,6 +194,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._clock = QtCore.QTimer(self)
         self._clock.timeout.connect(self._refresh_status)
         self._clock.start(1000)
+        self._refresh_status()
 
     def _add_page(self, name: str, widget: QtWidgets.QWidget) -> None:
         self._nav.addItem(name)
@@ -159,6 +202,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _refresh_status(self) -> None:
         self.statusBar().showMessage(self.realtime.status_text())
+        # DB 존재 확인은 `Path.exists()` 한 번이라 1초마다 해도 된다. 조회가 아니다.
+        self._banner.update_text(first_run_notice())
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         self.realtime.stop()
