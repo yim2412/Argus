@@ -136,9 +136,9 @@ class IncidentPage(QtWidgets.QWidget):
                 Column("delta", "증가", fmt="+.1f", align_right=True, width=80),
                 Column("pid_count", "프로세스", align_right=True, width=70),
                 Column("lead", "선행", width=70),
-            ]
+            ],
+            max_rows=6,
         )
-        self._contributors.setMaximumHeight(180)
         box.addWidget(self._contributors, stretch=2)
 
         # --- 피드백. **대시보드에서 유일하게 DB 를 쓰는 곳이다.**

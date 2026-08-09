@@ -18,7 +18,13 @@ from datetime import datetime
 from PySide6 import QtCore, QtWidgets
 
 from ...dashboard import data, theme
-from ..widgets import Column, DataTable, HistoryChart, message
+from ..widgets import (
+    MAIN_PLOT_HEIGHT,
+    Column,
+    DataTable,
+    HistoryChart,
+    message,
+)
 
 _MB = 1048576.0
 _HOUR_CHOICES = ((1, "1시간"), (3, "3시간"), (6, "6시간"), (12, "12시간"),
@@ -75,19 +81,26 @@ class TimelinePage(QtWidgets.QWidget):
             unit="%",
             note="표준편차가 크면 같은 평균이라도 다른 상황이다 — "
             "고르게 눌린 부하와 튀는 부하는 다르다.",
+            min_height=MAIN_PLOT_HEIGHT,
         )
         outer.addWidget(self._cpu, stretch=3)
 
         grid = QtWidgets.QGridLayout()
         grid.setSpacing(12)
         self._mem = HistoryChart("메모리", ["평균", "최대"], unit="%")
-        self._resp = HistoryChart("디스크 응답", ["평균", "p95"], unit="ms")
-        self._disk = HistoryChart("디스크 처리량", ["읽기", "쓰기"], unit="MB/s")
+        self._resp = HistoryChart(
+            "디스크 응답", ["평균", "p95"], unit="ms"
+        )
+        self._disk = HistoryChart(
+            "디스크 처리량", ["읽기", "쓰기"], unit="MB/s"
+        )
         self._gpu = HistoryChart("GPU", ["평균", "최대"], unit="%")
         grid.addWidget(self._mem, 0, 0)
         grid.addWidget(self._resp, 0, 1)
         grid.addWidget(self._disk, 1, 0)
         grid.addWidget(self._gpu, 1, 1)
+        grid.setRowStretch(0, 1)
+        grid.setRowStretch(1, 1)
         outer.addLayout(grid, stretch=4)
 
         # --- 무엇을 하고 있었나 + 주입 이력
@@ -101,9 +114,9 @@ class TimelinePage(QtWidgets.QWidget):
                 Column("name", "프로그램", width=170),
                 Column("minutes", "분", align_right=True, width=60),
                 Column("share", "비중", fmt=".0f", suffix="%", align_right=True, width=70),
-            ]
+            ],
+            max_rows=6,
         )
-        self._foreground.setMaximumHeight(170)
         left.addWidget(self._foreground)
         tables.addLayout(left)
 
@@ -115,9 +128,9 @@ class TimelinePage(QtWidgets.QWidget):
                 Column("started", "시작", width=120),
                 Column("length", "길이", align_right=True, width=70),
                 Column("observed", "증상 관측", width=110),
-            ]
+            ],
+            max_rows=6,
         )
-        self._faults.setMaximumHeight(170)
         right.addWidget(self._faults)
         tables.addLayout(right)
         outer.addLayout(tables, stretch=2)

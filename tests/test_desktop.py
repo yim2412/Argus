@@ -16,9 +16,10 @@ import time
 import pytest
 
 try:
-    from PySide6 import QtCore
+    from PySide6 import QtCore, QtWidgets
 except ImportError:  # PySide6 가 없으면 Qt 테스트는 건너뛴다
     QtCore = None
+    QtWidgets = None
 
 
 # ---------------------------------------------------------------- 조회 계층 독립성
@@ -639,3 +640,194 @@ def test_screen_placement_falls_back_quietly(monkeypatch, value, expected_fragme
 
     result = place_on_configured_screen(_FakeWindow())
     assert expected_fragment in result, result
+
+
+# ---------------------------------------------------------------- 설정 페이지
+
+def _settings_page(qapp, tmp_path):
+    """실사용 `runtime.yaml` 을 건드리지 않도록 경로를 갈아 끼운 설정 페이지."""
+    from argus.desktop.pages import settings as settings_mod
+    from argus.runtime.livecfg import LiveConfig
+
+    page = settings_mod.SettingsPage()
+    page._timer.stop()  # 폴링은 직접 부른다 — 테스트가 시계에 기대면 안 된다
+    page._live = LiveConfig(path=tmp_path / "runtime.yaml", defaults={"notify": True})
+    page._sync_from_file()
+    return _keep(page)
+
+
+def test_settings_toggle_writes_the_file(qapp, tmp_path) -> None:
+    """**창은 별도 프로세스라 파일이 유일한 통로다.**
+
+    메모리만 바꾸면 상주는 영영 모른다 — 화면에서는 꺼졌는데 알림은 계속 온다.
+    """
+    page = _settings_page(qapp, tmp_path)
+    assert page.notify_box.isChecked() is True
+
+    page.notify_box.setChecked(False)
+
+    assert page._live.path.exists(), "체크를 껐는데 파일에 남지 않았다"
+    from argus.runtime.livecfg import LiveConfig
+
+    assert LiveConfig(path=page._live.path, defaults={"notify": True}).notify_enabled is False
+
+
+def test_settings_follows_the_tray(qapp, tmp_path) -> None:
+    """**트레이에서 바꾼 것을 창이 따라와야 한다.**
+
+    한쪽만 하면 두 화면이 서로 다른 값을 보여 주고, 그때 사용자는 무엇이 참인지
+    알 수 없다.
+    """
+    page = _settings_page(qapp, tmp_path)
+    from argus.runtime.livecfg import LiveConfig
+
+    LiveConfig(path=page._live.path, defaults={"notify": True}).set("notify", False)
+    page._sync_from_file()
+
+    assert page.notify_box.isChecked() is False, "트레이에서 끈 것이 창에 반영되지 않았다"
+
+
+def test_settings_sync_does_not_rewrite_the_file(qapp, tmp_path) -> None:
+    """파일 갱신으로 체크박스를 바꿀 때 **되받아 쓰지 않는다.**
+
+    두 프로세스가 서로의 쓰기에 반응하면 값이 진동한다. 조용히 깨지는 종류다 —
+    동작은 하는데 파일이 계속 갱신된다.
+    """
+    page = _settings_page(qapp, tmp_path)
+    from argus.runtime.livecfg import LiveConfig
+
+    LiveConfig(path=page._live.path, defaults={"notify": True}).set("notify", False)
+    page._sync_from_file()
+    stamp = page._live.path.stat().st_mtime_ns
+
+    page._sync_from_file()
+    page._sync_from_file()
+
+    assert page._live.path.stat().st_mtime_ns == stamp, "동기화가 파일을 다시 썼다"
+
+
+def test_settings_reveals_which_source_won(qapp, tmp_path) -> None:
+    """UI 값이 `settings.yaml` 을 이기므로, 고쳤는데 안 먹는 이유가 보여야 한다(규칙 4)."""
+    page = _settings_page(qapp, tmp_path)
+    assert "settings.yaml" in page.source_label.text()
+
+    page.notify_box.setChecked(False)
+    assert "여기서 바꾼 것" in page.source_label.text()
+
+
+# ---------------------------------------------------------------- 레이아웃
+#
+# **여기 있는 것은 전부 눈으로 먼저 잡은 결함이다.** 2026-08-06 에 페이지를 그림으로
+# 뽑아 보니 차트가 55px 로 눌리고, 범례가 데이터를 덮고, 표가 헤더와 한 줄만 남고,
+# 한 행이 다른 행의 세 배가 되어 있었다. 전부 **예외 없이 조용히** 그렇게 됐다 —
+# 갱신 표본 수(`--seconds`)는 그 상태에서도 전부 정상이었다.
+#
+# 그림은 사람이 봐야 하지만, 한 번 본 것을 다시 안 보게 하는 것은 테스트의 몫이다.
+
+#: 읽을 수 있다고 볼 최소 높이(px). **`MIN_PLOT_HEIGHT` 를 가져다 쓰지 않는다** —
+#: 기댓값을 검증 대상에서 가져오면 그 상수를 1 로 바꿔도 양쪽이 함께 1 이 되어 통과한다.
+#: 2026-08-06 mutation 에서 실제로 그랬다(6개 중 이것만 안 잡혔다). 값의 근거는 실측이다:
+#: 눌렸을 때가 55px 였고 그 상태로는 축 눈금과 선을 구분할 수 없었다.
+READABLE_PLOT_PX = 120
+
+
+def test_charts_keep_a_readable_minimum_height(qapp) -> None:
+    """차트가 읽을 수 없을 만큼 눌리지 않는다."""
+    from argus.desktop.widgets import HistoryChart, TimeSeriesChart
+
+    live = _keep(TimeSeriesChart("t", ["a", "b"]))
+    assert live._plot.minimumHeight() >= READABLE_PLOT_PX
+
+    # 두 차트가 같은 기본값을 공유한다. 한쪽만 재면 다른 쪽이 바뀌어도 조용하다.
+    history = _keep(HistoryChart("t", ["a"]))
+    assert history._plot.minimumHeight() >= READABLE_PLOT_PX
+
+
+def test_legend_lives_outside_the_plot(qapp) -> None:
+    """**범례는 플롯 안에 없다.**
+
+    안에 두면 차트가 작아질 때 데이터 위로 올라오고, 하필 그때가 가장 읽기 어렵다.
+    """
+    from argus.desktop.widgets import TimeSeriesChart
+
+    chart = _keep(TimeSeriesChart("t", ["아무개", "다른것"]))
+    assert chart._plot.plotItem.legend is None, "범례가 플롯 안에 있다"
+
+    # 대신 제목 줄에 이름이 있어야 한다 — 없으면 계열을 구분할 방법이 사라진다.
+    texts = {w.text() for w in chart.findChildren(QtWidgets.QLabel)}
+    assert {"아무개", "다른것"} <= texts, f"제목 줄에 계열 이름이 없다: {texts}"
+
+
+def test_grid_rows_share_height_even_with_a_note(qapp) -> None:
+    """**주석이 붙은 차트가 한 행에만 있어도 두 행은 같은 높이다.**
+
+    `wordWrap` 라벨은 `heightForWidth` 를 갖는데, 그런 위젯이 `QGridLayout` 의 한
+    행에만 있으면 Qt 가 `setRowStretch` 를 사실상 무시한다. 실측: 주석이 있으면
+    518 대 154, 없으면 336 대 336 이었다. **그림으로 보기 전에는 아무 신호가 없다.**
+    """
+    from argus.desktop.widgets import TimeSeriesChart
+
+    host = _keep(QtWidgets.QWidget())
+    grid = QtWidgets.QGridLayout(host)
+    top_left = TimeSeriesChart("A", ["x"])
+    top_right = TimeSeriesChart("B", ["x"], note="주석이 붙은 쪽")
+    bottom_left = TimeSeriesChart("C", ["x"])
+    bottom_right = TimeSeriesChart("D", ["x"])
+    grid.addWidget(top_left, 0, 0)
+    grid.addWidget(top_right, 0, 1)
+    grid.addWidget(bottom_left, 1, 0)
+    grid.addWidget(bottom_right, 1, 1)
+    grid.setRowStretch(0, 1)
+    grid.setRowStretch(1, 1)
+
+    host.resize(1200, 700)
+    host.show()
+    qapp.processEvents()
+    qapp.processEvents()
+
+    top, bottom = top_left.height(), bottom_left.height()
+    host.hide()
+    assert abs(top - bottom) <= 8, f"행 높이가 갈렸다: 위 {top}, 아래 {bottom}"
+
+
+def test_stat_tile_does_not_grow_vertically(qapp) -> None:
+    """타일은 글자 세 줄이 전부다. 남는 공간을 받아 부풀면 화면 절반을 먹는다."""
+    from argus.desktop.widgets import StatTile
+
+    tile = _keep(StatTile("CPU"))
+    assert tile.sizePolicy().verticalPolicy() == QtWidgets.QSizePolicy.Fixed
+
+
+def test_table_shows_several_rows(qapp) -> None:
+    """**표가 헤더와 한 줄만 남지 않는다.**
+
+    최소 높이가 없으면 레이아웃이 남는 공간을 다른 위젯에 주고 표를 끝까지 누른다.
+    그러면 표가 있다는 사실만 보이고 내용은 스크롤해야 한다.
+    """
+    from argus.desktop.widgets import Column, DataTable
+
+    table = _keep(DataTable([Column("a", "가"), Column("b", "나")], min_rows=5))
+    header = table.horizontalHeader().sizeHint().height()
+    row = max(24, table.verticalHeader().defaultSectionSize())
+    assert table.minimumHeight() >= header + row * 5
+
+
+def test_table_max_rows_never_undercuts_min_rows(qapp) -> None:
+    """상한이 하한보다 작으면 마지막 행이 반쯤 잘린다 — 실제로 그랬다(170px vs 5행)."""
+    from argus.desktop.widgets import Column, DataTable
+
+    table = _keep(DataTable([Column("a", "가")], min_rows=5, max_rows=2))
+    assert table.maximumHeight() >= table.minimumHeight()
+
+
+def test_window_never_opens_larger_than_the_screen(qapp) -> None:
+    """**하드웨어를 가정하지 않는다**(설계 규칙 2).
+
+    원하는 크기를 고정하면 작은 화면에서 창이 화면 밖으로 나가고, 그러면 스크롤조차
+    못 한다.
+    """
+    from argus.desktop.app import _initial_size
+
+    width, height = _initial_size()
+    available = QtWidgets.QApplication.primaryScreen().availableGeometry()
+    assert width <= available.width() and height <= available.height()

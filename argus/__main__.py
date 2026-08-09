@@ -17,6 +17,7 @@ import threading
 import time
 
 from . import __version__
+from .branding import set_app_id
 from .collector.gpu import GpuCollector
 from .collector.network import NetworkCollector
 from .collector.process import ProcessCollector
@@ -28,6 +29,7 @@ from .machine.capabilities import load_or_detect
 from .paths import ENV_DATA_DIR, data_dir, db_path
 from .runtime.budget import BudgetGuard
 from .runtime.gapmon import GapMonitor, gap_event_row
+from .runtime.livecfg import LiveConfig, LiveConfigWatcher
 from .runtime.selftel import BudgetMonitor, SelfTelemetry
 from .runtime.session import detect_unclean_shutdown
 from .runtime.stopfile import StopFileMonitor, clear_stale, request_stop
@@ -199,6 +201,10 @@ def run(args: argparse.Namespace) -> int:
     setup(level=level, console=settings.general.console_log)
     log.info("Argus 시작", extra={"version": __version__, "data_dir": str(data_dir())})
 
+    # 트레이 창(`TrayIcon`)이 만들어지기 전에 정체를 밝혀 둔다. 창이 생긴 뒤에 부르면
+    # 이미 정해진 그룹이 바뀌지 않는다 — 알림 발신자가 파이썬으로 남는다.
+    set_app_id()
+
     # 종료 요청은 신호 파일 하나로 끝난다. 락도 DB 도 필요 없다 — 상주 인스턴스가
     # 그것을 보고 스스로 정상 경로로 내려간다.
     if args.stop:
@@ -246,11 +252,16 @@ def run(args: argparse.Namespace) -> int:
         # 다시 죽어 사용자는 "실행이 안 된다"만 보게 된다.
         clear_stale()
 
+        # 실행 중에 바꿀 수 있는 값. **트레이보다 먼저 만든다** — 트레이 메뉴가
+        # 이것을 읽고 쓰고, 창(별도 프로세스)이 바꾼 것도 감시자가 집어 온다.
+        live = LiveConfig(defaults={"notify": settings.detection.notify})
+        sup.add(LiveConfigWatcher(config=live))
+
         # 트레이 — 알림 창구이기도 하다. **Fusion 보다 먼저 만들어야** 알림 전달자로
         # 넘겨줄 수 있다. 실패해도 수집은 계속된다(내부에서 삼키고 비활성 상태로 간다).
         tray: TrayIcon | None = None
         if settings.general.tray:
-            tray = TrayIcon(on_stop=sup.request_stop)
+            tray = TrayIcon(on_stop=sup.request_stop, live=live)
             sup.add(tray)
 
         # 런타임 — 스로틀을 받지 않는다(부하가 클 때야말로 제때 돌아야 하는 것들)
@@ -348,6 +359,9 @@ def run(args: argparse.Namespace) -> int:
                         notify_enabled=settings.detection.notify,
                     ),
                     notifier=tray,
+                    # 발송 시점마다 다시 물어본다. 위 `notify_enabled` 는 이 창구가
+                    # 없을 때(리플레이·재분석)를 위한 값으로 남는다.
+                    live=live,
                 )
             )
 
@@ -399,7 +413,9 @@ def run(args: argparse.Namespace) -> int:
         # 기동 알림. **알림 경로가 살아 있는지 확인하는 유일한 방법이다** — 탐지가
         # 조용하면 알림도 없어서, 그 상태로는 "켜져 있는지"를 사용자가 알 수 없다.
         # `notify` 가 꺼져 있으면 사건 알림도 안 가므로 여기서도 띄우지 않는다.
-        if tray is not None and settings.detection.notify:
+        # **설정 파일이 아니라 실행 중 값을 본다** — 사용자가 지난번에 트레이에서
+        # 껐으면 그 의사가 다음 기동에도 유지되어야 한다.
+        if tray is not None and live.notify_enabled:
             # 트레이 컴포넌트의 `setup()`(아이콘 등록)이 자기 스레드에서 돌므로 잠깐 기다린다.
             # 못 기다리면 아이콘이 없는 상태라 알림이 조용히 버려진다.
             for _ in range(20):

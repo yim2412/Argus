@@ -19,7 +19,12 @@ import time
 from PySide6 import QtCore, QtWidgets
 
 from ...dashboard import data
-from ..widgets import StatTile, TimeSeriesChart, message
+from ..widgets import (
+    MAIN_PLOT_HEIGHT,
+    StatTile,
+    TimeSeriesChart,
+    message,
+)
 
 _MB = 1048576.0
 _WINDOW_S = 600
@@ -96,26 +101,42 @@ class RealtimePage(QtWidgets.QWidget):
         outer.addLayout(row)
 
         # --- 차트
+        # 이 페이지의 주 차트. 나머지 넷보다 크게 잡는다 — 여기서 "지금 무슨 일이
+        # 일어나는가"를 먼저 읽는다.
         self._cpu_chart = TimeSeriesChart(
-            "CPU · 메모리", ["CPU 전체", "최다 코어", "메모리"], unit="%", y_range=(0, 100)
+            "CPU · 메모리",
+            ["CPU 전체", "최다 코어", "메모리"],
+            unit="%",
+            y_range=(0, 100),
+            min_height=MAIN_PLOT_HEIGHT
         )
         outer.addWidget(self._cpu_chart, stretch=2)
 
         grid = QtWidgets.QGridLayout()
         grid.setSpacing(12)
-        self._disk_chart = TimeSeriesChart("디스크 처리량", ["읽기", "쓰기"], unit="MB/s")
+        self._disk_chart = TimeSeriesChart(
+            "디스크 처리량", ["읽기", "쓰기"], unit="MB/s"
+        )
         self._resp_chart = TimeSeriesChart(
             "디스크 응답시간",
             ["응답"],
             unit="ms",
-            note="사용률은 원인이고 응답시간이 증상이다. 증상 없는 원인은 알릴 가치가 없다.",
+            note="사용률은 원인이고 응답시간이 증상이다. 증상 없는 원인은 알릴 가치가 없다."
         )
-        self._net_chart = TimeSeriesChart("네트워크", ["수신", "송신"], unit="MB/s")
-        self._gpu_chart = TimeSeriesChart("GPU", ["사용률 %", "온도 °C"], unit="")
+        self._net_chart = TimeSeriesChart(
+            "네트워크", ["수신", "송신"], unit="MB/s"
+        )
+        self._gpu_chart = TimeSeriesChart(
+            "GPU", ["사용률 %", "온도 °C"], unit=""
+        )
         grid.addWidget(self._disk_chart, 0, 0)
         grid.addWidget(self._resp_chart, 0, 1)
         grid.addWidget(self._net_chart, 1, 0)
         grid.addWidget(self._gpu_chart, 1, 1)
+        # **행 비율을 명시한다.** 안 하면 `QGridLayout` 이 sizeHint 대로 나눠,
+        # 주석이 붙은 행 하나가 다른 행의 세 배가 된다(2026-08-06 실측 480 vs 150).
+        grid.setRowStretch(0, 1)
+        grid.setRowStretch(1, 1)
         outer.addLayout(grid, stretch=3)
 
         self._notice = message("수집된 메트릭을 기다리는 중…")

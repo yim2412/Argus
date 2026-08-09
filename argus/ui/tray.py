@@ -29,6 +29,7 @@ import threading
 from dataclasses import dataclass, field
 
 from ..logging_setup import get_logger
+from ..paths import ENV_NO_NOTIFY, notifications_suppressed
 from ..runtime.supervisor import Component
 
 log = get_logger(__name__)
@@ -39,10 +40,26 @@ _INFO_FLAGS = {"info": 0x01, "warning": 0x02, "critical": 0x03}  # NIIF_INFO/WAR
 _WM_TRAY = 0x0400 + 20  # WM_APP + 20. 트레이 아이콘이 보내는 콜백 메시지
 _MENU_DASHBOARD = 1001
 _MENU_STOP = 1002
+_MENU_NOTIFY = 1003
 
 # 풍선이 떠 있는 시간(ms). Windows 10+ 는 이 값을 무시하고 시스템 설정을 따르지만,
 # 값 자체는 API 가 요구한다.
 _BALLOON_TIMEOUT_MS = 10_000
+
+# 트레이 아이콘 한 변(px). DPI 배율에 따라 16 이 아닐 수 있어 시스템에 물어본다 —
+# 고정하면 고DPI 화면에서 흐릿해진다.
+_SM_CXSMICON = 49
+
+
+def win32api_small_icon_size() -> int:
+    """트레이 아이콘 크기. 시스템 값을 못 얻으면 표준 16px."""
+    try:
+        import win32api
+
+        size = int(win32api.GetSystemMetrics(_SM_CXSMICON))
+        return size if size > 0 else 16
+    except Exception:
+        return 16
 
 
 @dataclass
@@ -58,8 +75,17 @@ class TrayIcon(Component):
     on_stop: object = None
     """종료 메뉴를 눌렀을 때 부를 것. `Supervisor.request_stop` 을 넣는다."""
 
+    live: object = None
+    """`runtime.livecfg.LiveConfig`. 알림 켬/끔 메뉴가 이것을 읽고 쓴다.
+
+    **트레이가 설정 파일을 직접 다루지 않는다.** 파일 형식과 원자적 쓰기는 한 곳에만
+    있어야 하고(창도 같은 파일을 쓴다), 트레이는 켜고 끄는 창구일 뿐이다.
+    """
+
     _hwnd: int = 0
     _hicon: int = 0
+    # 전용 아이콘 파일을 실제로 썼는가. False 면 시스템 아이콘으로 떨어진 것이다.
+    _own_icon: bool = False
     _added: bool = False
     _failed: str = ""
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -69,7 +95,6 @@ class TrayIcon(Component):
     def setup(self) -> None:
         try:
             import win32api
-            import win32con
             import win32gui
         except ImportError as exc:
             self._failed = f"pywin32 없음: {exc}"
@@ -93,20 +118,62 @@ class TrayIcon(Component):
             )
             win32gui.UpdateWindow(self._hwnd)
 
-            # 전용 아이콘 파일이 아직 없다. 시스템 정보 아이콘을 쓰면 exe 에 자원을
-            # 넣지 않아도 되고, 아이콘이 없다고 트레이를 통째로 포기하지 않아도 된다.
-            self._hicon = win32gui.LoadIcon(0, win32con.IDI_INFORMATION)
+            self._hicon, self._own_icon = self._load_icon()
 
             flags = win32gui.NIF_ICON | win32gui.NIF_MESSAGE | win32gui.NIF_TIP
             win32gui.Shell_NotifyIcon(
                 win32gui.NIM_ADD,
-                (self._hwnd, 0, flags, _WM_TRAY, self._hicon, self.tooltip),
+                (self._hwnd, 0, flags, _WM_TRAY, self._hicon, self.current_tooltip()),
             )
             self._added = True
-            log.info("트레이 아이콘 등록")
+            # 어느 아이콘으로 떴는지 남긴다. 폴백은 경고가 나지만 **성공은 조용해서**,
+            # 상주(창도 콘솔도 없다)에서는 나중에 확인할 방법이 로그밖에 없다.
+            log.info("트레이 아이콘 등록", extra={"icon": "전용" if self._own_icon else "시스템"})
         except Exception as exc:  # 트레이 실패가 수집을 죽이지 않는다
             self._failed = str(exc)
             log.warning("트레이 아이콘 등록 실패 — 수집은 계속한다", extra={"error": self._failed})
+
+    def _load_icon(self) -> tuple[int, bool]:
+        """트레이에 쓸 아이콘 핸들. `(핸들, 전용_아이콘인가)`.
+
+        **`LoadIcon` 이 아니라 `LoadImage` 를 쓴다.** `LoadIcon` 은 파일에서 못 읽고
+        시스템/모듈 자원만 다루며, 크기도 고를 수 없어 트레이에서 32px 를 뭉개 넣는다.
+        `LoadImage` 에 `SM_CXSMICON` 을 주면 .ico 안의 16px 판을 그대로 고른다 —
+        아이콘을 크기별로 따로 그려 넣은 이유가 여기서 살아난다.
+
+        파일이 없거나 못 읽으면 **시스템 아이콘으로 떨어진다.** 아이콘이 없다고 트레이를
+        통째로 포기하면 상주 여부를 알 방법이 사라진다(그게 트레이의 첫 목적이다).
+        """
+        import win32con
+        import win32gui
+
+        from ..paths import icon_path
+
+        path = icon_path()
+        if path.exists():
+            try:
+                size = win32api_small_icon_size()
+                handle = win32gui.LoadImage(
+                    0,
+                    str(path),
+                    win32con.IMAGE_ICON,
+                    size,
+                    size,
+                    win32con.LR_LOADFROMFILE,
+                )
+                if handle:
+                    return handle, True
+                log.warning("아이콘 파일을 읽지 못했다 — 시스템 아이콘을 쓴다", extra={"path": str(path)})
+            except Exception as exc:
+                log.warning(
+                    "아이콘 로드 실패 — 시스템 아이콘을 쓴다",
+                    extra={"path": str(path), "error": str(exc)},
+                )
+        else:
+            # 규칙 4 — 조용히 실패하지 않는다. 빌드에서 자원이 빠진 경우가 여기로 온다.
+            log.warning("아이콘 파일이 없다 — 시스템 아이콘을 쓴다", extra={"path": str(path)})
+
+        return win32gui.LoadIcon(0, win32con.IDI_INFORMATION), False
 
     def tick(self) -> None:
         """메시지 펌프. **블로킹하지 않는다.**"""
@@ -129,6 +196,18 @@ class TrayIcon(Component):
             # 여기서 실패해도 할 수 있는 일이 없다. 프로세스가 끝나면 어차피 사라진다.
             log.warning("트레이 아이콘 제거 실패", extra={"error": str(exc)})
 
+        # **`LoadImage` 로 만든 핸들은 우리 것이라 우리가 지운다.** `LoadIcon` 이 주는
+        # 시스템 아이콘은 공유 자원이라 지우면 안 된다 — 그래서 둘을 구분해 뒀다.
+        if self._own_icon and self._hicon:
+            try:
+                import win32gui
+
+                win32gui.DestroyIcon(self._hicon)
+            except Exception as exc:
+                log.debug("아이콘 핸들 해제 실패", extra={"error": str(exc)})
+            self._hicon = 0
+            self._own_icon = False
+
     # ------------------------------------------------------------------ 알림
 
     def announce_start(self, detail: str = "") -> bool:
@@ -146,7 +225,16 @@ class TrayIcon(Component):
 
         **보낼지 말지는 여기서 정하지 않는다** — `decide/budget.py` 가 예산과 심각도 컷을
         이미 판단한다. 이 함수는 전달만 하고, 전달 실패를 삼키지 않는다.
+
+        **단 하나의 예외가 억제 스위치다.** 알림은 데이터와 달리 격리되지 않아,
+        테스트가 띄운 상주도 실사용자의 화면에 풍선을 올린다. 여기서 막는 이유는
+        **여기가 마지막 관문이기 때문**이다 — 기동 알림·사건 알림·창 실패 보고가
+        전부 이 함수를 지나므로, 호출자마다 막으면 언젠가 하나를 빠뜨린다.
         """
+        if notifications_suppressed():
+            log.debug("알림 억제됨", extra={"title": title, "reason": ENV_NO_NOTIFY})
+            return False
+
         if not self._added:
             return False
 
@@ -178,6 +266,29 @@ class TrayIcon(Component):
 
     # ------------------------------------------------------------------ 내부
 
+    def current_tooltip(self) -> str:
+        """마우스를 올렸을 때 보이는 글. **꺼져 있으면 그 사실이 여기 보여야 한다.**
+
+        알림을 꺼 두고 잊으면 "조용한 것"과 "꺼진 것"을 구분할 수 없다 — 그건
+        모니터링 도구가 낼 수 있는 최악의 침묵이다(규칙 4).
+        """
+        if self.live is not None and not self.live.notify_enabled:
+            return f"{self.tooltip} (알림 꺼짐)"
+        return self.tooltip
+
+    def _refresh_tooltip(self) -> None:
+        if not self._added:
+            return
+        try:
+            import win32gui
+
+            win32gui.Shell_NotifyIcon(
+                win32gui.NIM_MODIFY,
+                (self._hwnd, 0, win32gui.NIF_TIP, _WM_TRAY, self._hicon, self.current_tooltip()),
+            )
+        except Exception as exc:
+            log.debug("툴팁 갱신 실패", extra={"error": str(exc)})
+
     def _on_message(self, hwnd: int, msg: int, wparam: int, lparam: int) -> int:
         import win32con
         import win32gui
@@ -201,6 +312,15 @@ class TrayIcon(Component):
         try:
             menu = win32gui.CreatePopupMenu()
             win32gui.AppendMenu(menu, win32con.MF_STRING, _MENU_DASHBOARD, "Argus 창 열기")
+
+            if self.live is not None:
+                # **메뉴를 열 때마다 현재 값을 읽는다.** 창에서 바꿨을 수도 있어서,
+                # 마지막으로 우리가 쓴 값을 기억해 두면 체크 표시가 거짓말을 한다.
+                flags = win32con.MF_STRING
+                if self.live.notify_enabled:
+                    flags |= win32con.MF_CHECKED
+                win32gui.AppendMenu(menu, flags, _MENU_NOTIFY, "알림 받기")
+
             win32gui.AppendMenu(menu, win32con.MF_SEPARATOR, 0, "")
             win32gui.AppendMenu(menu, win32con.MF_STRING, _MENU_STOP, "Argus 종료")
 
@@ -223,6 +343,27 @@ class TrayIcon(Component):
                 self.on_stop()
         elif command_id == _MENU_DASHBOARD:
             self._open_dashboard()
+        elif command_id == _MENU_NOTIFY:
+            self._toggle_notify()
+
+    def _toggle_notify(self) -> None:
+        """알림 켬/끔. **바뀌었다는 것을 알림으로 알린다.**
+
+        끄는 쪽은 이것이 마지막 알림이고, 켜는 쪽은 이것이 경로가 살아 있다는 증거다
+        (기동 알림과 같은 이유). 껐는데 아무 반응이 없으면 사용자는 눌렸는지조차 모른다.
+        """
+        if self.live is None:
+            return
+        enabled = self.live.toggle("notify")
+        log.info("트레이에서 알림 설정 변경", extra={"notify": enabled})
+        self._refresh_tooltip()
+
+        if enabled:
+            self.notify("Argus", "알림을 켰습니다.", "info")
+        else:
+            # 끄기 **전에** 보낸다 — `_send` 는 이미 꺼진 값을 보므로 융합 경로로는
+            # 나가지 않지만, 이건 트레이가 직접 띄우는 것이라 전달된다.
+            self.notify("Argus", "알림을 껐습니다. 탐지와 기록은 계속됩니다.", "info")
 
     def _window_command(self) -> tuple[list[str], str] | None:
         """창을 띄울 명령. `(argv, 설명)` 또는 못 찾으면 None.
@@ -327,6 +468,12 @@ class TrayIcon(Component):
         """규칙 4 — 조용히 실패하지 않는다. 상태를 드러낸다."""
         return {
             "active": str(self._added),
+            # 전용 아이콘이 빠지면 트레이는 뜨지만 파이썬처럼 보인다 — 그 상태를 드러낸다.
+            "icon": "전용" if self._own_icon else "시스템(폴백)",
+            "notify": "-" if self.live is None else str(self.live.notify_enabled),
+            # 억제 중이면 설정이 켜져 있어도 아무것도 안 뜬다. 그 차이가 안 보이면
+            # "알림을 켰는데 왜 안 오지"의 답을 찾을 수 없다.
+            "suppressed": str(notifications_suppressed()),
             "error": self._failed or "-",
         }
 
@@ -340,7 +487,7 @@ if __name__ == "__main__":  # 스모크: python -m argus.ui.tray
     tray = TrayIcon()
     tray.setup()
     state = tray.describe()
-    print(f"  아이콘 등록 = {state['active']}  (오류: {state['error']})")
+    print(f"  아이콘 등록 = {state['active']}  종류 = {state['icon']}  (오류: {state['error']})")
 
     if tray._added:
         # 실제로 풍선이 떠야 확인되는 것이라 사람이 봐야 한다. 자동화하지 않는다.

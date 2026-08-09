@@ -37,9 +37,14 @@ def _run_and_interrupt(
 ) -> tuple[int, str]:
     # PYTHONUNBUFFERED 가 없으면 stdout 이 파이프에 물릴 때 블록 버퍼링돼 기동 완료
     # 표시가 종료 시점까지 나오지 않는다 — 준비를 기다릴 방법이 사라진다.
+    # `ARGUS_NO_NOTIFY` 가 없으면 **이 테스트가 사용자 화면에 풍선을 띄운다.**
+    # 데이터는 `ARGUS_DATA_DIR` 로 격리되지만 화면은 하나뿐이라 격리되지 않는다 —
+    # 2026-08-06 스윕에서 진짜 상주가 8번 떠 "Argus 감시 시작" 이 8번 발송됐다.
+    # 트레이 자체는 끄지 않는다. 종료 시 아이콘 제거도 이 테스트의 검증 대상이다.
     env = dict(
         os.environ,
         ARGUS_DATA_DIR=str(data_dir),
+        ARGUS_NO_NOTIFY="1",
         PYTHONIOENCODING="utf-8",
         PYTHONUNBUFFERED="1",
     )

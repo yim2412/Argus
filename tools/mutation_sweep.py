@@ -421,11 +421,11 @@ MUTANTS: list[Mutant] = [
     ),
     Mutant(
         "dashboard_death_report",
-        "대시보드가 곧바로 죽으면 사용자에게 말한다 (띄운 것과 뜬 것은 다르다)",
+        "창이 곧바로 죽으면 사용자에게 말한다 (띄운 것과 뜬 것은 다르다)",
         (
             (
                 "argus/ui/tray.py",
-                '        self.notify("Argus", f"대시보드를 열지 못했습니다 — {reason}", "warning")\n',
+                '        self.notify("Argus", f"창을 열지 못했습니다 — {reason}", "warning")\n',
                 "        pass  # MUTANT: 조용히 삼킨다\n",
             ),
         ),
@@ -448,7 +448,7 @@ MUTANTS: list[Mutant] = [
         (
             (
                 "argus/decide/fusion.py",
-                "        if not self.settings.notify_enabled or self.notifier is None:\n",
+                "        if not self.notify_enabled or self.notifier is None:\n",
                 "        if self.notifier is None:  # MUTANT: 게이트 무시\n",
             ),
         ),
@@ -607,6 +607,223 @@ MUTANTS: list[Mutant] = [
                 "argus/logging_setup.py",
                 '            payload[f"extra_{key}" if key in self._RESERVED else key] = value\n',
                 "            payload[key] = value  # MUTANT: 예약 자리 보호 제거\n",
+            ),
+        ),
+    ),
+    # ---- 2026-08-06: 레이아웃. 전부 **그림으로 보기 전에는 신호가 없던** 것들이다.
+    # 갱신 표본 수는 화면이 읽을 수 없는 상태에서도 정상으로 나왔다.
+    Mutant(
+        "chart_note_fixed_height",
+        "차트 주석의 높이를 고정한다 (안 하면 그리드 한 행이 다른 행의 세 배가 된다)",
+        (
+            (
+                "argus/desktop/widgets.py",
+                "    label.setWordWrap(False)\n    label.setFixedHeight(NOTE_HEIGHT)\n",
+                "    label.setWordWrap(True)  # MUTANT: 높이 고정 제거\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "chart_min_height",
+        "차트에 읽을 수 있는 최소 높이를 준다 (없으면 55px 로 눌려 못 읽는다)",
+        (
+            (
+                "argus/desktop/widgets.py",
+                "MIN_PLOT_HEIGHT = 132",
+                "MIN_PLOT_HEIGHT = 1",
+            ),
+        ),
+    ),
+    Mutant(
+        "legend_outside_plot",
+        "범례를 플롯 밖에 둔다 (안에 두면 차트가 작아질 때 데이터를 덮는다)",
+        (
+            (
+                "argus/desktop/widgets.py",
+                "    if len(names) > 1:\n"
+                "        for index, name in enumerate(names):\n"
+                "            row.addWidget(legend_chip(name, theme.SERIES[index % len(theme.SERIES)]))\n",
+                "    # MUTANT: 제목 줄 범례 제거\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "table_min_rows",
+        "표에 최소 행 수를 보장한다 (없으면 헤더와 한 줄만 남는다)",
+        (
+            (
+                "argus/desktop/widgets.py",
+                "        self.setMinimumHeight(height_for(min_rows))\n",
+                "        # MUTANT: 표 최소 높이 제거\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "tile_fixed_height",
+        "타일은 세로로 자라지 않는다 (자라면 100px 짜리가 460px 가 된다)",
+        (
+            (
+                "argus/desktop/widgets.py",
+                "        self.setSizePolicy(\n"
+                "            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed\n"
+                "        )\n",
+                "        # MUTANT: 타일 세로 고정 제거\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "window_fits_screen",
+        "창을 화면보다 크게 열지 않는다 (규칙 2 — 하드웨어를 가정하지 않는다)",
+        (
+            (
+                "argus/desktop/app.py",
+                "    return (\n"
+                "        min(_WANTED_W, int(available.width() * 0.92)),\n"
+                "        min(_WANTED_H, int(available.height() * 0.92)),\n"
+                "    )",
+                "    return _WANTED_W, _WANTED_H  # MUTANT: 화면 크기 무시",
+            ),
+        ),
+    ),
+    # ---- 2026-08-06: 알림 억제. **테스트가 실사용자 화면에 풍선을 띄우던 것을 막았다.**
+    # 양쪽 다 조용히 깨진다 — 억제가 사라지면 알림이 "그냥 좀 많이" 뜨고, 억제가
+    # 항상 켜지면 제품이 알림 없는 앱이 되는데 알림은 원래 드물어 구분되지 않는다.
+    Mutant(
+        "notify_suppression_switch",
+        "억제 스위치가 발송을 막는다 (없으면 테스트가 사용자 화면에 풍선을 띄운다)",
+        (
+            (
+                "argus/ui/tray.py",
+                "        if notifications_suppressed():\n",
+                "        if False:  # MUTANT: 억제 무시\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "notify_suppression_default_off",
+        "억제는 기본이 꺼짐이다 (항상 켜지면 제품이 조용히 알림 없는 앱이 된다)",
+        (
+            (
+                "argus/paths.py",
+                '    return os.environ.get(ENV_NO_NOTIFY, "").strip().lower() not in ("", "0", "false", "no")',
+                "    return True  # MUTANT: 항상 억제",
+            ),
+        ),
+    ),
+    Mutant(
+        "shutdown_test_suppresses_notifications",
+        "종료 테스트가 억제를 켜고 상주를 띄운다 (안 켜면 실행마다 풍선이 뜬다)",
+        (
+            (
+                "tests/test_shutdown.py",
+                '        ARGUS_NO_NOTIFY="1",\n',
+                "        # MUTANT: 억제 미설정\n",
+            ),
+        ),
+        expect_caught=False,
+        note="테스트 자신의 배선이라 무력화해도 조용하다 — 풍선이 뜨는지는 사람이 본다",
+    ),
+    # ---- 2026-08-06: 아이콘·앱 정체. 셋 다 **예외 없이 파이썬 아이콘으로 돌아가는**
+    # 종류다 — 빌드해서 눈으로 보기 전까지 아무 신호가 없다.
+    Mutant(
+        "tray_own_icon",
+        "트레이가 전용 아이콘을 읽는다 (폴백으로 돌아가면 시스템 느낌표가 된다)",
+        (
+            (
+                "argus/ui/tray.py",
+                "        path = icon_path()\n        if path.exists():\n",
+                "        path = icon_path()\n        if False:  # MUTANT: 전용 아이콘 사용 제거\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "app_id_daemon",
+        "상주가 AppUserModelID 를 밝힌다 (없으면 알림 발신자가 파이썬이다)",
+        (
+            (
+                "argus/__main__.py",
+                "    set_app_id()\n",
+                "    # MUTANT: 상주 AppUserModelID 제거\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "app_id_window_order",
+        "창이 QApplication **전에** 정체를 밝힌다 (뒤로 밀면 API 는 성공하고 그룹만 파이썬으로 남는다)",
+        (
+            (
+                "argus/desktop/app.py",
+                "    set_app_id()\n\n    app = QtWidgets.QApplication(sys.argv)\n",
+                "    app = QtWidgets.QApplication(sys.argv)\n    set_app_id()  # MUTANT: 순서 뒤집기\n",
+            ),
+        ),
+    ),
+    # ---- 2026-08-06: 실행 중 알림 켬/끔. 판정과 발송을 나눠 둔 것이 이 기능의 전제다.
+    Mutant(
+        "live_notify_at_send",
+        "발송 시점마다 값을 다시 본다 (기동 시 값을 들고 있으면 껐는데도 알림이 나간다)",
+        (
+            (
+                "argus/decide/fusion.py",
+                "        if self.live is not None:\n            return bool(self.live.notify_enabled)\n",
+                "        # MUTANT: 실행 중 값 무시\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "live_judgement_survives",
+        "끄는 것은 발송뿐 — 판정(notified)은 계속 돈다 (멈추면 알림량 측정이 조용히 죽는다)",
+        (
+            (
+                "argus/decide/fusion.py",
+                "        decision = self.budget.decide(self.db, dict(rows[0]))\n",
+                "        if not self.notify_enabled:  # MUTANT: 꺼지면 판정까지 중단\n"
+                "            return\n"
+                "        decision = self.budget.decide(self.db, dict(rows[0]))\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "live_reload_watch",
+        "파일이 바뀌면 다시 읽는다 (안 읽으면 창에서 바꾼 값이 상주에 영영 안 닿는다)",
+        (
+            (
+                "argus/runtime/livecfg.py",
+                "        if not force and stamp == self._stamp:\n            return False\n",
+                "        if not force:  # MUTANT: 변경 감지 제거\n            return False\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "live_menu_state",
+        "메뉴는 열 때마다 현재 값을 읽는다 (고정하면 체크 표시가 거짓말을 한다)",
+        (
+            (
+                "argus/ui/tray.py",
+                "                if self.live.notify_enabled:\n                    flags |= win32con.MF_CHECKED\n",
+                "                flags |= win32con.MF_CHECKED  # MUTANT: 항상 체크\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "live_window_sync",
+        "창이 트레이의 변경을 따라온다 (한쪽만 보면 두 화면이 다른 값을 보여 준다)",
+        (
+            (
+                "argus/desktop/pages/settings.py",
+                "        changed = self._live.reload()\n",
+                "        changed = False  # MUTANT: 파일 변경 무시\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "spec_icon_resource",
+        "빌드가 아이콘을 동봉한다 (빠지면 트레이가 런타임에 못 읽는다)",
+        (
+            (
+                "packaging/argus.spec",
+                '    (ICON, "assets"),\n',
+                "    # MUTANT: 아이콘 동봉 제거\n",
             ),
         ),
     ),

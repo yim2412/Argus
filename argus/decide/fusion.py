@@ -523,10 +523,15 @@ class Fusion(Component):
         settings: FusionSettings | None = None,
         budget: NotificationBudget | None = None,
         notifier: Any = None,
+        live: Any = None,
     ) -> None:
         self.db = db
         self.settings = settings or FusionSettings()
         self.budget = budget or NotificationBudget()
+        # 실행 중에 켜고 끌 수 있게 하는 창구(`runtime.livecfg.LiveConfig`). 있으면
+        # **발송 시점마다 다시 물어본다** — 기동 시 받은 값을 들고 있으면 사용자가
+        # 트레이에서 껐는데도 다음 알림이 나간다.
+        self.live = live
         self.interval_s = 30.0
         # 알림 전달자. `notify(title, message, severity) -> bool` 만 있으면 된다.
         # 인터페이스를 좁게 잡아 두면 트레이 말고 다른 채널(Discord 등)을 붙일 때
@@ -630,6 +635,17 @@ class Fusion(Component):
         else:
             log.debug("알림 생략", extra={"incident": incident_id, "reason": decision.reason})
 
+    @property
+    def notify_enabled(self) -> bool:
+        """지금 이 순간 알림을 보내도 되는가.
+
+        **매번 다시 본다.** 사용자가 트레이나 창에서 끈 것이 다음 사건부터 바로
+        먹어야 한다 — 재시작을 요구하면 배포 대상 사용자에게는 없는 기능이나 같다.
+        """
+        if self.live is not None:
+            return bool(self.live.notify_enabled)
+        return self.settings.notify_enabled
+
     def _send(self, incident: dict, incident_id: int) -> None:
         """실제 발송. **`notify_enabled` 가 꺼져 있으면 보내지 않는다.**
 
@@ -637,7 +653,7 @@ class Fusion(Component):
         쓰고, 발송만 설정으로 막는다 — 그래야 "알림을 켜면 몇 건이 올 것인가"를 켜기
         전에 잴 수 있다(CLAUDE.md: 알림은 되돌릴 수 없다).
         """
-        if not self.settings.notify_enabled or self.notifier is None:
+        if not self.notify_enabled or self.notifier is None:
             return
 
         title = incident.get("title") or "성능 이상"

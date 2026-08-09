@@ -17,6 +17,80 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..dashboard import theme
 
+# 차트가 데이터를 읽히게 하는 최소 높이(px). 이보다 낮으면 선이 겹쳐 뭉개지고,
+# 축 눈금이 두세 개만 남아 **그려져 있지만 읽을 수 없는** 상태가 된다.
+# 2026-08-06 실측: 55px 로 눌린 보조 차트들이 정확히 그 상태였다.
+MIN_PLOT_HEIGHT = 132
+# 주 차트(그 페이지에서 가장 중요한 것). 여기까지 줘야 봉우리 모양이 보인다.
+MAIN_PLOT_HEIGHT = 190
+# 보조 차트의 상한. **상한이 없는 쪽이 남는 공간을 전부 먹는다** — `stretch` 는 여유
+# 공간만 나누는데 pyqtgraph 의 sizeHint 가 커서 비율이 사실상 무시된다.
+# 2026-08-06 실측: 보조 넷이 460px 씩 가져가 정작 주 차트가 190px 로 가장 작았다.
+SUB_PLOT_MAX = 200
+# 주 차트 상한은 **페이지마다 다르다** — 한 화면에 들어갈 요소 수가 다르기 때문이다.
+# 여기 있는 것은 요소가 적은 페이지의 기본값이고, 빽빽한 페이지는 직접 낮춘다.
+MAIN_PLOT_MAX = 330
+# 차트 아래 한 줄 설명의 높이. 고정이라야 레이아웃 계산이 흔들리지 않는다.
+NOTE_HEIGHT = 16
+
+
+def legend_chip(name: str, colour: str) -> QtWidgets.QWidget:
+    """계열 이름표. **플롯 안이 아니라 제목 줄에 놓는다.**
+
+    pyqtgraph 범례는 플롯 위에 떠서 데이터를 덮는다. 차트가 클 때는 빈 구석에
+    앉지만 작아지면 선 위로 올라오고, 하필 그때가 가장 읽기 어려운 순간이다.
+    바깥으로 빼면 크기와 무관하게 겹치지 않는다.
+    """
+    chip = QtWidgets.QWidget()
+    row = QtWidgets.QHBoxLayout(chip)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(4)
+
+    dot = QtWidgets.QLabel("●")
+    dot.setStyleSheet(f"color: {colour}; font-size: 11px;")
+    label = QtWidgets.QLabel(name)
+    label.setStyleSheet(f"color: {theme.INK_SECONDARY}; font-size: 11px;")
+
+    row.addWidget(dot)
+    row.addWidget(label)
+    return chip
+
+
+def chart_header(title: str, names: Sequence[str]) -> QtWidgets.QWidget:
+    """제목 + 계열 이름표 한 줄."""
+    header = QtWidgets.QWidget()
+    row = QtWidgets.QHBoxLayout(header)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(10)
+
+    label = QtWidgets.QLabel(title)
+    label.setStyleSheet(f"color: {theme.INK}; font-size: 13px; font-weight: 600;")
+    row.addWidget(label)
+
+    if len(names) > 1:
+        for index, name in enumerate(names):
+            row.addWidget(legend_chip(name, theme.SERIES[index % len(theme.SERIES)]))
+    row.addStretch(1)
+    return header
+
+
+
+def chart_note(text: str) -> QtWidgets.QLabel:
+    """차트 아래 한 줄 설명.
+
+    **세로로 자라지 않게 못 박는다.** `wordWrap` 을 켠 라벨은 `heightForWidth` 를
+    갖는데, 그런 위젯이 `QGridLayout` 의 한 행에만 있으면 Qt 가 행 배분을 다르게
+    계산해 `setRowStretch` 가 무시된다 — 2026-08-06 격리 실험: 주석이 있으면
+    518 대 154, 없으면 336 대 336 이었다. 같은 `stretch=1` 인데도 그랬다.
+    """
+    label = QtWidgets.QLabel(text)
+    label.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 10px;")
+    # `wordWrap` 을 끈다 — 켜 두면 높이가 폭에 따라 달라지고, 그 순간 위 문제가 돌아온다.
+    # 설명은 한 줄로 쓴다(길면 페이지 아래 별도 문단이 맞다).
+    label.setWordWrap(False)
+    label.setFixedHeight(NOTE_HEIGHT)
+    return label
+
 
 class StatTile(QtWidgets.QFrame):
     """큰 수치 하나와 그 아래 보조 설명.
@@ -29,6 +103,12 @@ class StatTile(QtWidgets.QFrame):
         super().__init__()
         self.setFrameShape(QtWidgets.QFrame.StyledPanel)
         self.setMinimumWidth(150)
+        # **세로로는 자라지 않는다.** 타일은 글자 세 줄이 전부라 늘어날 이유가 없는데,
+        # 옆의 차트에 상한이 생기는 순간 남는 공간이 전부 이리로 몰린다 —
+        # 2026-08-06 실측: 100px 짜리 타일이 460px 로 부풀어 화면 절반을 먹었다.
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed
+        )
 
         box = QtWidgets.QVBoxLayout(self)
         box.setContentsMargins(14, 10, 14, 10)
@@ -66,15 +146,15 @@ class TimeSeriesChart(QtWidgets.QWidget):
         y_range: tuple[float, float] | None = None,
         maxlen: int = 600,
         note: str = "",
+        min_height: int = MIN_PLOT_HEIGHT,
+        max_height: int | None = None,
     ) -> None:
         super().__init__()
         box = QtWidgets.QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(4)
 
-        header = QtWidgets.QLabel(title)
-        header.setStyleSheet(f"color: {theme.INK}; font-size: 13px; font-weight: 600;")
-        box.addWidget(header)
+        box.addWidget(chart_header(title, names))
 
         self._plot = pg.PlotWidget()
         self._plot.showGrid(x=False, y=True, alpha=0.15)
@@ -84,15 +164,22 @@ class TimeSeriesChart(QtWidgets.QWidget):
         self._plot.hideButtons()
         if y_range:
             self._plot.setYRange(*y_range)
-        if len(names) > 1:
-            self._plot.addLegend(offset=(-10, 10), labelTextColor=theme.INK_SECONDARY)
+        # **범례는 제목 줄에 있다**(`chart_header`). 플롯 안에 두면 차트가 작아질 때
+        # 데이터를 덮는다.
+        self._plot.setMinimumHeight(min_height)
+        self._hint_height = min_height + 34  # 제목 줄과 여백
+        # **남는 공간을 달라고 말해야 받는다.** 기본 정책(Preferred)은 sizeHint 를
+        # 선호할 뿐이라 그리드에서 한 행만 늘어나고 다른 행은 최소 크기에 머문다 —
+        # 2026-08-06 실측: 같은 `setRowStretch(1)` 인데 518px 대 166px 이었다.
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
+        if max_height:
+            self.setMaximumHeight(max_height)
         box.addWidget(self._plot, stretch=1)
 
         if note:
-            hint = QtWidgets.QLabel(note)
-            hint.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 10px;")
-            hint.setWordWrap(True)
-            box.addWidget(hint)
+            box.addWidget(chart_note(note))
 
         self._x: deque[float] = deque(maxlen=maxlen)
         self._series: dict[str, deque[float]] = {}
@@ -103,6 +190,19 @@ class TimeSeriesChart(QtWidgets.QWidget):
             self._curves[name] = self._plot.plot(
                 [], [], pen=pg.mkPen(colour, width=2), name=name
             )
+
+
+    def sizeHint(self) -> QtCore.QSize:
+        """**최소 높이를 그대로 돌려준다.**
+
+        pyqtgraph 의 기본 `sizeHint` 는 넉넉해서, 레이아웃이 그것부터 채우고 나면
+        `stretch` 로 나눌 여유가 거의 남지 않는다. 그 결과 비율이 사실상 무시되고
+        먼저 놓인 차트가 공간을 독식한다 — 2026-08-06 실측: `stretch=3` 인 주 차트가
+        `stretch=4` 인 보조 넷보다 작았다.
+
+        힌트를 최소치로 낮추면 남는 공간이 전부 `stretch` 몫이 되어 비율이 실제로 먹는다.
+        """
+        return QtCore.QSize(320, self._hint_height)
 
     def reset(self, timestamps: Iterable[float], values: dict[str, Iterable[float]]) -> None:
         """과거 구간을 한 번에 채운다(백필). 창을 열자마자 빈 화면을 보여주지 않는다."""
@@ -151,30 +251,36 @@ class HistoryChart(QtWidgets.QWidget):
         unit: str = "",
         y_range: tuple[float, float] | None = None,
         note: str = "",
+        min_height: int = MIN_PLOT_HEIGHT,
+        max_height: int | None = None,
     ) -> None:
         super().__init__()
         box = QtWidgets.QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(4)
 
-        header = QtWidgets.QLabel(title)
-        header.setStyleSheet(f"color: {theme.INK}; font-size: 13px; font-weight: 600;")
-        box.addWidget(header)
+        box.addWidget(chart_header(title, names))
 
         self._plot = pg.PlotWidget(axisItems={"bottom": pg.DateAxisItem()})
         self._plot.showGrid(x=True, y=True, alpha=0.15)
         self._plot.setLabel("left", unit)
         if y_range:
             self._plot.setYRange(*y_range)
-        if len(names) > 1:
-            self._plot.addLegend(offset=(-10, 10), labelTextColor=theme.INK_SECONDARY)
+        # 범례는 제목 줄로 뺐다 — 플롯 안에 두면 작아질 때 데이터를 덮는다.
+        self._plot.setMinimumHeight(min_height)
+        self._hint_height = min_height + 34  # 제목 줄과 여백
+        # **남는 공간을 달라고 말해야 받는다.** 기본 정책(Preferred)은 sizeHint 를
+        # 선호할 뿐이라 그리드에서 한 행만 늘어나고 다른 행은 최소 크기에 머문다 —
+        # 2026-08-06 실측: 같은 `setRowStretch(1)` 인데 518px 대 166px 이었다.
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
+        if max_height:
+            self.setMaximumHeight(max_height)
         box.addWidget(self._plot, stretch=1)
 
         if note:
-            hint = QtWidgets.QLabel(note)
-            hint.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 10px;")
-            hint.setWordWrap(True)
-            box.addWidget(hint)
+            box.addWidget(chart_note(note))
 
         self._curves: dict[str, pg.PlotDataItem] = {}
         for index, name in enumerate(names):
@@ -183,6 +289,19 @@ class HistoryChart(QtWidgets.QWidget):
                 [], [], pen=pg.mkPen(colour, width=2), name=name
             )
         self._overlays: list = []
+
+
+    def sizeHint(self) -> QtCore.QSize:
+        """**최소 높이를 그대로 돌려준다.**
+
+        pyqtgraph 의 기본 `sizeHint` 는 넉넉해서, 레이아웃이 그것부터 채우고 나면
+        `stretch` 로 나눌 여유가 거의 남지 않는다. 그 결과 비율이 사실상 무시되고
+        먼저 놓인 차트가 공간을 독식한다 — 2026-08-06 실측: `stretch=3` 인 주 차트가
+        `stretch=4` 인 보조 넷보다 작았다.
+
+        힌트를 최소치로 낮추면 남는 공간이 전부 `stretch` 몫이 되어 비율이 실제로 먹는다.
+        """
+        return QtCore.QSize(320, self._hint_height)
 
     def set_data(self, timestamps: Sequence[float], values: dict[str, Sequence[float]]) -> None:
         for name, curve in self._curves.items():
@@ -329,8 +448,16 @@ class DataTable(QtWidgets.QTableView):
 
     row_selected = QtCore.Signal(dict)
 
-    def __init__(self, columns: Sequence[Column], *, sort_column: int | None = None) -> None:
+    def __init__(
+        self,
+        columns: Sequence[Column],
+        *,
+        sort_column: int | None = None,
+        min_rows: int = 5,
+        max_rows: int | None = None,
+    ) -> None:
         super().__init__()
+        self._min_rows = min_rows
         self._model = TableModel(columns)
         self._proxy = _SortProxy()
         self._proxy.setSourceModel(self._model)
@@ -363,6 +490,23 @@ class DataTable(QtWidgets.QTableView):
         for index, column in enumerate(columns):
             if column.width:
                 self.setColumnWidth(index, column.width)
+
+        # **표에 최소 높이가 없으면 헤더와 한 줄만 남는다.** 레이아웃이 남는 공간을
+        # 다른 위젯에 주고 표를 끝까지 누르기 때문인데, 그 상태에서는 표가 있다는
+        # 사실만 보이고 내용은 스크롤해야 한다 — 2026-08-06 에 세 페이지가 그랬다.
+        #
+        # **크기는 픽셀이 아니라 행 수로 다룬다.** 픽셀로 상한을 걸면 폰트·DPI 가
+        # 달라질 때 마지막 행이 반쯤 잘리고, 그 값이 최소 높이보다 작아지면 둘이
+        # 싸운다 — 2026-08-06 에 `setMaximumHeight(170)` 이 5행(≈187px)을 잘랐다.
+        header_h = self.horizontalHeader().sizeHint().height()
+        row_h = max(24, self.verticalHeader().defaultSectionSize())
+
+        def height_for(rows: int) -> int:
+            return header_h + row_h * rows + 4
+
+        self.setMinimumHeight(height_for(min_rows))
+        if max_rows:
+            self.setMaximumHeight(height_for(max(max_rows, min_rows)))
 
         self.selectionModel().selectionChanged.connect(self._emit_selection)
 

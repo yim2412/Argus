@@ -15,11 +15,14 @@ import sys
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from ..branding import APP_TITLE, set_app_id
 from ..dashboard import theme
+from ..paths import icon_path
 from .pages.incidents import IncidentPage
 from .pages.processes import ProcessPage
 from .pages.realtime import RealtimePage
 from .pages.selfstate import SelfStatePage
+from .pages.settings import SettingsPage
 from .pages.timeline import TimelinePage
 
 # 개발 중 창을 띄울 모니터(0-기반). 배포 exe 에는 영향이 없다 — 값이 없으면
@@ -53,17 +56,60 @@ def place_on_configured_screen(window: QtWidgets.QWidget) -> str:
     return f"모니터 {index} ({screens[index].name()})"
 
 
+def apply_theme(app: QtWidgets.QApplication) -> None:
+    """앱 전체 색과 테두리.
+
+    **함수로 빼 둔 이유가 있다.** 창을 띄우는 경로가 둘이다(`main()` 과
+    `tools/ui_snapshot.py`). 스타일이 한쪽에만 붙으면 **캡처가 실제와 다른 화면을
+    찍고**, 그 그림을 보고 없는 문제를 고치게 된다 — 2026-08-06 에 실제로 그럴 뻔했다.
+
+    **`QFrame` 에 테두리를 주면 안 된다.** `QLabel` 이 `QFrame` 을 상속하므로 화면의
+    모든 글자에 테두리와 둥근 모서리가 붙고, 그만큼 높이를 먹어 큰 수치가 잘린다.
+    카드로 쓰는 것만 골라 준다.
+    """
+    app.setStyleSheet(
+        f"QMainWindow, QWidget {{ background: {theme.PAGE}; color: {theme.INK}; }}"
+        # 카드는 이 둘뿐이다. QFrame 전체를 잡으면 라벨까지 딸려 온다.
+        f"StatTile, QFrame#card {{ background: {theme.SURFACE};"
+        f" border: 1px solid {theme.GRID}; border-radius: 8px; }}"
+        f"QLabel {{ background: transparent; border: none; }}"
+        f"QStatusBar {{ color: {theme.INK_MUTED}; }}"
+    )
+
+
+# 페이지 하나가 스크롤 없이 다 보이는 크기. 차트·표의 최소 높이를 더한 값에서 나왔고,
+# 자기 상태 페이지(가장 빽빽하다)가 기준이다.
+_WANTED_W, _WANTED_H = 1420, 960
+
+
+def _initial_size() -> tuple[int, int]:
+    """창 기본 크기. **화면보다 크게 열지 않는다.**
+
+    원하는 크기를 고정하면 1366x768 같은 화면에서 창이 화면 밖으로 나가고, 그러면
+    스크롤조차 못 한다. 하드웨어를 가정하지 않는다(설계 규칙 2).
+    """
+    screen = QtWidgets.QApplication.primaryScreen()
+    if screen is None:
+        return _WANTED_W, _WANTED_H
+    available = screen.availableGeometry()
+    return (
+        min(_WANTED_W, int(available.width() * 0.92)),
+        min(_WANTED_H, int(available.height() * 0.92)),
+    )
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Argus")
-        self.resize(1240, 820)
+        self.resize(*_initial_size())
 
         self.realtime = RealtimePage()
         self.processes = ProcessPage()
         self.incidents = IncidentPage()
         self.timeline = TimelinePage()
         self.selfstate = SelfStatePage()
+        self.settings = SettingsPage()
 
         # 왼쪽 탭 + 오른쪽 내용. 페이지가 늘어도 여기만 추가하면 된다.
         self._nav = QtWidgets.QListWidget()
@@ -81,6 +127,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._add_page("타임라인", self.timeline)
         self._add_page("사건", self.incidents)
         self._add_page("자기 상태", self.selfstate)
+        self._add_page("설정", self.settings)
 
         self._nav.currentRowChanged.connect(self._stack.setCurrentIndex)
         self._nav.setCurrentRow(0)
@@ -144,14 +191,18 @@ def main(seconds: float | None = None) -> int:
     도는지를 사람이 클릭해서 확인하는 대신, 정해진 시간 동안 받은 표본 수를 숫자로
     돌려준다. 0 이면 조회나 시그널 경계가 깨진 것이다.
     """
+    # **`QApplication` 보다 먼저다.** Qt 가 첫 창을 만들 때 Windows 가 이 값을 읽어
+    # 작업표시줄 그룹을 정하므로, 뒤에 부르면 파이썬 아이콘으로 굳는다.
+    set_app_id()
+
     app = QtWidgets.QApplication(sys.argv)
-    app.setApplicationName("Argus")
-    app.setStyleSheet(
-        f"QMainWindow, QWidget {{ background: {theme.PAGE}; color: {theme.INK}; }}"
-        f"QFrame {{ background: {theme.SURFACE}; border: 1px solid {theme.GRID};"
-        f" border-radius: 8px; }}"
-        f"QStatusBar {{ color: {theme.INK_MUTED}; }}"
-    )
+    app.setApplicationName(APP_TITLE)
+    # 창·작업표시줄·Alt+Tab 이 전부 이 아이콘을 쓴다. 파일이 없으면 Qt 가 빈 아이콘을
+    # 받아 기본값으로 돌아갈 뿐이라 창은 그대로 뜬다.
+    icon = icon_path()
+    if icon.exists():
+        app.setWindowIcon(QtGui.QIcon(str(icon)))
+    apply_theme(app)
 
     window = MainWindow()
     placement = place_on_configured_screen(window)

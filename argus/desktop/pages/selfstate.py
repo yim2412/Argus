@@ -17,7 +17,14 @@ from datetime import datetime
 from PySide6 import QtCore, QtWidgets
 
 from ...dashboard import data, theme
-from ..widgets import Column, DataTable, HistoryChart, StatTile, message
+from ..widgets import (
+    MAIN_PLOT_HEIGHT,
+    Column,
+    DataTable,
+    HistoryChart,
+    StatTile,
+    message,
+)
 
 _HOUR_CHOICES = ((1, "1시간"), (2, "2시간"), (4, "4시간"), (8, "8시간"),
                  (24, "24시간"), (72, "3일"))
@@ -102,6 +109,7 @@ class SelfStatePage(QtWidgets.QWidget):
             ["private (커밋)", "RSS (물리)", "peak working set"],
             unit="MB",
             note="누수는 여기서 보인다. RSS 가 내려가도 private 이 오르면 실제로는 쓰고 있는 것이다.",
+            min_height=MAIN_PLOT_HEIGHT,
         )
         outer.addWidget(self._memory, stretch=3)
 
@@ -112,7 +120,9 @@ class SelfStatePage(QtWidgets.QWidget):
         row = QtWidgets.QHBoxLayout()
         row.setSpacing(12)
         self._cpu = HistoryChart("CPU (예산 2%)", ["CPU"], unit="%")
-        self._io = HistoryChart("쓰기 지연 · 큐 깊이", ["쓰기 지연 ms", "큐 깊이"])
+        self._io = HistoryChart(
+            "쓰기 지연 · 큐 깊이", ["쓰기 지연 ms", "큐 깊이"]
+        )
         row.addWidget(self._cpu)
         row.addWidget(self._io)
         outer.addLayout(row, stretch=2)
@@ -141,9 +151,9 @@ class SelfStatePage(QtWidgets.QWidget):
                 Column("from", "시작", width=110),
                 Column("to", "끝", width=110),
                 Column("held", "보유", fmt=".1f", suffix="h", align_right=True, width=70),
-            ]
+            ],
+            max_rows=6,
         )
-        self._tables.setMaximumHeight(200)
         outer.addWidget(self._tables, stretch=2)
 
         hint = QtWidgets.QLabel(
@@ -167,9 +177,9 @@ class SelfStatePage(QtWidgets.QWidget):
                 Column("event", "사건", width=150),
                 Column("gap", "공백(초)", fmt=".0f", align_right=True, width=80),
                 Column("cause", "추정 원인", width=130),
-            ]
+            ],
+            max_rows=6,
         )
-        self._events.setMaximumHeight(180)
         left.addWidget(self._events)
         bottom.addLayout(left)
 
@@ -183,9 +193,9 @@ class SelfStatePage(QtWidgets.QWidget):
                 Column("recall", "재현율", fmt=".0f", suffix="%", align_right=True, width=70),
                 Column("fp_per_hour", "오탐/h", fmt=".2f", align_right=True, width=70),
                 Column("when", "실행", width=100),
-            ]
+            ],
+            max_rows=6,
         )
-        self._runs.setMaximumHeight(180)
         right.addWidget(self._runs)
         bottom.addLayout(right)
         outer.addLayout(bottom, stretch=2)

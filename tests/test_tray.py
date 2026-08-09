@@ -166,6 +166,84 @@ def test_start_announcement_is_informational(monkeypatch) -> None:
     assert "Argus" in title and message
 
 
+class _FakeShell:
+    """`win32gui.Shell_NotifyIcon` 대역. 실제 풍선을 띄우지 않고 호출만 센다."""
+
+    NIM_MODIFY = 1
+    NIF_INFO = 0x10
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def Shell_NotifyIcon(self, action, payload):  # noqa: N802 - win32 이름을 흉내낸다
+        self.calls.append((action, payload))
+
+
+def _armed_tray(monkeypatch) -> tuple[TrayIcon, _FakeShell]:
+    """아이콘이 등록된 상태의 트레이. 발송 직전까지 진짜 경로를 탄다."""
+    import sys
+
+    shell = _FakeShell()
+    monkeypatch.setitem(sys.modules, "win32gui", shell)
+    tray = TrayIcon()
+    tray._added = True
+    tray._hwnd = 1
+    tray._hicon = 1
+    return tray, shell
+
+
+def test_suppression_stops_the_balloon_from_reaching_the_screen(monkeypatch) -> None:
+    """**알림은 `ARGUS_DATA_DIR` 로 격리되지 않는다 — 화면은 하나뿐이다.**
+
+    2026-08-06 에 `test_shutdown` 이 진짜 상주를 8번 띄우면서 "Argus 감시 시작" 이
+    사용자 화면에 8번 떴다. 데이터는 임시 폴더로 갔지만 풍선은 그대로 갔다.
+    """
+    tray, shell = _armed_tray(monkeypatch)
+    monkeypatch.setenv("ARGUS_NO_NOTIFY", "1")
+
+    assert tray.notify("제목", "본문") is False
+    assert not shell.calls, "억제 중인데 Shell_NotifyIcon 을 불렀다"
+
+
+def test_suppression_is_off_by_default(monkeypatch) -> None:
+    """**꺼짐이 기본이어야 한다.** 억제가 기본이면 제품이 조용히 알림 없는 앱이 된다.
+
+    위 테스트만 있으면 "항상 억제"로 만들어도 통과한다 — 반대쪽을 같이 재야 한다.
+    """
+    tray, shell = _armed_tray(monkeypatch)
+    monkeypatch.delenv("ARGUS_NO_NOTIFY", raising=False)
+
+    assert tray.notify("제목", "본문") is True
+    assert shell.calls, "억제가 꺼져 있는데 발송하지 않았다"
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", ""])
+def test_falsy_values_do_not_suppress(monkeypatch, value) -> None:
+    """`ARGUS_NO_NOTIFY=0` 은 **끄는 것**이다.
+
+    "설정됨"만 보면 정반대로 동작하고, 그 실패는 조용하다 — 알림이 원래 드물어서
+    안 오는 것과 구분되지 않는다.
+    """
+    tray, shell = _armed_tray(monkeypatch)
+    monkeypatch.setenv("ARGUS_NO_NOTIFY", value)
+
+    assert tray.notify("제목", "본문") is True, f"{value!r} 를 억제로 읽었다"
+    assert shell.calls
+
+
+def test_describe_reveals_suppression(monkeypatch) -> None:
+    """규칙 4 — 억제 중이면 그 사실이 보여야 한다.
+
+    설정이 켜져 있는데 아무것도 안 뜨는 상태이므로, 안 드러나면 "알림을 켰는데 왜
+    안 오지"의 답을 찾을 방법이 없다.
+    """
+    monkeypatch.setenv("ARGUS_NO_NOTIFY", "1")
+    assert TrayIcon().describe()["suppressed"] == "True"
+
+    monkeypatch.delenv("ARGUS_NO_NOTIFY", raising=False)
+    assert TrayIcon().describe()["suppressed"] == "False"
+
+
 def test_notify_is_a_no_op_without_an_icon() -> None:
     """아이콘 등록에 실패했으면 알림도 없다 — 예외 대신 False 를 돌려준다.
 
@@ -177,5 +255,5 @@ def test_notify_is_a_no_op_without_an_icon() -> None:
 def test_describe_exposes_failure() -> None:
     """규칙 4 — 조용히 실패하지 않는다. 상태를 읽을 수 있어야 한다."""
     state = TrayIcon().describe()
-    assert set(state) == {"active", "error"}
+    assert set(state) == {"active", "icon", "notify", "suppressed", "error"}
     assert state["active"] == "False"

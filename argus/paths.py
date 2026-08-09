@@ -18,6 +18,24 @@ APP_NAME = "Argus"
 # 데이터 위치 오버라이드. 테스트·개발 시 실사용 데이터를 건드리지 않으려면 이걸 쓴다.
 ENV_DATA_DIR = "ARGUS_DATA_DIR"
 
+# 알림 억제. **`ARGUS_DATA_DIR` 로 격리되지 않는 것이 하나 있다 — 화면이다.**
+# DB·설정·로그는 임시 폴더로 보낼 수 있지만 트레이 풍선은 사용자에게 그대로 간다.
+# 2026-08-06 에 `test_shutdown` 이 진짜 상주를 8번 띄우면서 "Argus 감시 시작" 을
+# 8번 발송했다. 테스트가 실사용자의 화면을 건드린 것이다.
+ENV_NO_NOTIFY = "ARGUS_NO_NOTIFY"
+
+
+def notifications_suppressed() -> bool:
+    """이 실행에서 풍선 알림을 띄우면 안 되는가.
+
+    **매번 환경을 다시 본다.** 기동 시 한 번 읽어 두면 값을 바꿔 확인하는 테스트가
+    프로세스 재시작을 요구하게 된다 — 비용은 `os.environ` 조회 한 번이라 없다.
+
+    빈 값·`0`·`false`·`no` 는 끄는 것으로 본다. 그 외 값은 전부 켬이다 —
+    `ARGUS_NO_NOTIFY=0` 을 "억제 켬"으로 읽으면 정반대로 동작한다.
+    """
+    return os.environ.get(ENV_NO_NOTIFY, "").strip().lower() not in ("", "0", "false", "no")
+
 
 def is_frozen() -> bool:
     """PyInstaller 로 묶인 상태인가."""
@@ -34,6 +52,15 @@ def resource_path(relative: str) -> Path:
     else:
         base = Path(__file__).resolve().parent
     return base / relative
+
+
+def icon_path() -> Path:
+    """트레이·창·exe 가 공유하는 아이콘.
+
+    **동봉 리소스라 `_MEIPASS` 를 거쳐야 한다.** 상대경로로 열면 소스에서는 되고
+    exe 에서는 조용히 깨진다(CLAUDE.md 배포 규칙).
+    """
+    return resource_path("assets/argus.ico")
 
 
 def data_dir() -> Path:
@@ -76,6 +103,16 @@ def db_path() -> Path:
 def user_config_path() -> Path:
     """사용자가 편집하는 설정 파일. 첫 실행 시 기본값으로 생성된다."""
     return data_dir() / "settings.yaml"
+
+
+def runtime_config_path() -> Path:
+    """UI 에서 바꾼 값이 저장되는 곳. **`settings.yaml` 과 나누는 이유가 있다.**
+
+    `settings.yaml` 은 `defaults.yaml` 사본이라 **주석이 곧 설명서**다. 프로그램이
+    YAML 을 다시 쓰면 그 주석이 전부 날아간다 — 사람이 편집하는 파일과 프로그램이
+    쓰는 파일을 나눈다.
+    """
+    return data_dir() / "runtime.yaml"
 
 
 def machine_profile_path() -> Path:

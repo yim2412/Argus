@@ -17,10 +17,15 @@ from PyInstaller.utils.hooks import collect_submodules
 PROJECT = os.path.abspath(os.path.join(SPECPATH, ".."))  # noqa: F821 - PyInstaller 제공
 sys.path.insert(0, PROJECT)
 
+# 상주 exe 와 **같은 아이콘**을 쓴다. 사용자에게는 한 앱이고, AppUserModelID 로 둘을
+# 한 그룹에 묶어 두었으므로 아이콘이 갈리면 그 묶음이 어색해진다.
+ICON = os.path.join(PROJECT, "argus", "assets", "argus.ico")
+
 datas = [
     (os.path.join(PROJECT, "argus", "config", "defaults.yaml"), "config"),
     (os.path.join(PROJECT, "argus", "config", "rules.yaml"), "config"),
     (os.path.join(PROJECT, "argus", "storage", "migrations"), "storage/migrations"),
+    (ICON, "assets"),
 ]
 
 hiddenimports = ["pyqtgraph", "duckdb", "pyarrow", "pyarrow.parquet"]
@@ -93,6 +98,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=ICON,
 )
 
 coll = COLLECT(

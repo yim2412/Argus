@@ -25,10 +25,16 @@ from PyInstaller.utils.hooks import collect_submodules
 PROJECT = os.path.abspath(os.path.join(SPECPATH, ".."))  # noqa: F821 - PyInstaller 제공
 sys.path.insert(0, PROJECT)  # collect_submodules("argus") 가 찾을 수 있게
 
+# 아이콘은 두 곳에 필요하다 — exe 자원(`icon=`, 탐색기가 본다)과 동봉 파일(트레이가
+# 런타임에 `LoadImage` 로 읽는다). exe 자원만 넣으면 트레이가 파일을 못 찾아 시스템
+# 아이콘으로 떨어진다.
+ICON = os.path.join(PROJECT, "argus", "assets", "argus.ico")
+
 datas = [
     (os.path.join(PROJECT, "argus", "config", "defaults.yaml"), "config"),
     (os.path.join(PROJECT, "argus", "config", "rules.yaml"), "config"),
     (os.path.join(PROJECT, "argus", "storage", "migrations"), "storage/migrations"),
+    (ICON, "assets"),
 ]
 
 # PDH·NVML 은 문자열로 늦게 import 되는 자리가 있어 정적 분석에 안 잡힐 수 있다.
@@ -92,6 +98,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=ICON,
 )
 
 coll = COLLECT(
