@@ -40,7 +40,7 @@ from .base import (
     Detection,
     Observation,
 )
-from .baseline import BaselineSet, Stats
+from .baseline import BaselineSet, LoadGate, Stats
 from .expr import ExprError, compile_expr, evaluate
 
 log = get_logger(__name__)
@@ -108,7 +108,10 @@ class Condition:
             if stats is None:
                 return None      # 베이스라인이 아직 없으면 상대 임계값을 못 만든다
             try:
-                threshold = evaluate(self._compiled, _variables(stats, obs))
+                threshold = evaluate(
+                    self._compiled,
+                    _variables(stats, obs, baselines.stats_under_load(self.metric)),
+                )
             except ExprError as e:
                 # **조용히 통과시키지 않는다.** 대개 머신 프로파일이 없어 `cores`·
                 # `ram_mb` 를 못 채운 경우다(규칙 4: 없으면 드러내 놓고 비활성화).
@@ -172,8 +175,19 @@ def machine_variables() -> dict[str, float]:
     return out
 
 
-def _variables(stats: Stats, obs: Observation) -> dict[str, Any]:
-    """표현식에서 쓸 수 있는 이름들."""
+def _variables(
+    stats: Stats, obs: Observation, load_stats: Stats | None = None
+) -> dict[str, Any]:
+    """표현식에서 쓸 수 있는 이름들.
+
+    `load_*` 는 **부하 구간만으로 세운 기준**이다(`baseline.LoadGate`). 온도처럼 상한이
+    걸린 지표는 유휴를 섞으면 상대 문턱이 도달 불가가 되므로, 그 룰은 `median` 대신
+    이쪽을 쓴다.
+
+    표본이 덜 모였으면 이름을 **빼지 않고 `None` 으로 둔다.** 빼면 `알 수 없는 이름`
+    으로 터져 룰 오류처럼 보이는데, 실제로는 "아직 모른다"이고 그건 판정 불가여야
+    한다 — `expr` 이 `None` 을 만나면 전체가 `None` 이 되어 그렇게 흐른다.
+    """
     variables: dict[str, Any] = {
         "median": stats.median,
         "baseline": stats.median,   # 읽기 좋은 별칭
@@ -181,6 +195,10 @@ def _variables(stats: Stats, obs: Observation) -> dict[str, Any]:
         "sigma": stats.sigma,
         "min": stats.minimum,
         "max": stats.maximum,
+        "load_median": load_stats.median if load_stats else None,
+        "load_baseline": load_stats.median if load_stats else None,
+        "load_mad": load_stats.mad if load_stats else None,
+        "load_sigma": load_stats.sigma if load_stats else None,
         **machine_variables(),
     }
     # 다른 메트릭의 현재 값도 참조할 수 있게 한다 (예: cpu_total 대비 판단)
@@ -309,6 +327,13 @@ def build() -> "RuleEngine":
             program_min_interval_s=cfg.program_min_interval_s,
             program_min_samples=cfg.program_min_samples,
             max_programs=cfg.max_programs,
+            load_gates={
+                metric: LoadGate(metric=gate.metric, min_value=gate.min)
+                for metric, gate in cfg.load_gates.items()
+            },
+            load_window_s=cfg.load_window_s,
+            load_min_interval_s=cfg.load_min_interval_s,
+            load_min_samples=cfg.load_min_samples,
         )
     except Exception as exc:  # 설정 오류가 탐지기 로드를 막으면 안 된다
         log.warning("detection 설정을 읽지 못해 기본값을 쓴다", extra={"error": str(exc)})
@@ -336,6 +361,10 @@ class RuleEngine(BaseDetector):
         program_min_interval_s: float = 5.0,
         program_min_samples: int = 60,
         max_programs: int = 16,
+        load_gates: Mapping[str, LoadGate] | None = None,
+        load_window_s: float = 21600.0,
+        load_min_interval_s: float = 5.0,
+        load_min_samples: int = 60,
     ) -> None:
         super().__init__(warmup_s=warmup_s)
         self.rules = list(rules) if rules is not None else load_rules()
@@ -350,6 +379,10 @@ class RuleEngine(BaseDetector):
             program_min_interval_s=program_min_interval_s,
             program_min_samples=program_min_samples,
             max_programs=max_programs,
+            load_gates=load_gates,
+            load_window_s=load_window_s,
+            load_min_interval_s=load_min_interval_s,
+            load_min_samples=load_min_samples,
         )
         self._since: dict[str, float] = {}      # 룰 이름 → 조건이 참이 된 시각
         self._last_fired: dict[str, float] = {}

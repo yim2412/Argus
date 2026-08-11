@@ -33,6 +33,32 @@ DEFAULT_MIN_SAMPLES = 60
 
 
 @dataclass(frozen=True)
+class LoadGate:
+    """부하 조건부 축의 문. "이 메트릭은 이 조건이 참일 때만 평소를 배운다."
+
+    `gpu_temp_c` 에 필요했다. 온도는 **상한이 걸린 지표**다 — 스로틀링이 온도를 열
+    평형점에서 잡아 주므로, 유휴가 섞인 창으로 `median + k*sigma` 를 만들면 문턱이
+    평형점보다 높아져 **어떤 k 로도 도달할 수 없다.** 2026-08-12 실측: 90도 초과
+    표본 1,102개 중 상대 조건을 넘은 것이 14개였고 재생 발화는 0건, 엔진이 계산한
+    문턱은 102~120도였다(MAD 6~8도 × k=3). 룰이 서 있는 것처럼 보이면서 사실은
+    발화가 불가능했다.
+
+    부하 구간만으로 평소를 세우면 문턱이 뜻대로 돌아온다. 이 PC 는 부하 시 평소가
+    93도라 문턱 98도(안 울림 — 93도는 실제로 이 기계의 정상이다), 평소 65도로 도는
+    PC 는 문턱 70도라 90도에서 울린다. **하드웨어를 가정하지 않으면서**(규칙 2)
+    의도한 의미가 그대로 나온다.
+
+    같은 원칙을 `explain/severity.py`(클럭 손실)와 `detection/thermal.py`(냉각 열화)가
+    이미 쓰고 있다 — "같은 부하 구간끼리만 비교해야 뜻이 있다".
+    """
+
+    metric: str
+    """게이트로 쓸 메트릭 이름 (예: `gpu_util_percent`)."""
+    min_value: float
+    """이 값 이상이면 부하로 본다."""
+
+
+@dataclass(frozen=True)
 class Stats:
     """한 메트릭의 현재 기준.
 
@@ -173,6 +199,10 @@ class BaselineSet:
         program_min_interval_s: float = 5.0,
         program_min_samples: int = DEFAULT_MIN_SAMPLES,
         max_programs: int = 16,
+        load_gates: Mapping[str, LoadGate] | None = None,
+        load_window_s: float = 21600.0,
+        load_min_interval_s: float = 5.0,
+        load_min_samples: int = DEFAULT_MIN_SAMPLES,
     ) -> None:
         self.window_s = window_s
         self.min_samples = min_samples
@@ -191,9 +221,20 @@ class BaselineSet:
         # 프로그램 → {메트릭: 베이스라인}. 삽입 순서가 곧 LRU 순서다.
         self._by_program: dict[str, dict[str, MetricBaseline]] = {}
 
+        # 부하 조건부 축. 프로그램 축과 달리 **메트릭당 하나**다 — 나누는 기준이
+        # 프로그램이 아니라 "부하가 걸렸는가" 하나뿐이므로 버킷이 늘지 않는다.
+        self.load_gates = dict(load_gates or {})
+        # 창이 전역(30분)보다 훨씬 길어야 한다. 부하 구간은 드물다 — 실측에서 이 PC 의
+        # GPU 고부하는 하루 25~136분이었다. 30분 창으로는 표본이 서지 않는다.
+        self.load_window_s = load_window_s
+        self.load_min_interval_s = load_min_interval_s
+        self.load_min_samples = load_min_samples
+        self._by_load: dict[str, MetricBaseline] = {}
+
     def reset(self) -> None:
         self._metrics.clear()
         self._by_program.clear()
+        self._by_load.clear()
 
     def _get(self, metric: str) -> MetricBaseline:
         baseline = self._metrics.get(metric)
@@ -231,6 +272,25 @@ class BaselineSet:
             bucket[metric] = baseline
         return baseline
 
+    def _get_load(self, metric: str) -> MetricBaseline:
+        baseline = self._by_load.get(metric)
+        if baseline is None:
+            baseline = MetricBaseline(
+                metric,
+                window_s=self.load_window_s,
+                min_samples=self.load_min_samples,
+                sigma_floor=self.sigma_floors.get(metric, 0.0),
+                min_interval_s=self.load_min_interval_s,
+            )
+            self._by_load[metric] = baseline
+        return baseline
+
+    @staticmethod
+    def _numeric(value: object) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
     def observe(
         self, ts: float, metrics: Mapping[str, object], program: str | None = None
     ) -> None:
@@ -240,6 +300,15 @@ class BaselineSet:
             self._get(name).add(ts, float(value))
             if self.per_program and program and name in self.program_metrics:
                 self._get_program(program, name).add(ts, float(value))
+
+        for metric, gate in self.load_gates.items():
+            value = self._numeric(metrics.get(metric))
+            gate_value = self._numeric(metrics.get(gate.metric))
+            # **게이트를 모르면 담지 않는다.** 사용률을 못 읽는 순간의 온도를 부하로
+            # 치면 유휴 값이 섞여 들어가고, 그러면 이 축을 만든 이유가 없어진다.
+            if value is None or gate_value is None or gate_value < gate.min_value:
+                continue
+            self._get_load(metric).add(ts, value)
 
     def stats(self, metric: str, program: str | None = None) -> Stats | None:
         """프로그램별 기준이 섰으면 그것, 아니면 전역.
@@ -255,6 +324,23 @@ class BaselineSet:
                     return baseline.stats()
         baseline = self._metrics.get(metric)
         return baseline.stats() if baseline is not None else None
+
+    def stats_under_load(self, metric: str) -> Stats | None:
+        """부하 구간만으로 세운 기준. 게이트가 없거나 표본이 덜 모였으면 None.
+
+        **전역으로 폴백하지 않는다.** 프로그램 축은 폴백이 맞았지만(모르는 프로그램에서
+        판정이 멈추면 새 게임마다 탐지 공백) 여기는 반대다 — 유휴가 섞인 전역으로
+        조용히 물러나면 문턱이 다시 도달 불가가 되고, 룰이 서 있는 것처럼 보이면서
+        발화하지 않는 **바로 그 상태**로 돌아간다. 모르면 판정하지 않는다.
+        """
+        baseline = self._by_load.get(metric)
+        if baseline is None or not baseline.ready:
+            return None
+        return baseline.stats()
+
+    def load_readiness(self) -> dict[str, int]:
+        """부하 축의 표본 수. 이 축이 실제로 서 있는지 눈으로 보기 위한 것."""
+        return {m: len(b._samples) for m, b in self._by_load.items()}  # noqa: SLF001
 
     def program_readiness(self) -> dict[str, dict[str, int]]:
         """프로그램별 표본 수. 조건부 축이 실제로 서 있는지 눈으로 보기 위한 것."""
@@ -272,6 +358,9 @@ class BaselineSet:
         return {name: len(b._samples) for name, b in self._metrics.items()}  # noqa: SLF001
 
     # ------------------------------------------------------------------ 워밍
+
+    def _needs_load_axis(self) -> bool:
+        return bool(self.load_gates)
 
     def warm_from(self, observations: Iterable) -> int:
         """저장된 관측으로 창을 채운다.
@@ -293,10 +382,20 @@ class BaselineSet:
         return count
 
     def warm_from_db(self, db, now: float) -> int:
-        """DB 의 최근 구간을 읽어 채운다. 재시작 직후 즉시 탐지 가능하게 만든다."""
+        """DB 의 최근 구간을 읽어 채운다. 재시작 직후 즉시 탐지 가능하게 만든다.
+
+        **가장 긴 축에 맞춰 읽는다.** 전역 창(30분)만 읽으면 부하 축(6시간)은 매
+        기동마다 백지에서 시작하고, 그 축을 쓰는 룰은 몇 시간 동안 판정 불가가 된다.
+        이 PC 는 실측에서 하루 3~4회 재시작하므로(대부분 unclean) 그러면 사실상 영구
+        공백이다 — 이 모듈이 "재시작해도 처음부터 다시 배우지 않는다"고 말하는 이유가
+        그대로 적용된다.
+        """
         from ..eval.replay import Replayer, Window
 
-        window = Window(now - self.window_s, now)
+        span_s = self.window_s
+        if self._needs_load_axis():
+            span_s = max(span_s, self.load_window_s)
+        window = Window(now - span_s, now)
         try:
             return self.warm_from(Replayer(db).stream(window))
         except Exception as exc:  # 워밍 실패가 기동을 막으면 안 된다

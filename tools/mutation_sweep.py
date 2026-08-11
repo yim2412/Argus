@@ -899,6 +899,73 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    # ---- 부하 조건부 베이스라인 (2026-08-12). 상한이 걸린 지표(GPU 온도)에서
+    #      σ 기반 상대 조건이 도달 불가가 되어 룰이 9일간 발화 불능이었다.
+    #      **조용히 깨지는 유형이다** — 판정 불가는 예외가 아니라 "이상 없음"처럼 보인다.
+    Mutant(
+        "load_gate_logic",
+        "부하 축이 유휴 표본을 배제한다 (섞이면 문턱이 다시 도달 불가가 된다)",
+        (
+            (
+                "argus/detection/baseline.py",
+                "            if value is None or gate_value is None or gate_value < gate.min_value:\n",
+                "            if value is None:  # MUTANT: 게이트를 무시한다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "load_gate_wiring",
+        "부하 축 — config → 엔진 배선 (끊기면 YAML 을 고쳐도 판정이 안 바뀐다)",
+        (
+            (
+                "argus/detection/rules.py",
+                "            load_gates={\n"
+                "                metric: LoadGate(metric=gate.metric, min_value=gate.min)\n"
+                "                for metric, gate in cfg.load_gates.items()\n"
+                "            },\n",
+                "            load_gates=None,  # MUTANT: 설정을 전달하지 않는다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "load_axis_no_fallback",
+        "부하 축은 표본 부족 시 전역으로 폴백하지 않는다 (폴백하면 발화 불능으로 되돌아간다)",
+        (
+            (
+                "argus/detection/baseline.py",
+                "        baseline = self._by_load.get(metric)\n"
+                "        if baseline is None or not baseline.ready:\n"
+                "            return None\n"
+                "        return baseline.stats()\n",
+                "        baseline = self._by_load.get(metric)\n"
+                "        if baseline is None or not baseline.ready:\n"
+                "            return self.stats(metric)  # MUTANT: 전역으로 폴백\n"
+                "        return baseline.stats()\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "thermal_rule_uses_load_axis",
+        "GPU 고온 룰이 부하 축을 참조한다 (σ 로 되돌리면 상한 때문에 영영 안 울린다)",
+        (
+            (
+                "argus/config/rules.yaml",
+                '        - {metric: gpu_temp_c, op: ">", value: "load_median + 5"}',
+                '        - {metric: gpu_temp_c, op: ">", value: "median + 3 * sigma"}',
+            ),
+        ),
+    ),
+    Mutant(
+        "load_warm_span",
+        "워밍이 가장 긴 축을 덮는다 (30분만 읽으면 부하 축은 매 기동 백지다)",
+        (
+            (
+                "argus/detection/baseline.py",
+                "        if self._needs_load_axis():\n            span_s = max(span_s, self.load_window_s)\n",
+                "        # MUTANT: 부하 축 창을 무시한다\n",
+            ),
+        ),
+    ),
     Mutant(
         "spec_icon_resource",
         "빌드가 아이콘을 동봉한다 (빠지면 트레이가 런타임에 못 읽는다)",

@@ -258,6 +258,19 @@ class IncidentSettings(BaseModel):
     """저량 지표가 최고치의 이 비율 아래로 떨어지면 PID 재사용으로 보고 시계열을 끊는다."""
 
 
+class LoadGateSettings(BaseModel):
+    """부하 조건부 베이스라인의 문. 자세한 근거는 `detection/baseline.py` 의 `LoadGate`.
+
+    `min` 이 문턱이지 탐지 임계값이 아니다 — "이 정도면 부하다"의 하한이고, 탐지
+    문턱은 룰 파일의 `load_median + 5` 쪽에 있다(규칙 3: 임계값은 config 한 곳에).
+    """
+
+    metric: str
+    """게이트로 쓸 메트릭 이름."""
+    min: float
+    """이 값 이상이면 부하로 본다."""
+
+
 class DetectionSettings(BaseModel):
     """탐지 엔진. 임계값은 여기가 아니라 `rules.yaml` 에 있다 — 이건 엔진 설정이다."""
 
@@ -294,6 +307,16 @@ class DetectionSettings(BaseModel):
     # 동시에 들고 있을 프로그램 수 상한(LRU). 상한이 없으면 이름이 계속 바뀌는
     # 환경에서 메모리가 무한히 는다. 16개 × 6메트릭 기준 약 7MB.
     max_programs: int = Field(default=16, ge=1)
+
+    # --- 부하 조건부 베이스라인 (2026-08-12) ---
+    # 상한이 걸린 지표(GPU 온도)를 위해. 근거는 `detection/baseline.py` 의 `LoadGate`.
+    # 룰은 `median` 대신 `load_median` 을 참조해 이 축을 쓴다.
+    load_gates: dict[str, LoadGateSettings] = Field(default_factory=dict)
+    # 부하 구간은 드물다 — 실측에서 이 PC 의 GPU 고부하는 하루 25~136분이었다.
+    # 전역 창(30분)으로는 표본이 서지 않으므로 훨씬 길게 잡는다.
+    load_window_s: float = Field(default=21600.0, gt=0)
+    load_min_interval_s: float = Field(default=5.0, ge=0)
+    load_min_samples: int = Field(default=60, ge=2)
 
 
 class FingerprintSettings(BaseModel):
