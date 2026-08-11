@@ -148,6 +148,51 @@ class Retention(Component):
             return {}
         return {row["name"]: float(row["watermark_ts"]) for row in rows}
 
+    def _delete_chunked(self, table: str, where: str, params: list[float]) -> int:
+        """조건에 맞는 행을 **락을 놓아 가며** 지운다. 지운 총 행 수를 돌려준다.
+
+        **`db._lock` 은 읽기·쓰기를 함께 덮는 전역 락이다.** DELETE 하나가 끝날 때까지
+        놓지 않으면 그 시간이 그대로 수집 쓰기의 지연이 된다 — 실측 17일에서 10초 넘는
+        쓰기 지연 17건 중 12건이 보존 정리·지문 갱신 근처였다.
+
+        한 번에 지우면 락 보유가 **밀린 양에 비례한다.** 평소는 몇 초치라 짧지만, PC 를
+        며칠 껐거나 롤업이 늦으면 수십만 행이 한 트랜잭션에 들어간다. 사본 실측:
+        `net_connections` 606,320행을 한 번에 지우면 779ms, 2,000행씩 나누면 최악 113ms.
+        나누는 쪽이 전체로는 조금 더 걸리지만(1,240ms) **그건 수집을 멈추지 않는 시간**이다.
+
+        틱당 상한을 두는 이유: 큰 백로그를 한 틱에 다 지우려 하면 그 틱이 길어진다.
+        남은 것은 다음 틱(기본 300초)이 가져간다 — 지우는 일은 급하지 않다.
+        """
+        chunk = int(getattr(self.settings, "delete_chunk_rows", 0) or 0)
+        if chunk <= 0:
+            # 0 은 "나누지 않는다"(옛 동작). 설정으로 되돌릴 수 있게 남긴다.
+            with self.db._lock:  # noqa: SLF001 - 같은 커넥션을 쓰는 내부 협력
+                cursor = self.db.conn.execute(f"DELETE FROM {table}{where}", tuple(params))
+                self.db.conn.commit()
+            return max(0, cursor.rowcount)
+
+        max_rows = int(getattr(self.settings, "delete_max_rows_per_tick", 0) or 0)
+        sql = (
+            f"DELETE FROM {table} WHERE rowid IN "
+            f"(SELECT rowid FROM {table}{where} LIMIT {chunk})"
+        )
+        total = 0
+        while True:
+            with self.db._lock:  # noqa: SLF001
+                cursor = self.db.conn.execute(sql, tuple(params))
+                self.db.conn.commit()
+            removed = max(0, cursor.rowcount)
+            total += removed
+            if removed < chunk:
+                break            # 더 지울 것이 없다
+            if max_rows and total >= max_rows:
+                log.debug(
+                    "정리할 양이 많아 다음 틱으로 넘긴다",
+                    extra={"table": table, "deleted": total},
+                )
+                break
+        return total
+
     def purge_once(self) -> dict[str, int]:
         """한 번 정리하고 테이블별 삭제 행 수를 돌려준다."""
         now = time.time()
@@ -167,19 +212,17 @@ class Retention(Component):
                 if watermark is None:
                     continue
                 cutoff = min(cutoff, watermark)
-            sql = f"DELETE FROM {table} WHERE ts < ?"
+            where = " WHERE ts < ?"
             params: list[float] = [cutoff]
             if table in FAULT_PROTECTED:
                 for lo, hi in fault_windows:
-                    sql += " AND NOT (ts >= ? AND ts <= ?)"
+                    where += " AND NOT (ts >= ? AND ts <= ?)"
                     params += [lo, hi]
 
             try:
-                with self.db._lock:  # noqa: SLF001 - 같은 커넥션을 쓰는 내부 협력
-                    cursor = self.db.conn.execute(sql, tuple(params))
-                    self.db.conn.commit()
-                if cursor.rowcount > 0:
-                    deleted[table] = cursor.rowcount
+                removed = self._delete_chunked(table, where, params)
+                if removed > 0:
+                    deleted[table] = removed
             except Exception:
                 # 한 테이블 정리 실패가 나머지를 막지 않게 한다.
                 log.exception("보존 정리 실패", extra={"table": table})

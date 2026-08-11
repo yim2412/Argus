@@ -159,6 +159,13 @@ class RetentionSettings(BaseModel):
     # 결함 주입 구간 앞뒤로 지키는 여유. 채점이 보는 창이 주입 구간보다 넓다 —
     # 비교 창(주입 150초 전부터)과 선행성 조회(±300초)가 밖으로 나간다.
     fault_guard_s: float = Field(default=900.0, ge=0)
+    # 한 트랜잭션에 지울 행 수. `db._lock` 은 읽기·쓰기를 함께 덮는 전역 락이라
+    # DELETE 가 끝날 때까지 수집 쓰기가 멈춘다 — 한 번에 지우면 락 보유가 밀린 양에
+    # 비례한다. 0 은 나누지 않음(옛 동작). 근거는 `storage/retention.py`.
+    delete_chunk_rows: int = Field(default=2000, ge=0)
+    # 한 틱에 한 테이블에서 지울 상한. 큰 백로그를 한 틱에 다 지우려 하면 그 틱이
+    # 길어진다. 남은 것은 다음 틱이 가져간다 — 지우는 일은 급하지 않다.
+    delete_max_rows_per_tick: int = Field(default=200_000, ge=0)
 
 
 class ThermalDriftSettings(BaseModel):

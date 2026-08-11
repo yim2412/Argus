@@ -966,6 +966,46 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    # ---- 보존 정리의 청크 삭제 (2026-08-12). 무력화해도 행은 똑같이 지워지고 예외도
+    #      안 난다 — 달라지는 것은 전역 락을 얼마나 오래 잡는지뿐이다(조용히 깨진다).
+    Mutant(
+        "delete_chunking",
+        "보존 정리가 삭제를 나눈다 (안 나누면 락 보유가 밀린 양에 비례한다)",
+        (
+            (
+                "argus/storage/retention.py",
+                "        chunk = int(getattr(self.settings, \"delete_chunk_rows\", 0) or 0)\n",
+                "        chunk = 0  # MUTANT: 나누지 않는다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "delete_chunk_wiring",
+        "청크 크기 — config → 정리기 배선",
+        (
+            (
+                "argus/config/loader.py",
+                "    delete_chunk_rows: int = Field(default=2000, ge=0)",
+                "    delete_chunk_rows: int = Field(default=0, ge=0)",
+            ),
+            (
+                "argus/config/defaults.yaml",
+                "  delete_chunk_rows: 2000",
+                "  delete_chunk_rows: 0",
+            ),
+        ),
+    ),
+    Mutant(
+        "delete_max_rows_per_tick",
+        "틱당 삭제 상한 (없으면 큰 백로그를 한 틱에 다 지우려 한다)",
+        (
+            (
+                "argus/storage/retention.py",
+                "            if max_rows and total >= max_rows:\n",
+                "            if False:  # MUTANT: 틱당 상한을 무시한다\n",
+            ),
+        ),
+    ),
     Mutant(
         "spec_icon_resource",
         "빌드가 아이콘을 동봉한다 (빠지면 트레이가 런타임에 못 읽는다)",
