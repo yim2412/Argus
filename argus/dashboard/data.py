@@ -22,6 +22,7 @@ import functools
 import sqlite3
 import threading
 import time
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -321,6 +322,45 @@ def set_user_label(incident_id: int, label: str | None) -> None:
     # 였다** — `ttl_cache` 로 바꾸면서 이름이 `cache_clear` 가 됐고, 그대로 두었으면
     # 피드백을 누를 때마다 AttributeError 가 났다(2026-08-03, 사건 페이지 이식 중 발견).
     incidents.cache_clear()
+
+
+# ------------------------------------------------------------ 프로그램 사용시간
+
+
+def _day_cutoff(days: int) -> str:
+    """`days` 일 전의 로컬 날짜 문자열. 저장된 `day` 와 같은 기준이어야 한다."""
+    return (date.today() - timedelta(days=max(0, days - 1))).isoformat()
+
+
+# 하루에 한 번 접히는 값이라 캐시를 길게 잡는다. 창을 열 때마다 다시 물을 이유가 없다.
+@ttl_cache(300.0)
+def program_usage(days: int = 30, limit: int = 100) -> list[dict]:
+    """최근 `days` 일 누적 사용시간 상위.
+
+    **`observed_s` 를 함께 돌려준다.** "38시간"만 보면 많은지 적은지 알 수 없다 —
+    그동안 PC 가 몇 시간 켜져 있었는지가 있어야 뜻이 생긴다.
+    """
+    return query(
+        "SELECT name, SUM(seconds) AS seconds, SUM(launches) AS launches, "
+        "COUNT(*) AS days FROM program_usage_daily WHERE day >= ? "
+        "GROUP BY name ORDER BY seconds DESC LIMIT ?",
+        (_day_cutoff(days), limit),
+    )
+
+
+@ttl_cache(300.0)
+def program_usage_observed(days: int = 30) -> float:
+    """같은 창에서 Argus 가 관측한 총 시간(초). 위 값들의 분모다.
+
+    날짜별 `observed_s` 는 그 날의 모든 행에 같은 값이 들어 있으므로 `MAX` 로 하나만
+    집는다. 그냥 `SUM` 하면 프로그램 종수만큼 곱해진다.
+    """
+    rows = query(
+        "SELECT SUM(o) AS total FROM (SELECT MAX(observed_s) AS o FROM program_usage_daily "
+        "WHERE day >= ? GROUP BY day)",
+        (_day_cutoff(days),),
+    )
+    return float(rows[0]["total"] or 0.0) if rows else 0.0
 
 
 @ttl_cache(60.0)

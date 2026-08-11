@@ -99,7 +99,10 @@ class Retention(Component):
             ("gpu_metrics", s.raw_hours * 3600, "metrics_1m"),
             ("process_metrics", s.process_hours * 3600, "process_5m"),
             ("net_connections", s.network_hours * 3600, "net_activity_5m"),
-            ("process_events", s.events_days * 86400, None),
+            # 프로그램 사용시간 롤업이 이 원본을 접는다. 접기 전에 지워지면 그 날짜의
+            # 사용시간은 **영구히 복원 불가능**하다 — 다른 테이블에 같은 정보가 없다
+            # (`process_5m` 은 존재 여부만, 수명 합계는 이중계산이다).
+            ("process_events", s.events_days * 86400, "program_usage_daily"),
             ("self_telemetry", s.self_telemetry_days * 86400, None),
             # 시스템 사건은 양이 적고(하루 몇 건) 진단 가치가 커서 오래 남긴다.
             # 절전 공백 기록은 나중에 베이스라인이 그 구간을 제외하는 근거가 된다.

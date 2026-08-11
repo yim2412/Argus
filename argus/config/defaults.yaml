@@ -105,6 +105,10 @@ rollup:
   # 프로세스 5분 롤업에서 버킷마다 남길 프로그램 수 (CPU 상위 N + 메모리 상위 N).
   # 상위 N 인 이유: 프로세스가 500개인 PC 에서도 하루 행 수에 상한이 있어야 한다.
   process_top_n: 40
+  # 프로그램별 하루 사용시간. 하루 단위로 접히므로 자주 돌 이유가 없다.
+  program_usage_interval_s: 3600.0
+  # 한 번에 접을 날짜 수. 첫 실행은 `process_events` 가 남아 있는 만큼 밀려 있다.
+  program_usage_days_per_run: 7
 
 warm:
   # 웜 스토어 — 끝난 날짜를 Parquet 일별 파티션으로 내보낸다.

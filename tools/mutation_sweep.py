@@ -1017,6 +1017,56 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    # ---- 프로그램 사용시간. 셋 다 예외 없이 값만 틀어지는 종류다.
+    Mutant(
+        "usage_union",
+        "사용시간은 이름 단위 구간 합집합 (같은 프로그램 여럿이 겹쳐도 한 번)",
+        (
+            (
+                "argus/storage/rollup.py",
+                "        merged = {name: _union(items) for name, items in spans.items()}\n",
+                "        merged = {name: sorted(items) for name, items in spans.items()}"
+                "  # MUTANT: 겹침을 그대로 더한다\n",
+            ),
+        ),
+        note="합치지 않으면 관측 시간을 넘는 값이 나온다 (실측 chrome 1,073h / 관측 383h)",
+    ),
+    Mutant(
+        "usage_session_clamp",
+        "모든 실행 구간은 그 세션 안에서 끝난다",
+        (
+            (
+                "argus/storage/rollup.py",
+                "            end = min(end, session_end(began))\n",
+                "            pass  # MUTANT: 세션 밖으로 새게 둔다\n",
+            ),
+        ),
+        note="`exit` 하나가 큐 드롭으로 사라지면 몇 초짜리 프로세스가 며칠이 된다",
+    ),
+    Mutant(
+        "usage_retention_watermark",
+        "접히기 전의 `process_events` 는 지우지 않는다 (사용시간 영구 손실 경로)",
+        (
+            (
+                "argus/storage/retention.py",
+                '            ("process_events", s.events_days * 86400, "program_usage_daily"),\n',
+                '            ("process_events", s.events_days * 86400, None),'
+                "  # MUTANT: 보호 해제\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "usage_launch_grace",
+        "기동 직후의 `start` 폭주는 실행 횟수가 아니다",
+        (
+            (
+                "argus/storage/rollup.py",
+                "_SESSION_START_GRACE_S = 5.0",
+                "_SESSION_START_GRACE_S = 0.0",
+            ),
+        ),
+        note="수집기는 첫 스냅샷에서 이미 떠 있던 프로세스 전부를 신규로 본다",
+    ),
 ]
 
 

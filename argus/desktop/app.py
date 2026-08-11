@@ -23,6 +23,7 @@ from .pages.realtime import RealtimePage
 from .pages.selfstate import SelfStatePage
 from .pages.settings import SettingsPage
 from .pages.timeline import TimelinePage
+from .pages.usage import UsagePage
 
 # 개발 중 창을 띄울 모니터(0-기반). 배포 exe 에는 영향이 없다 — 값이 없으면
 # Windows 가 정하는 기본 위치를 그대로 쓴다.
@@ -147,6 +148,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.processes = ProcessPage()
         self.incidents = IncidentPage()
         self.timeline = TimelinePage()
+        self.usage = UsagePage()
         self.selfstate = SelfStatePage()
         self.settings = SettingsPage()
 
@@ -164,6 +166,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._add_page("실시간", self.realtime)
         self._add_page("프로세스", self.processes)
         self._add_page("타임라인", self.timeline)
+        self._add_page("사용시간", self.usage)
         self._add_page("사건", self.incidents)
         self._add_page("자기 상태", self.selfstate)
         self._add_page("설정", self.settings)
@@ -218,6 +221,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.processes.stop()
         self.incidents.stop()
         self.timeline.stop()
+        self.usage.stop()
         self.selfstate.stop()
         super().closeEvent(event)
 
@@ -262,6 +266,10 @@ def main(seconds: float | None = None, incident_id: int | None = None) -> int:
         print(f"  프로세스 표 갱신 {loads}회 · 사건 조회 {window.incidents.load_count}회")
         print(f"  타임라인 조회 {window.timeline.load_count}회 · 오버레이 {window.timeline.overlay_count}개")
         print(f"  자기 상태 조회 {window.selfstate.load_count}회")
+        print(
+            f"  사용시간 조회 {window.usage.load_count}회 · "
+            f"프로그램 {window.usage.row_count}종"
+        )
         if live == 0:
             print("[FAIL] 실시간 표본이 하나도 없다 — 조회나 시그널 경계가 깨졌다")
             return 1
@@ -270,6 +278,10 @@ def main(seconds: float | None = None, incident_id: int | None = None) -> int:
             return 1
         if loads == 0:
             print("[FAIL] 프로세스 표를 한 번도 못 채웠다")
+            return 1
+        # 데이터가 없어도 빈 결과가 한 번은 와야 한다 — 0 이면 워커·시그널이 끊긴 것이다.
+        if window.usage.load_count == 0:
+            print("[FAIL] 사용시간 조회가 한 번도 돌지 않았다")
             return 1
         print("[OK] desktop.app")
     return code

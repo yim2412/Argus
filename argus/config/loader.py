@@ -134,6 +134,12 @@ class RollupSettings(BaseModel):
     # 조건 필터가 아니라 상위 N 인 이유: 프로세스가 500개인 PC 에서도 하루 행 수에
     # 상한이 있어야 한다. 하드웨어를 가정하지 않는다.
     process_top_n: int = Field(default=40, ge=1)
+    # 프로그램 사용시간은 하루 단위로 접히므로 자주 돌 이유가 없다. 한 시간에 한 번이면
+    # 자정이 지나고 늦어도 한 시간 안에 어제가 확정된다.
+    program_usage_interval_s: float = Field(default=3600.0, gt=0)
+    # 한 번에 접을 날짜 수. 첫 실행은 `process_events` 보존 기한만큼 밀려 있고, 그걸
+    # 한 틱에 다 접으면 우리가 만든 IO 가 관측 대상을 오염시킨다(1분 롤업과 같은 이유).
+    program_usage_days_per_run: int = Field(default=7, ge=1)
 
 
 class WarmSettings(BaseModel):

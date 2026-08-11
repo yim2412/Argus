@@ -15,7 +15,9 @@ p95 를 근사하려고 SQL 을 비틀기보다 1분 60행을 읽어 정확히 �
 
 from __future__ import annotations
 
+import bisect
 import time
+from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Sequence
 
 from ..config.loader import RollupSettings
@@ -643,6 +645,278 @@ class NetworkRollup(_RollupBase):
         return len(out)
 
 
+# ------------------------------------------------------------ 프로그램 사용시간
+
+
+PROGRAM_USAGE_COLUMNS: tuple[str, ...] = (
+    "day",
+    "name",
+    "seconds",
+    "launches",
+    "observed_s",
+)
+
+# 세션이 막 뜬 직후의 `start` 이벤트는 "새로 실행한 것"이 아니다. 수집기는 첫 스냅샷에서
+# **이미 떠 있던 프로세스 전부**를 신규로 보고 이벤트를 낸다(`_known` 이 비어 있으므로).
+# 이걸 세면 부팅할 때마다 chrome 을 200번 실행한 것이 된다. 첫 스냅샷은 기동 직후 한
+# 틱 안에 일어나므로 몇 초의 여유면 가른다.
+_SESSION_START_GRACE_S = 5.0
+
+
+def _day_key(ts: float) -> str:
+    """로컬 날짜. UTC 로 자르면 한국 시간 오전 9시에 날이 바뀐다."""
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+
+def _local_day_bounds(day: str) -> tuple[float, float]:
+    d = date.fromisoformat(day)
+    start = datetime(d.year, d.month, d.day)
+    return start.timestamp(), (start + timedelta(days=1)).timestamp()
+
+
+def _union(spans: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """겹치는 구간을 하나로 합친다 — **이 함수가 계산의 핵심이다.**
+
+    크롬 프로세스 30개가 동시에 떠 있어도 사용자에게 크롬은 하나다. 합치지 않고 더하면
+    관측 시간을 넘는 값이 나온다(실측: chrome 1,073시간 / 관측 383시간).
+    """
+    ordered = sorted(s for s in spans if s[1] > s[0])
+    out: list[tuple[float, float]] = []
+    for lo, hi in ordered:
+        if out and lo <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], hi))
+        else:
+            out.append((lo, hi))
+    return out
+
+
+def _near(ts: float, marks: Sequence[float], tolerance: float) -> bool:
+    """`ts` 가 정렬된 `marks` 중 하나와 `tolerance` 안에 붙어 있는가."""
+    i = bisect.bisect_left(marks, ts)
+    for j in (i - 1, i):
+        if 0 <= j < len(marks) and abs(marks[j] - ts) <= tolerance:
+            return True
+    return False
+
+
+def _intersect_seconds(a: list[tuple[float, float]], b: list[tuple[float, float]]) -> float:
+    """두 구간 목록이 겹치는 총 시간. 양쪽 모두 정렬·병합된 상태여야 한다."""
+    total = 0.0
+    i = j = 0
+    while i < len(a) and j < len(b):
+        lo = max(a[i][0], b[j][0])
+        hi = min(a[i][1], b[j][1])
+        if hi > lo:
+            total += hi - lo
+        if a[i][1] < b[j][1]:
+            i += 1
+        else:
+            j += 1
+    return total
+
+
+class ProgramUsageRollup(_RollupBase):
+    """프로그램별 하루 사용시간을 `program_usage_daily` 로 접는다.
+
+    **관측 세션으로 자르지 않으면 값이 사람이 산 시간보다 길어진다.** Argus 가 꺼져 있던
+    동안 프로세스가 살아 있었는지는 알 수 없는데, 시작만 있고 끝이 없는 구간을 그대로
+    두면 그 무지가 사용시간으로 둔갑한다.
+
+    세션의 끝을 찾는 방법이 함정이다. `unclean_shutdown` 은 **죽은 시점이 아니라 다음
+    기동에 기록되지만, 그 행의 `ts` 는 마지막 데이터 시각으로 되돌려 놓는다**
+    (`runtime/session.py`). 그래서 시간순으로 읽으면 자연히 이전 세션의 끝에 놓인다.
+    이걸 모르고 기록 시각으로 다루면 세션들이 서로 겹쳐 관측 합계가 11,873시간
+    (달력은 16일 = 384시간)으로 나온다 — 시제품이 실제로 그랬다. 이 PC 는 unclean
+    종료가 37번이라 이 처리가 값을 좌우한다.
+
+    **하루가 끝난 뒤에만 접는다.** 진행 중인 날을 접으면 부분값이 확정으로 남는다.
+    """
+
+    name = "program_usage_rollup"
+    state_name = "program_usage_daily"
+    bucket_s = 86400
+    source_table = "process_events"
+
+    def __init__(self, db: Database, settings: RollupSettings) -> None:
+        self.db = db
+        self.settings = settings
+        self.interval_s = settings.program_usage_interval_s
+
+    # ------------------------------------------------------------- 구간 수집
+
+    def _sessions(self, lo: float, hi: float) -> list[tuple[float, float]]:
+        """[lo, hi) 를 덮는 관측 세션 구간.
+
+        `lo` 이전의 마지막 `startup` 부터 읽는다 — 그 세션이 lo 를 가로지르고 있으면
+        그 시작점을 알아야 그때 이미 떠 있던 프로세스의 구간이 성립한다.
+        """
+        anchor = self.db.query(
+            "SELECT MAX(ts) AS ts FROM system_events WHERE event = 'startup' AND ts <= ?",
+            (lo,),
+        )
+        begin = float(anchor[0]["ts"]) if anchor and anchor[0]["ts"] is not None else lo
+        rows = self.db.query(
+            "SELECT ts, event FROM system_events WHERE ts >= ? AND ts < ? "
+            "AND event IN ('startup', 'shutdown', 'unclean_shutdown') ORDER BY ts",
+            (begin, hi),
+        )
+
+        sessions: list[tuple[float, float]] = []
+        opened: float | None = None
+        for row in rows:
+            ts = float(row["ts"])
+            if row["event"] == "startup":
+                # 종결 이벤트 없이 다음 기동이 나온 경우(판정 자체를 놓친 세션).
+                # 그 사이는 관측하지 못한 시간이므로 여기서 끊는다.
+                if opened is not None:
+                    sessions.append((opened, ts))
+                opened = ts
+            elif opened is not None:
+                sessions.append((opened, ts))
+                opened = None
+        if opened is not None:
+            sessions.append((opened, hi))  # 지금 돌고 있는 세션
+        return _union(sessions)
+
+    def _spans(
+        self, lo: float, hi: float, sessions: list[tuple[float, float]]
+    ) -> tuple[dict[str, list[tuple[float, float]]], list[tuple[float, str]]]:
+        """이름별 실행 구간과, 실행(launch) 시각 목록.
+
+        **`exit` 이벤트에는 이름이 없다**(수집기가 PID 만 남긴다 — 이미 죽은 프로세스의
+        이름은 물어볼 데가 없다). 그래서 `start` 로 연 PID 를 기억해 두고 맞춰야 한다.
+
+        **모든 구간은 그 구간이 시작된 세션 안에서 끝난다.** 수집 큐가 가득 차면 오래된
+        표본부터 버리므로(수집 규칙 2) `exit` 하나가 통째로 없을 수 있는데, 그때 구간을
+        열어 둔 채 두면 몇 초 살다 죽은 프로세스가 며칠을 실행한 것이 된다. 세션이
+        끝나면 관측도 끝난 것이고, 그 뒤에도 살아 있었다면 다음 세션의 첫 스냅샷이
+        `start` 를 다시 낸다 — 잘라도 잃는 것이 없다.
+        """
+        rows = self.db.query(
+            "SELECT ts, event, pid, name FROM process_events "
+            "WHERE ts >= ? AND ts < ? ORDER BY ts",
+            (lo, hi),
+        )
+
+        spans: dict[str, list[tuple[float, float]]] = {}
+        launches: list[tuple[float, str]] = []
+        opened: dict[int, tuple[float, str]] = {}
+        starts = [s for s, _ in sessions]
+
+        def session_end(ts: float) -> float:
+            i = bisect.bisect_right(starts, ts) - 1
+            return sessions[i][1] if i >= 0 else ts
+
+        def close(pid: int, end: float) -> None:
+            began, name = opened.pop(pid)
+            end = min(end, session_end(began))
+            if end > began:
+                spans.setdefault(name, []).append((began, end))
+
+        for row in rows:
+            ts, pid = float(row["ts"]), int(row["pid"])
+            if row["event"] == "start":
+                if not row["name"]:
+                    continue
+                # PID 는 재사용된다. 종료를 놓친 채 같은 PID 가 다시 뜨면 앞 구간을
+                # 여기서 닫지 않는 한 영원히 열려 있게 된다.
+                if pid in opened:
+                    close(pid, ts)
+                opened[pid] = (ts, row["name"])
+                launches.append((ts, row["name"]))
+            elif row["event"] == "exit" and pid in opened:
+                close(pid, ts)
+                # 시작을 모르는 exit 은 버린다. 시작점 없이는 길이를 만들 수 없고,
+                # 추측해서 채우면 그게 곧 없는 사용시간이 된다.
+
+        for pid in list(opened):
+            close(pid, hi)
+        return spans, launches
+
+    # ---------------------------------------------------------------- 접기
+
+    def _pending_days(self, now: float) -> list[str]:
+        """접어야 할 날짜들. 오늘은 넣지 않는다 — 아직 끝나지 않았다."""
+        start_ts = self.watermark()
+        if start_ts is None:
+            rows = self.db.query("SELECT MIN(ts) AS lo FROM process_events")
+            if not rows or rows[0]["lo"] is None:
+                return []
+            start_ts = float(rows[0]["lo"])
+
+        first = date.fromisoformat(_day_key(start_ts))
+        today = date.fromisoformat(_day_key(now))
+        days: list[str] = []
+        cursor = first
+        while cursor < today and len(days) < self.settings.program_usage_days_per_run:
+            days.append(cursor.isoformat())
+            cursor += timedelta(days=1)
+        return days
+
+    def run_once(self, now: float | None = None) -> int:
+        now = now if now is not None else time.time()
+        days = self._pending_days(now)
+        if not days:
+            return 0
+
+        lo = _local_day_bounds(days[0])[0]
+        hi = _local_day_bounds(days[-1])[1]
+
+        sessions = self._sessions(lo, hi)
+        if not sessions:
+            # 관측 세션을 모르면 자를 기준이 없다. 워터마크만 넘겨 다음으로 간다 —
+            # 여기서 자르지 않고 저장하면 관측 시간을 넘는 값이 확정으로 남는다.
+            self._set_watermark(hi)
+            return 0
+
+        # 프로세스 구간은 세션 시작까지 거슬러 읽어야 한다. 세션이 뜬 순간 이미 떠 있던
+        # 프로세스의 `start` 가 거기 있고, 그게 lo 이전이면 구간의 시작점을 잃는다.
+        spans, launches = self._spans(min(sessions[0][0], lo), hi, sessions)
+        merged = {name: _union(items) for name, items in spans.items()}
+
+        # 실행 횟수는 날짜별로 한 번만 센다. 날마다 전체 목록을 훑으면 이벤트 수 × 날짜
+        # 수가 되는데, 백필 첫 회에는 그게 수천만 번이다(이 PC: 이벤트 18만 개).
+        session_starts = sorted(s for s, _ in sessions)
+        counted: dict[str, dict[str, int]] = {}
+        for ts, name in launches:
+            if _near(ts, session_starts, _SESSION_START_GRACE_S):
+                continue
+            per_day = counted.setdefault(_day_key(ts), {})
+            per_day[name] = per_day.get(name, 0) + 1
+
+        out: list[tuple[Any, ...]] = []
+        for day in days:
+            day_lo, day_hi = _local_day_bounds(day)
+            window = _union([(max(s, day_lo), min(e, day_hi)) for s, e in sessions])
+            observed = sum(e - s for s, e in window)
+            if observed <= 0:
+                continue  # 그날은 Argus 가 돌지 않았다
+
+            day_launches = counted.get(day, {})
+            for name, items in merged.items():
+                seconds = _intersect_seconds(items, window)
+                if seconds <= 0:
+                    continue
+                out.append(
+                    (day, name, round(seconds, 1), day_launches.get(name, 0), round(observed, 1))
+                )
+
+        if out:
+            placeholders = ", ".join("?" * len(PROGRAM_USAGE_COLUMNS))
+            with self.db._lock:  # noqa: SLF001
+                self.db.conn.executemany(
+                    f"INSERT OR REPLACE INTO program_usage_daily "
+                    f"({', '.join(PROGRAM_USAGE_COLUMNS)}) VALUES ({placeholders})",
+                    out,
+                )
+                self.db.conn.commit()
+
+        self._set_watermark(hi)
+        if out:
+            log.debug("프로그램 사용시간 롤업", extra={"rows": len(out), "days": len(days)})
+        return len(out)
+
+
 if __name__ == "__main__":  # 스모크: python -m argus.storage.rollup
     from ..config.loader import load_settings
     from ..logging_setup import setup
@@ -728,4 +1002,25 @@ if __name__ == "__main__":  # 스모크: python -m argus.storage.rollup
                 f"pids={row['pid_count']:<3} cpu p50={row['cpu_p50']} p95={row['cpu_p95']} "
                 f"p99={row['cpu_p99']}  rss p95={row['rss_p95']}MB"
             )
+        # 프로그램 사용시간 (하루) — 어제까지만 접힌다
+        usage = ProgramUsageRollup(db, settings.rollup)
+        started = time.perf_counter()
+        usage_rows = usage.run_once()
+        usage_ms = (time.perf_counter() - started) * 1000
+        print(f"\n  사용시간 롤업: {usage_rows}행 ({usage_ms:.0f}ms)")
+        for row in db.query(
+            "SELECT name, SUM(seconds)/3600.0 AS h, SUM(launches) AS l, COUNT(*) AS d "
+            "FROM program_usage_daily GROUP BY name ORDER BY h DESC LIMIT 5"
+        ):
+            print(f"    {row['name']:<22} {row['h']:>7.1f}h  실행 {row['l']:>4}회  {row['d']}일")
+
+        # **관측 시간을 넘는 값은 계산이 틀렸다는 뜻이다.** 합집합이나 세션 클램프가
+        # 깨지면 여기서만 드러난다 — 행은 그대로 생기고 숫자만 커진다.
+        over = db.query(
+            "SELECT COUNT(*) AS c FROM program_usage_daily WHERE seconds > observed_s + 1"
+        )[0]["c"]
+        print(f"  관측 시간을 넘는 행: {over}건")
+        if over:
+            print("[FAIL] 사용시간이 관측 시간을 넘는다 — 합집합·세션 클램프를 확인하라")
+            raise SystemExit(1)
     print("[OK] storage.rollup")
