@@ -15,7 +15,10 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -24,7 +27,7 @@ from typing import Any
 
 from ..config.loader import WarmSettings
 from ..logging_setup import get_logger
-from ..paths import data_dir
+from ..paths import data_dir, is_frozen
 from ..runtime.supervisor import Component
 from .hot import Database
 from .rollup import COLUMNS as ROLLUP_COLUMNS
@@ -401,16 +404,76 @@ class WarmStore:
 
 
 class WarmExporter(Component):
-    """주기적으로 끝난 날짜를 내보내는 컴포넌트."""
+    """주기적으로 끝난 날짜를 내보낸다. **자식 프로세스로 부른다.**
+
+    `import pyarrow` 하나가 private 366MB 를 프로세스 수명 내내 붙든다(실측
+    2026-08-12). 파이썬은 모듈을 프로세스가 죽을 때까지 놓지 않으므로 함수 안
+    임포트도 일회성이 아니라 상주 비용이 된다 — 하루 한 번 쓰는 라이브러리 때문에
+    관측자가 366MB 를 이고 다니는 것은 설계 규칙 1 과 정면으로 어긋난다.
+
+    자식은 일을 끝내고 죽으므로 그 메모리도 함께 사라진다. **읽기(duckdb)는 상주에
+    그대로 둔다** — 지문·발열 드리프트가 웜을 읽어야 하고, 그 경로는 pyarrow 를
+    끌어오지 않는다(실측: Parquet 조회 전체 36.4MB).
+
+    **자식이 실패해도 상주는 계속 돈다.** 웜 내보내기가 밀리면 SQLite 가 며칠 더
+    들고 있을 뿐이고, 보존 정리는 워터마크로 스스로 막는다.
+    """
 
     name = "warm"
 
-    def __init__(self, db: Database, settings: WarmSettings) -> None:
+    def __init__(self, db: Database, settings: WarmSettings, timeout_s: float = 300.0) -> None:
         self.store = WarmStore(db, settings)
         self.interval_s = settings.interval_s
+        self.timeout_s = timeout_s
 
     def tick(self) -> None:
-        self.store.export_pending()
+        command = export_command()
+        try:
+            done = subprocess.run(  # noqa: S603 - 명령은 우리가 만든 것뿐이다
+                command,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_s,
+                # 콘솔 없는 상주(`pythonw`)에서 자식이 창을 띄우면 안 된다.
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except subprocess.TimeoutExpired:
+            log.warning("웜 내보내기 자식이 시간 안에 안 끝났다", extra={"timeout_s": self.timeout_s})
+            return
+        except OSError as exc:
+            log.warning("웜 내보내기 자식을 띄우지 못했다", extra={"error": str(exc)})
+            return
+
+        if done.returncode != 0:
+            log.warning(
+                "웜 내보내기 자식이 실패했다",
+                extra={"returncode": done.returncode, "stderr": (done.stderr or "")[-400:]},
+            )
+            return
+
+        # 자식은 결과를 stdout 에 JSON 한 줄로 준다. 못 읽어도 실패는 아니다 —
+        # 내보내기 자체는 끝났고 여기서 잃는 것은 로그 한 줄뿐이다.
+        for line in reversed((done.stdout or "").splitlines()):
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                continue
+            if payload.get("exported"):
+                log.info("웜 내보내기(자식)", extra={"exported": payload["exported"]})
+            return
+
+
+def export_command() -> list[str]:
+    """자식 프로세스를 띄울 명령.
+
+    **배포 exe 와 소스 실행이 다른 경로를 탄다.** exe 에서는 `sys.executable` 이
+    argus.exe 자신이므로 인자만 붙이면 되고, 소스에서는 `-m argus` 가 필요하다.
+    이걸 하나로 쓰면 배포판에서만 조용히 안 도는 상태가 된다(`_MEIPASS` 교훈과
+    같은 자리).
+    """
+    if is_frozen():
+        return [sys.executable, "--export-warm"]
+    return [sys.executable, "-m", "argus", "--export-warm"]
 
 
 if __name__ == "__main__":  # 스모크: python -m argus.storage.warm

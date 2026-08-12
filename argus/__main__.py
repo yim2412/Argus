@@ -80,11 +80,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="돌고 있는 상주 인스턴스에 정상 종료를 요청하고 나간다",
     )
     parser.add_argument(
+        "--export-warm",
+        action="store_true",
+        help="끝난 날짜를 웜 스토어로 내보내고 나간다 (상주가 자식 프로세스로 부른다)",
+    )
+    parser.add_argument(
         "--allow-multi",
         action="store_true",
         help="중복 실행 차단을 끈다 (같은 DB 를 두 프로세스가 쓰게 되므로 진단용)",
     )
     return parser.parse_args(argv)
+
+
+def _export_warm(settings) -> int:
+    """`--export-warm`. 끝난 날짜를 내보내고 바로 나간다.
+
+    **이 프로세스는 곧 죽으므로 pyarrow 가 남기는 366MB 도 함께 사라진다.** 그것이
+    분리한 이유의 전부다. 결과는 stdout 에 JSON 한 줄로 내보내 부모가 로그에 옮긴다 —
+    자식이 같은 로그 파일에 직접 쓰면 두 프로세스가 한 파일을 두고 다툰다.
+    """
+    from .storage.warm import WarmStore
+
+    with Database() as db:
+        exported = WarmStore(db, settings.warm).export_pending()
+    print(json.dumps({"exported": exported}, ensure_ascii=False))
+    return 0
 
 
 def _print_startup_report(settings, caps, profile, db: Database) -> None:
@@ -199,7 +219,11 @@ def run(args: argparse.Namespace) -> int:
 
     level = args.log_level or settings.general.log_level
     setup(level=level, console=settings.general.console_log)
-    log.info("Argus 시작", extra={"version": __version__, "data_dir": str(data_dir())})
+    # **자식은 "Argus 시작"을 남기지 않는다.** 웜 내보내기는 시간마다 도는데, 그때마다
+    # 기동 로그가 쌓이면 로그로 세션 경계를 세는 일이 전부 틀어진다 — 08-12 에 RSS
+    # 급증 원인을 찾다가 정확히 그 혼란을 겪었다(기동이 아닌 줄이 기동으로 보였다).
+    if not args.export_warm:
+        log.info("Argus 시작", extra={"version": __version__, "data_dir": str(data_dir())})
 
     # 트레이 창(`TrayIcon`)이 만들어지기 전에 정체를 밝혀 둔다. 창이 생긴 뒤에 부르면
     # 이미 정해진 그룹이 바뀌지 않는다 — 알림 발신자가 파이썬으로 남는다.
@@ -212,6 +236,20 @@ def run(args: argparse.Namespace) -> int:
         print(f"  종료를 요청했습니다: {path}")
         print("  상주 인스턴스가 몇 초 안에 스스로 종료합니다. 없으면 다음 기동이 이 신호를 치웁니다.")
         return 0
+
+    # 웜 내보내기는 **상주와 다른 프로세스에서** 돈다. `import pyarrow` 하나가
+    # private 366MB 를 프로세스 수명 내내 붙들기 때문이다(실측 2026-08-12) —
+    # 파이썬은 모듈을 프로세스가 죽을 때까지 놓지 않으므로 함수 안 임포트도
+    # 일회성이 아니라 상주 비용이 된다. 하루 한 번 쓰는 라이브러리 때문에 관측자가
+    # 366MB 를 이고 다니는 것은 설계 규칙 1 과 정면으로 어긋난다.
+    #
+    # **읽기(duckdb)는 상주에 남는다** — 지문·발열 드리프트가 웜을 읽어야 하고,
+    # 그 경로는 pyarrow 를 끌어오지 않는다(실측: Parquet 조회 전체가 36.4MB).
+    #
+    # 이 분기는 인스턴스 락보다 **앞**이다. 상주가 락을 쥔 채로 부르므로 여기서
+    # 락을 잡으려 하면 자식이 매번 물러난다.
+    if args.export_warm:
+        return _export_warm(settings)
 
     # 같은 DB 를 두 프로세스가 쓰면 수집이 두 배로 들어가고 융합 워터마크·예산 가드가
     # 서로 덮어쓴다. `--check` 는 아무것도 쓰지 않으므로 상주 인스턴스와 함께 돌 수 있다.
