@@ -211,6 +211,51 @@ def test_config_wiring_uses_non_default_values(tmp_path, monkeypatch):
         )
 
 
+def test_load_gate_is_on_by_default_everywhere(tmp_path, monkeypatch):
+    """**부하 게이트는 아무 설정 없이도 켜져 있다.**
+
+    이 축이 없으면 `GPU 고온 지속` 룰은 발화가 **구조적으로 불가능**하다 — 상한이
+    걸린 지표(온도)는 전역 MAD 로 문턱을 세우면 102~120도가 나오고, 그 온도에
+    도달하는 하드웨어는 없다(08-11 구간 재생: 90도 초과 표본 1,102개, 발화 0건).
+    끄면 룰이 조용히 죽는데 **예외도 로그도 없다.**
+
+    **세 경로를 다 본다.** 코드 기본값·`defaults.yaml`·실제 엔진 배선 중 하나만
+    끊겨도 배포판에서 꺼진 채 나갈 수 있다. 2026-08-12 까지 코드 기본값은 실제로
+    빈 dict 였다 — `_deep_merge` 덕에 동작은 했지만 그건 우연에 가까웠다.
+    """
+    from argus.config import loader
+    from argus.config.loader import DetectionSettings
+
+    # (1) 코드 기본값
+    assert "gpu_temp_c" in DetectionSettings().load_gates, (
+        "코드 기본값에 부하 게이트가 없다 — defaults.yaml 을 못 읽는 경로에서 꺼진다"
+    )
+
+    # (2) 사용자 설정이 전혀 없을 때의 실제 로드값
+    monkeypatch.setattr(loader, "user_config_path", lambda: tmp_path / "없는설정.yaml")
+    gates = loader.load_settings().detection.load_gates
+    assert "gpu_temp_c" in gates, f"기본 설정에 부하 게이트가 없다: {gates}"
+    assert gates["gpu_temp_c"].metric == "gpu_util_percent"
+
+    # (3) 엔진까지 닿았는가. 값만 옮겨지고 판정에 안 쓰이면 위 둘은 통과한다.
+    from argus.detection import rules as rules_module
+
+    baselines = rules_module.build().baselines
+    assert "gpu_temp_c" in baselines.load_gates, "엔진에 게이트가 실리지 않았다"
+
+    # 부하(사용률 90)에서만 표본이 쌓이고 유휴(10)는 빠지는지 — 게이트가 살아 있다는 증거.
+    # **기본 `load_min_samples`(60)를 넘겨야 축이 선다.** 그 아래면 판정을 보류하는
+    # 것이 정상이라(탐지 규칙 4) 표본 부족과 게이트 고장이 구분되지 않는다.
+    for i in range(70):
+        baselines.observe(float(i * 6), {"gpu_temp_c": 93.0, "gpu_util_percent": 90.0})
+        baselines.observe(float(i * 6 + 3), {"gpu_temp_c": 40.0, "gpu_util_percent": 10.0})
+    under_load = baselines.stats_under_load("gpu_temp_c")
+    assert under_load is not None, "부하 축이 서지 않았다"
+    assert under_load.median == 93.0, (
+        f"유휴 표본이 섞였다 — 게이트가 판정에 쓰이지 않는다: {under_load.median}"
+    )
+
+
 def test_warm_span_covers_load_window(monkeypatch):
     """워밍이 **실제로 읽는 구간**이 가장 긴 축을 덮는가.
 

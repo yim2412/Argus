@@ -23,6 +23,7 @@ import yaml
 
 from argus.config.loader import (
     BottleneckSettings,
+    DetectionSettings,
     FingerprintSettings,
     IncidentSettings,
     LeakMetricSettings,
@@ -181,6 +182,10 @@ def test_defaults_yaml_matches_the_code_defaults() -> None:
         ("process_leak", ProcessLeakSettings),
         ("fingerprint", FingerprintSettings),
         ("usage", UsageSettings),
+        # **`detection` 은 2026-08-12 에 들어왔다.** 그전까지 `load_gates` 가
+        # YAML 에만 켜져 있고 코드 기본값은 빈 dict 였다 — `_deep_merge` 덕에 실제
+        # 동작은 켜져 있었지만, 그 상태로 두면 "한 개념에 두 값"이 된다.
+        ("detection", DetectionSettings),
     )
     for section, model in sections:
         assert section in raw, f"defaults.yaml 에 `{section}` 절이 없다"

@@ -324,7 +324,17 @@ class DetectionSettings(BaseModel):
     # --- 부하 조건부 베이스라인 (2026-08-12) ---
     # 상한이 걸린 지표(GPU 온도)를 위해. 근거는 `detection/baseline.py` 의 `LoadGate`.
     # 룰은 `median` 대신 `load_median` 을 참조해 이 축을 쓴다.
-    load_gates: dict[str, LoadGateSettings] = Field(default_factory=dict)
+    #
+    # **코드 기본값도 켜 둔다.** `defaults.yaml` 이 베이스이므로 실제 동작은 이미
+    # 켜져 있었지만, 둘이 갈려 있으면 "한 개념에 두 값"이 된다 — 이 프로젝트가
+    # 반복해서 데인 자리다(디스크 응답 하한이 코드 5.0 / rules.yaml 3 이었던 것).
+    # 켜는 판단의 근거는 `defaults.yaml` 의 같은 절 주석에 있다: 발화 불가였던 룰을
+    # 발화 가능하게 되돌리는 것이고, 이 기계에서의 발화 수는 0건 그대로다.
+    load_gates: dict[str, LoadGateSettings] = Field(
+        default_factory=lambda: {
+            "gpu_temp_c": LoadGateSettings(metric="gpu_util_percent", min=80.0)
+        }
+    )
     # 부하 구간은 드물다 — 실측에서 이 PC 의 GPU 고부하는 하루 25~136분이었다.
     # 전역 창(30분)으로는 표본이 서지 않으므로 훨씬 길게 잡는다.
     load_window_s: float = Field(default=21600.0, gt=0)
