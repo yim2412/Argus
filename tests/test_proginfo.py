@@ -29,7 +29,10 @@ def db(tmp_path, monkeypatch):
     파티션을 읽어 이 PC 의 게임 목록이 단언에 튀어나왔다.
     """
     monkeypatch.setenv("ARGUS_DATA_DIR", str(tmp_path))
-    database = Database(tmp_path / "t.db").open()
+    # **파일명을 `db_path()` 와 맞춘다.** 조회 계층(`dashboard.data`)은 데이터 폴더의
+    # `argus.db` 를 여는데, 여기서 `t.db` 를 만들면 둘이 서로 다른 DB 를 보고
+    # 조회는 늘 빈손이 된다 — 실패가 "필터가 안 먹는다"처럼 보여 한참 헤맨다.
+    database = Database(tmp_path / "argus.db").open()
     yield database
     database.close()
 
@@ -222,6 +225,59 @@ def test_warm_backfill_runs_only_once(db, monkeypatch) -> None:
     assert db.query("SELECT foreground_seen FROM program_info WHERE name = '옛게임'")[0][
         "foreground_seen"
     ] == 1
+
+
+# ---------------------------------------------------------------- 제외 목록 배선
+
+
+def _usage_rows(db: Database, rows: list[tuple[str, float]]) -> None:
+    db.insert_many(
+        "program_usage_daily",
+        ("day", "name", "seconds", "launches", "observed_s"),
+        [("2026-08-12", name, seconds, 1, 100_000.0) for name, seconds in rows],
+    )
+
+
+def test_excluded_names_come_from_config_not_code(db, monkeypatch) -> None:
+    """**제외 목록을 바꾸면 표가 바뀐다**(규칙 3).
+
+    `defaults.yaml` 에 값을 적어 두는 것만으로는 배선이 확인되지 않는다 — 한 군데만
+    끊겨도 조용히 코드 기본값으로 돈다. **그래서 기본값이 아닌 목록으로 잰다**:
+    기본값으로 재면 코드와 YAML 이 우연히 같아 배선이 끊겨도 통과한다
+    (2026-08-04 에 같은 유형을 네 번 겪었다).
+    """
+    from argus.dashboard import data
+
+    _usage_rows(db, [("chrome", 3600.0), ("나만의도구", 7200.0)])
+    with db._lock:  # noqa: SLF001
+        db.conn.executemany(
+            "INSERT INTO program_info (name, description, company, attempts,"
+            " checked_at, foreground_seen) VALUES (?, NULL, NULL, 0, 0, 1)",
+            [("chrome",), ("나만의도구",)],
+        )
+        db.conn.commit()
+
+    # 기본 목록에 없는 이름을 골랐다 — 코드 기본값으로 돌면 이 단언이 깨진다.
+    monkeypatch.setattr(data, "usage_exclude", lambda: ("나만의도구",))
+    data.program_usage.cache_clear()
+
+    names = [row["name"] for row in data.program_usage(days=1, user_only=True)]
+    assert names == ["chrome"], f"제외 목록이 닿지 않았다: {names}"
+
+    data.program_usage.cache_clear()
+    everything = [row["name"] for row in data.program_usage(days=1, user_only=False)]
+    assert set(everything) == {"chrome", "나만의도구"}, "필터를 껐는데도 걸렀다"
+    data.program_usage.cache_clear()
+
+
+def test_config_exclude_reaches_the_query(db) -> None:
+    """`usage_exclude()` 가 실제 설정을 읽는가. 위 테스트는 그 함수를 갈아 끼운다."""
+    from argus.dashboard import data
+
+    data.usage_exclude.cache_clear()
+    excluded = data.usage_exclude()
+    assert "python" in excluded and "windowsterminal" in excluded, excluded
+    assert "chrome" not in excluded, "쓰는 프로그램을 기본 제외에 넣었다"
 
 
 def test_only_the_most_recent_path_is_used(db) -> None:

@@ -414,6 +414,31 @@ class ProcessLeakSettings(BaseModel):
     )
 
 
+class UsageSettings(BaseModel):
+    """사용시간 화면. **탐지가 아니라 표시 설정이다.**
+
+    여기 값은 무엇을 탐지할지가 아니라 표에서 무엇을 보여줄지를 정한다. 사람마다
+    "내가 쓰는 프로그램"의 경계가 다르므로(개발자에게 터미널은 도구지 콘텐츠가
+    아니다) 코드가 아니라 YAML 에 둔다.
+    """
+
+    # 포어그라운드에 있었더라도 "내가 쓴 프로그램"으로 세지 않을 이름들.
+    # **이름은 정규화된 형태다**(확장자 없는 소문자 — `program_usage_daily.name` 과 같다).
+    exclude: tuple[str, ...] = (
+        # 개발·운영 도구. 창을 띄우지만 이것을 하려고 PC 를 켜지는 않는다.
+        "python", "pythonw", "py", "claude", "code",
+        "windowsterminal", "wt", "cmd", "powershell", "pwsh", "conhost",
+        # Windows 셸이 앱을 감싸는 호스트. 앞에 놓이지만 사용자가 실행한 것이 아니다
+        # (`applicationframehost` 는 UWP 앱의 창틀인데 실측 155시간으로 3위였다).
+        # `explorer`·`taskmgr` 은 뺀다 — 그건 실제로 쓰는 프로그램이다.
+        "applicationframehost", "shellexperiencehost", "startmenuexperiencehost",
+        "searchhost", "textinputhost", "pickerhost", "openwith",
+        "easeofaccessdialog", "credentialuibroker", "werfault", "dwm",
+        # Argus 자신. 관측자가 관측 대상 목록에 오르면 안 된다.
+        "argus", "argus-ui",
+    )
+
+
 class Settings(BaseModel):
     general: GeneralSettings = GeneralSettings()
     storage: StorageSettings = StorageSettings()
@@ -432,6 +457,7 @@ class Settings(BaseModel):
     process_leak: ProcessLeakSettings = ProcessLeakSettings()
     severity: SeveritySettings = SeveritySettings()
     fingerprint: FingerprintSettings = FingerprintSettings()
+    usage: UsageSettings = UsageSettings()
 
 
 class ConfigError(Exception):

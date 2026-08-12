@@ -374,10 +374,16 @@ def program_usage(days: int = 30, limit: int = 100, user_only: bool = False) -> 
     아니다. 판정은 `program_info.foreground_seen` 에 있고 `collector/proginfo` 가 채운다.
     """
     where = "u.day >= ?"
+    params: list[Any] = [_day_cutoff(days)]
     if user_only:
         # **`INNER JOIN` 으로 바꾸지 않는다.** 아래 LEFT JOIN 이 그대로 있어야
         # 설명이 없는 프로그램(버전 리소스가 없는 exe)도 남는다.
         where += " AND i.foreground_seen = 1"
+        excluded = usage_exclude()
+        if excluded:
+            where += f" AND u.name NOT IN ({', '.join('?' * len(excluded))})"
+            params.extend(excluded)
+    params.append(limit)
     return query(
         "SELECT u.name AS name, SUM(u.seconds) AS seconds, SUM(u.launches) AS launches,"
         "       COUNT(*) AS days, i.description AS description, i.company AS company"
@@ -387,8 +393,26 @@ def program_usage(days: int = 30, limit: int = 100, user_only: bool = False) -> 
         " LEFT JOIN program_info i ON i.name = u.name"
         f" WHERE {where}"
         " GROUP BY u.name ORDER BY seconds DESC LIMIT ?",
-        (_day_cutoff(days), limit),
+        params,
     )
+
+
+@ttl_cache(60.0)
+def usage_exclude() -> tuple[str, ...]:
+    """사용시간 표에서 뺄 이름들 (`config` 의 `usage.exclude`).
+
+    **설정을 못 읽어도 표는 떠야 한다.** 조회 계층이 설정 오류로 죽으면 창 전체가
+    빈손이 된다 — 그 경우 필터가 조금 헐거워질 뿐이고, 그편이 낫다.
+
+    캐시가 짧은 이유(60초)는 사용자가 YAML 을 고치고 창을 다시 열지 않아도 되게
+    하기 위해서다. 조회 자체가 파일 한 번 읽기라 비싸지 않다.
+    """
+    try:
+        from ..config.loader import load_settings
+
+        return tuple(load_settings().usage.exclude)
+    except Exception:
+        return ()
 
 
 @ttl_cache(300.0)

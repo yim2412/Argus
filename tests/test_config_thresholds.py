@@ -28,6 +28,7 @@ from argus.config.loader import (
     LeakMetricSettings,
     ProcessLeakSettings,
     Settings,
+    UsageSettings,
 )
 from argus.decide.fusion import FusionSettings, analyze_incident
 from argus.detection.baseline import BaselineSet
@@ -140,6 +141,13 @@ def _compare_section(raw: dict, code_defaults: dict, where: str) -> None:
         if isinstance(value, dict):
             _compare_section(value, code_defaults[key], f"{where}.{key}")
             continue
+        if isinstance(value, list) and isinstance(code_defaults[key], tuple):
+            # YAML 은 목록, 모델은 튜플로 받는다. 순서까지 같아야 한다 —
+            # 집합으로 비교하면 중복이 들어가도 통과한다.
+            assert value == list(code_defaults[key]), (
+                f"`{where}.{key}` 가 어긋난다: YAML {value!r} vs 코드 {code_defaults[key]!r}"
+            )
+            continue
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             assert value == pytest.approx(code_defaults[key]), (
                 f"`{where}.{key}` 가 어긋난다: YAML {value} vs 코드 {code_defaults[key]}"
@@ -172,6 +180,7 @@ def test_defaults_yaml_matches_the_code_defaults() -> None:
         ("incident", IncidentSettings),
         ("process_leak", ProcessLeakSettings),
         ("fingerprint", FingerprintSettings),
+        ("usage", UsageSettings),
     )
     for section, model in sections:
         assert section in raw, f"defaults.yaml 에 `{section}` 절이 없다"
