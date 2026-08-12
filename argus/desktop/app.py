@@ -77,9 +77,10 @@ def apply_theme(app: QtWidgets.QApplication) -> None:
     )
 
 
-# 페이지 하나가 스크롤 없이 다 보이는 크기. 차트·표의 최소 높이를 더한 값에서 나왔고,
-# 자기 상태 페이지(가장 빽빽하다)가 기준이다.
-_WANTED_W, _WANTED_H = 1420, 960
+# HD(1280x720). 사용자가 정한 기본 크기다 — **이 크기에 다 들어간다는 뜻이 아니다.**
+# 원래 값(1420x960)이 "자기 상태 페이지가 스크롤 없이 다 보이는 크기"였으므로 그 페이지는
+# 이제 아래쪽이 잘린다. 창은 자유롭게 키울 수 있으니(고정이 아니라 기본값) 잘리면 늘린다.
+_WANTED_W, _WANTED_H = 1280, 720
 
 
 def _initial_size() -> tuple[int, int]:
@@ -162,6 +163,7 @@ class MainWindow(QtWidgets.QMainWindow):
             f"QListWidget::item:selected {{ background: {theme.GRID}; color: {theme.INK}; }}"
         )
         self._stack = QtWidgets.QStackedWidget()
+        self._page_of: dict[QtWidgets.QWidget, int] = {}
 
         self._add_page("실시간", self.realtime)
         self._add_page("프로세스", self.processes)
@@ -205,11 +207,38 @@ class MainWindow(QtWidgets.QMainWindow):
             self.incidents.focus_incident(incident_id)
 
     def _add_page(self, name: str, widget: QtWidgets.QWidget) -> None:
+        """페이지를 **스크롤 영역에 담아** 등록한다.
+
+        `QStackedWidget` 은 담긴 페이지 **전부의 최소 높이 중 최댓값**을 자기 최소
+        높이로 삼는다. 그래서 스크롤이 없으면 가장 빽빽한 페이지 하나가 창의 하한을
+        정하고, 나머지 여섯 페이지까지 그 크기를 끌고 다닌다 — 2026-08-12 실측:
+        자기 상태 페이지의 1179px 때문에 `resize(1280, 720)` 이 무시되고 창이
+        1280x1255 로 떴다. 크기를 요청해도 안 먹는 상태였다.
+
+        **가로 스크롤은 끈다.** 세로로 긴 것은 굴리면 되지만 가로로 잘린 표는
+        읽는 방법이 없고, 폭은 어차피 내용을 맞출 수 있다(`setWidgetResizable`).
+        """
+        area = QtWidgets.QScrollArea()
+        area.setWidget(widget)
+        area.setWidgetResizable(True)
+        area.setFrameShape(QtWidgets.QFrame.NoFrame)
+        area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        # 스크롤 영역이 제 배경을 칠하면 페이지 뒤에 다른 색 판이 깔린다.
+        area.setStyleSheet("QScrollArea { background: transparent; }")
+        area.viewport().setStyleSheet("background: transparent;")
+        # **이것이 없으면 위 설명이 그대로 재현된다.** `QScrollArea` 는 내용이
+        # 커지면 자기 최소 높이도 함께 키우려 하는데, 그러면 스택의 하한이 다시
+        # 페이지에 끌려간다. 하한을 못 박아 "굴려서 보면 된다"를 강제한다.
+        area.setMinimumHeight(200)
+
         self._nav.addItem(name)
-        self._stack.addWidget(widget)
+        self._stack.addWidget(area)
+        # 페이지 위젯 → 스택 인덱스. **`indexOf(page)` 는 이제 -1 이다** — 스택에
+        # 들어간 것은 페이지가 아니라 그것을 감싼 스크롤 영역이기 때문이다.
+        self._page_of[widget] = self._stack.count() - 1
 
     def _page_index(self, widget: QtWidgets.QWidget) -> int:
-        return self._stack.indexOf(widget)
+        return self._page_of.get(widget, 0)
 
     def _refresh_status(self) -> None:
         self.statusBar().showMessage(self.realtime.status_text())
