@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -17,7 +18,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..branding import APP_TITLE, set_app_id
 from ..dashboard import data, theme
-from ..paths import icon_path, is_frozen
+from ..paths import icon_path, is_frozen, window_state_path
 from .pages.incidents import IncidentPage
 from .pages.processes import ProcessPage
 from .pages.realtime import RealtimePage
@@ -84,20 +85,61 @@ def apply_theme(app: QtWidgets.QApplication) -> None:
 _WANTED_W, _WANTED_H = 1280, 720
 
 
+#: 이보다 작게 저장된 창은 무시한다. 최소화·복원 중에 잡힌 값이거나 파일이 깨진
+#: 것이고, 그대로 열면 사용자는 **아무것도 안 보이는 창**을 받는다.
+_MIN_SAVED_W, _MIN_SAVED_H = 640, 400
+
+
 def _initial_size() -> tuple[int, int]:
     """창 기본 크기. **화면보다 크게 열지 않는다.**
 
     원하는 크기를 고정하면 1366x768 같은 화면에서 창이 화면 밖으로 나가고, 그러면
     스크롤조차 못 한다. 하드웨어를 가정하지 않는다(설계 규칙 2).
+
+    **지난번에 닫은 크기가 있으면 그것이 이긴다.** 사용자가 손으로 맞춘 크기가
+    코드 기본값보다 정확한 의도다. 다만 화면 상한은 저장값에도 그대로 걸린다 —
+    모니터를 바꾸거나 해상도를 낮추면 저장된 크기가 화면보다 클 수 있다.
     """
+    width, height = _WANTED_W, _WANTED_H
+    saved = load_window_state()
+    if saved:
+        width, height = saved["width"], saved["height"]
+
     screen = QtWidgets.QApplication.primaryScreen()
     if screen is None:
-        return _WANTED_W, _WANTED_H
+        return width, height
     available = screen.availableGeometry()
-    return (
-        min(_WANTED_W, int(available.width() * 0.92)),
-        min(_WANTED_H, int(available.height() * 0.92)),
-    )
+    return (min(width, available.width()), min(height, available.height()))
+
+
+def load_window_state() -> dict | None:
+    """지난번에 닫은 창 크기. 없거나 못 믿을 값이면 `None`.
+
+    **읽기가 실패해도 창은 떠야 한다.** 편의 기능이 실행을 막으면 안 된다 —
+    `ARGUS_UI_SCREEN` 폴백과 같은 원칙이다.
+    """
+    path = window_state_path()
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+        width, height = int(state["width"]), int(state["height"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+    if width < _MIN_SAVED_W or height < _MIN_SAVED_H:
+        return None
+    return {"width": width, "height": height}
+
+
+def save_window_state(width: int, height: int) -> None:
+    """창을 닫을 때 크기를 남긴다. **실패는 조용히 넘긴다** — 저장이 안 됐다고
+    종료를 막으면, 사용자는 창이 안 닫히는 것으로 겪는다."""
+    if width < _MIN_SAVED_W or height < _MIN_SAVED_H:
+        return  # 최소화 상태에서 닫힌 것. 그 값을 남기면 다음에 못 쓰는 창이 뜬다
+    try:
+        window_state_path().write_text(
+            json.dumps({"width": int(width), "height": int(height)}), encoding="utf-8"
+        )
+    except OSError:
+        pass
 
 
 def first_run_notice() -> str | None:
@@ -434,6 +476,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._banner.update_text(first_run_notice())
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        # **최대화 상태의 크기를 저장하지 않는다.** 그대로 남기면 다음에 최대화가
+        # 아닌 창이 화면을 꽉 채운 채 뜨고, 사용자는 그걸 되돌릴 방법을 찾아야 한다.
+        if not self.isMaximized() and not self.isMinimized():
+            save_window_state(self.width(), self.height())
         self._health.stop()
         self.realtime.stop()
         self.processes.stop()

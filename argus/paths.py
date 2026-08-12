@@ -115,6 +115,15 @@ def runtime_config_path() -> Path:
     return data_dir() / "runtime.yaml"
 
 
+def window_state_path() -> Path:
+    """창 크기·위치. **`runtime.yaml` 과 나누는 이유가 있다.**
+
+    저것은 상주가 매초 읽는 설정이고 이것은 창이 닫힐 때만 쓰는 화면 상태다.
+    섞으면 창을 옮길 때마다 상주가 설정 변경으로 받아들여 다시 읽는다.
+    """
+    return data_dir() / "window.json"
+
+
 def machine_profile_path() -> Path:
     return data_dir() / "machine_profile.json"
 

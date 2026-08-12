@@ -918,6 +918,45 @@ def test_collapsible_body_leaves_the_minimum_height(qapp) -> None:
     assert host.minimumSizeHint().height() >= 400, "펼쳤는데 자리를 요구하지 않는다"
 
 
+def test_saved_size_wins_over_the_default(qapp, tmp_path, monkeypatch) -> None:
+    """**손으로 맞춘 크기가 코드 기본값보다 정확한 의도다.**
+
+    기본값을 그대로 쓰면 사용자는 창을 열 때마다 같은 조정을 반복한다.
+    """
+    from argus.desktop import app
+
+    state = tmp_path / "window.json"
+    monkeypatch.setattr(app, "window_state_path", lambda: state)
+
+    app.save_window_state(1600, 900)
+    assert app.load_window_state() == {"width": 1600, "height": 900}
+
+    width, height = app._initial_size()
+    available = QtWidgets.QApplication.primaryScreen().availableGeometry()
+    assert (width, height) == (min(1600, available.width()), min(900, available.height()))
+
+
+def test_unusable_saved_size_is_ignored(qapp, tmp_path, monkeypatch) -> None:
+    """**최소화 중에 닫히면 8x8 같은 값이 잡힌다.**
+
+    그걸 그대로 복원하면 다음 실행에서 아무것도 안 보이는 창이 뜨고, 사용자는
+    창을 못 쓰게 된다 — 되돌릴 방법도 화면 안에 없다.
+    """
+    from argus.desktop import app
+
+    state = tmp_path / "window.json"
+    monkeypatch.setattr(app, "window_state_path", lambda: state)
+
+    app.save_window_state(8, 8)
+    assert not state.exists(), "못 쓸 크기를 파일에 남겼다"
+
+    state.write_text('{"width": 8, "height": 8}', encoding="utf-8")
+    assert app.load_window_state() is None, "못 쓸 크기를 읽어들였다"
+
+    state.write_text("깨진 json", encoding="utf-8")
+    assert app.load_window_state() is None, "깨진 파일에 예외가 났다"
+
+
 def test_window_never_opens_larger_than_the_screen(qapp) -> None:
     """**하드웨어를 가정하지 않는다**(설계 규칙 2).
 
