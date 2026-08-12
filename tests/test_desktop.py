@@ -857,6 +857,38 @@ def test_no_single_page_dictates_the_window_minimum_height(qapp) -> None:
     assert hint <= HD_HEIGHT_PX, f"창 최소 높이가 {hint}px — 어떤 페이지가 하한을 밀고 있다"
 
 
+def test_nav_sections_do_not_shift_the_pages(qapp) -> None:
+    """**구분 머리가 들어가면 탭 행 번호와 페이지 인덱스가 어긋난다.**
+
+    행 번호를 그대로 `setCurrentIndex` 에 넘기면 머리글 개수만큼 밀린 페이지가
+    뜬다 — 예외도 빈 화면도 없이 **그냥 다른 페이지가 보인다.** 머리글 자체도
+    선택되면 안 된다(고를 수 있으면 눌러서 빈 화면에 닿는다).
+    """
+    from argus.desktop.app import MainWindow
+
+    window = _keep(MainWindow())
+    try:
+        nav = window._nav
+        # 머리글은 고를 수 없다 — Qt 가 키보드 이동에서도 알아서 건너뛴다.
+        headers = [i for i in range(nav.count())
+                   if nav.item(i).flags() == QtCore.Qt.NoItemFlags]
+        assert headers, "구분 머리가 하나도 없다"
+
+        for page in (window.realtime, window.processes, window.incidents,
+                     window.usage, window.timeline, window.selfstate, window.settings):
+            nav.setCurrentRow(window._nav_row_of[page])
+            shown = window._stack.currentWidget()
+            inner = shown.widget() if isinstance(shown, QtWidgets.QScrollArea) else shown
+            assert inner is page, (
+                f"{nav.currentItem().text()} 를 골랐는데 다른 페이지가 떴다"
+            )
+    finally:
+        window._health.stop()
+        for page in (window.realtime, window.processes, window.incidents,
+                     window.timeline, window.usage):
+            page.stop()
+
+
 def test_collapsible_body_leaves_the_minimum_height(qapp) -> None:
     """**접힌 것은 최소 높이에서 빠져야 한다.**
 

@@ -308,17 +308,23 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self._stack = QtWidgets.QStackedWidget()
         self._page_of: dict[QtWidgets.QWidget, int] = {}
+        self._nav_row_of: dict[QtWidgets.QWidget, int] = {}
 
+        # **매일 보는 것과 이상할 때 보는 것을 섞어 두지 않는다.** 일곱 개가 한 줄로
+        # 늘어서 있으면 어디부터 봐야 하는지가 목록에 없다. 순서도 사용 빈도순으로
+        # 바꿨다 — 사건은 이 제품의 산출물인데 다섯 번째에 있었다.
+        self._add_section("보기")
         self._add_page("실시간", self.realtime)
         self._add_page("프로세스", self.processes)
-        self._add_page("타임라인", self.timeline)
-        self._add_page("사용시간", self.usage)
         self._add_page("사건", self.incidents)
+        self._add_page("사용시간", self.usage)
+        self._add_section("진단")
+        self._add_page("타임라인", self.timeline)
         self._add_page("자기 상태", self.selfstate)
         self._add_page("설정", self.settings)
 
-        self._nav.currentRowChanged.connect(self._stack.setCurrentIndex)
-        self._nav.setCurrentRow(0)
+        self._nav.currentRowChanged.connect(self._on_nav_changed)
+        self._nav.setCurrentRow(self._nav_row_of[self.realtime])
 
         body = QtWidgets.QWidget()
         row = QtWidgets.QHBoxLayout(body)
@@ -358,8 +364,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # 알림을 눌러서 들어온 경우. **평가하러 온 사람을 목록 앞에 세우지 않는다** —
         # 그 사건을 찾는 일이 남아 있으면 거기서 그만둔다(14일간 피드백 0건이 그 결과다).
         if incident_id is not None:
-            self._nav.setCurrentRow(self._page_index(self.incidents))
-            self.incidents.focus_incident(incident_id)
+            self._open_incident(incident_id)
 
     def _add_page(self, name: str, widget: QtWidgets.QWidget) -> None:
         """페이지를 **스크롤 영역에 담아** 등록한다.
@@ -387,17 +392,40 @@ class MainWindow(QtWidgets.QMainWindow):
         area.setMinimumHeight(200)
 
         self._nav.addItem(name)
+        self._nav_row_of[widget] = self._nav.count() - 1
         self._stack.addWidget(area)
         # 페이지 위젯 → 스택 인덱스. **`indexOf(page)` 는 이제 -1 이다** — 스택에
         # 들어간 것은 페이지가 아니라 그것을 감싼 스크롤 영역이기 때문이다.
         self._page_of[widget] = self._stack.count() - 1
 
-    def _page_index(self, widget: QtWidgets.QWidget) -> int:
-        return self._page_of.get(widget, 0)
+    def _add_section(self, title: str) -> None:
+        """탭 목록의 구분 머리. **고를 수 없는 항목이다.**
+
+        `NoItemFlags` 로 두면 마우스로도 키보드로도 선택되지 않고 Qt 가 알아서
+        건너뛴다. 이걸 빼먹으면 머리글을 눌러 빈 화면이 뜬다.
+        """
+        item = QtWidgets.QListWidgetItem(title)
+        item.setFlags(QtCore.Qt.NoItemFlags)
+        font = item.font()
+        font.setPointSizeF(max(7.0, font.pointSizeF() - 1.5))
+        item.setFont(font)
+        item.setForeground(QtGui.QColor(theme.INK_MUTED))
+        self._nav.addItem(item)
+
+    def _on_nav_changed(self, row: int) -> None:
+        """탭 행 → 페이지. **구분 머리 때문에 둘이 어긋난다** — 행 번호를 그대로
+        `setCurrentIndex` 에 넘기면 머리글 개수만큼 밀린 페이지가 뜬다."""
+        widget = self._nav.item(row)
+        if widget is None:
+            return
+        for page, nav_row in self._nav_row_of.items():
+            if nav_row == row:
+                self._stack.setCurrentIndex(self._page_of[page])
+                return
 
     def _open_incident(self, incident_id: int) -> None:
         """맨 윗줄의 "사건 보기". 알림을 누른 것과 같은 경로다."""
-        self._nav.setCurrentRow(self._page_index(self.incidents))
+        self._nav.setCurrentRow(self._nav_row_of[self.incidents])
         self.incidents.focus_incident(incident_id)
 
     def _refresh_status(self) -> None:
