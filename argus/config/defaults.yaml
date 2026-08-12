@@ -373,6 +373,10 @@ usage:
     - searchhost
     - textinputhost
     - pickerhost
+    # 다른 앱이 띄우는 내장 브라우저. 이름만 보면 브라우저지만 사용자가 실행한 것이
+    # 아니다 — 호스트는 시작 메뉴 검색·Game Bar 위젯 같은 것들이고, 그 호스트는
+    # 이미 위에서 뺀다. 2026-08-12 실측에서 SearchHost 몫으로만 6개 371MB 였다.
+    - msedgewebview2
     - openwith
     - easeofaccessdialog
     - credentialuibroker
