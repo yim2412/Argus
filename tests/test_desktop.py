@@ -1072,6 +1072,52 @@ def test_status_says_nothing_was_collected_yet() -> None:
     assert colour != theme.STATUS["critical"], "안 켠 것을 고장으로 표시했다"
 
 
+def test_only_the_bottleneck_tile_is_marked(qapp) -> None:
+    """**맨 윗줄이 "메모리 병목"이라 했으면 메모리 타일이 그 근거로 보여야 한다.**
+
+    전부 칠하면 아무것도 강조하지 않은 것과 같고, 엉뚱한 타일을 칠하면 사용자를
+    잘못된 곳으로 보낸다 — 2026-08-02 에 제품이 8건 모두 엉뚱한 프로세스를 지목한
+    것과 같은 종류의 실패다.
+    """
+    page = _page(qapp)
+    page.mark_bottleneck(
+        {"open": {"id": 1, "bottleneck": "MEMORY", "severity": "critical"}}
+    )
+    marked = [name for name, tile in page._tiles.items() if tile.marked]
+    assert marked == ["mem"], f"메모리 병목인데 강조된 타일이 {marked}"
+
+    page.mark_bottleneck({"open": None})
+    assert not any(t.marked for t in page._tiles.values()), "사건이 끝났는데 강조가 남았다"
+
+
+def test_unmappable_bottleneck_marks_nothing(qapp) -> None:
+    """**NONE 은 강조하지 않는다.** 병목이 없다는 판정에 어느 타일을 칠할 수는 없다.
+
+    모르는 이름도 같다 — 탐지기에 종류가 하나 늘었을 때 UI 가 엉뚱한 타일을
+    칠하느니 조용한 편이 낫다.
+    """
+    page = _page(qapp)
+    for name in ("NONE", "새로운_병목", ""):
+        page.mark_bottleneck({"open": {"id": 1, "bottleneck": name, "severity": "warning"}})
+        marked = [k for k, t in page._tiles.items() if t.marked]
+        assert marked == [], f"{name!r} 인데 {marked} 를 칠했다"
+
+
+def test_marked_tile_says_it_in_words_not_only_colour(qapp) -> None:
+    """**색만으로 뜻을 지지 않는다**(theme 규칙).
+
+    색각 이상이 있어도, 흑백으로 캡처해도 읽혀야 한다.
+    """
+    from argus.desktop.widgets import StatTile
+
+    tile = _keep(StatTile("메모리"))
+    tile.mark("warning")
+    assert "병목" in tile._caption.text(), tile._caption.text()
+
+    tile.mark(None)
+    assert tile._caption.text() == "메모리", "해제했는데 말이 남았다"
+
+
 # ---------------------------------------------------------------- 알림 → 사건
 #
 # 알림을 눌러서 들어온 사람은 **평가하러 온 것**이다. 그 사건을 찾는 일이 남아 있으면

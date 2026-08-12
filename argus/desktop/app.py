@@ -350,6 +350,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._health = _HealthPoller()
         self._health.loaded.connect(self.status_line.update_health)
+        # 같은 답을 실시간 타일도 쓴다 — 맨 윗줄이 "디스크 병목"이라 말했으면
+        # 어느 수치가 그 말의 근거인지 화면에서 바로 이어져야 한다.
+        self._health.loaded.connect(self.realtime.mark_bottleneck)
         self._health.start()
 
         # 알림을 눌러서 들어온 경우. **평가하러 온 사람을 목록 앞에 세우지 않는다** —

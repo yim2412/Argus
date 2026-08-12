@@ -103,6 +103,7 @@ class StatTile(QtWidgets.QFrame):
         super().__init__()
         self.setFrameShape(QtWidgets.QFrame.StyledPanel)
         self.setMinimumWidth(150)
+        self._marked = False
         # **세로로는 자라지 않는다.** 타일은 글자 세 줄이 전부라 늘어날 이유가 없는데,
         # 옆의 차트에 상한이 생기는 순간 남는 공간이 전부 이리로 몰린다 —
         # 2026-08-06 실측: 100px 짜리 타일이 460px 로 부풀어 화면 절반을 먹었다.
@@ -114,20 +115,53 @@ class StatTile(QtWidgets.QFrame):
         box.setContentsMargins(14, 10, 14, 10)
         box.setSpacing(2)
 
-        caption = QtWidgets.QLabel(title)
-        caption.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 11px;")
+        self._caption = QtWidgets.QLabel(title)
+        self._caption.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 11px;")
         self._value = QtWidgets.QLabel("—")
         self._value.setStyleSheet(f"color: {theme.INK}; font-size: 26px; font-weight: 600;")
         self._note = QtWidgets.QLabel(" ")
         self._note.setStyleSheet(f"color: {theme.INK_SECONDARY}; font-size: 11px;")
 
-        box.addWidget(caption)
+        box.addWidget(self._caption)
         box.addWidget(self._value)
         box.addWidget(self._note)
 
     def set(self, value: str, note: str = "") -> None:
         self._value.setText(value)
         self._note.setText(note or " ")  # 빈 문자열이면 높이가 줄어 타일이 흔들린다
+
+    def mark(self, severity: str | None) -> None:
+        """**지금 이 자원이 병목이면 표시한다.** `None` 이면 평소 모습으로.
+
+        **여기서 값을 보고 판정하지 않는다.** 문턱을 UI 에 두면 (1) 하드웨어마다
+        틀리고(설계 규칙 2 — "디스크 응답 50ms" 는 HDD 사용자에겐 오탐), (2) 탐지기와
+        별개의 두 번째 판정이 생겨 맨 윗줄과 갈린다. 인자로 받는 등급은 이미
+        `decide/severity` 가 machine 상대값으로 매긴 것이다.
+
+        **색만으로 뜻을 지지 않는다**(theme 규칙). 색과 함께 캡션에 말을 붙인다 —
+        색각 이상이 있어도, 흑백으로 캡처해도 읽힌다.
+        """
+        title = self._caption.text().split("  ←")[0]
+        if severity is None:
+            self._marked = False
+            self._caption.setText(title)
+            self._caption.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 11px;")
+            self._value.setStyleSheet(
+                f"color: {theme.INK}; font-size: 26px; font-weight: 600;"
+            )
+            self.setStyleSheet("")
+            return
+
+        colour = theme.STATUS.get(severity, theme.STATUS["warning"])
+        self._marked = True
+        self._caption.setText(f"{title}  ← 지금 병목")
+        self._caption.setStyleSheet(f"color: {colour}; font-size: 11px; font-weight: 600;")
+        self._value.setStyleSheet(f"color: {colour}; font-size: 26px; font-weight: 600;")
+        self.setStyleSheet(f"QFrame {{ border: 1px solid {colour}; border-radius: 4px; }}")
+
+    @property
+    def marked(self) -> bool:
+        return self._marked
 
 
 class TimeSeriesChart(QtWidgets.QWidget):

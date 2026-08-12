@@ -308,7 +308,7 @@ def health() -> dict:
     수집이 멈추면 사건도 안 생기므로 둘 다 똑같이 조용해 보인다.
     """
     open_rows = query(
-        "SELECT id, ts_start, severity, title FROM incidents"
+        "SELECT id, ts_start, severity, title, bottleneck FROM incidents"
         " WHERE ts_end IS NULL ORDER BY ts_start DESC LIMIT 1"
     )
     closed = query(

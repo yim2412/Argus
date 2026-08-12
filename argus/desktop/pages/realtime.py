@@ -29,6 +29,21 @@ from ..widgets import (
 _MB = 1048576.0
 _WINDOW_S = 600
 
+# 병목 종류 → 그것이 나타나는 타일. `explain/bottleneck` 이 쓰는 이름 그대로다.
+#
+# **GPU 와 THERMAL 이 같은 타일인 이유:** 이 창에는 클럭·전력 타일이 없고, 발열
+# 스로틀은 GPU 수치(온도)로 보인다. 둘을 나눌 자리가 생기면 그때 나눈다.
+# **CONTENTION 은 CPU 다** — 자원 포화 없이 지연되는 것이라 딱 맞는 타일이 없는데,
+# 경합이 관측되는 곳은 결국 CPU 대기다. **NONE 은 여기 없다**(강조하지 않는다).
+_BOTTLENECK_TILE = {
+    "CPU": "cpu",
+    "MEMORY": "mem",
+    "IO": "disk",
+    "GPU": "gpu",
+    "THERMAL": "gpu",
+    "CONTENTION": "cpu",
+}
+
 
 class RealtimePoller(QtCore.QThread):
     """DB 조회 전담. 첫 회차는 백필, 이후는 최신 한 점."""
@@ -262,6 +277,21 @@ class RealtimePage(QtWidgets.QWidget):
             self._tiles["gpu"].set(number(gpu.get("util_percent"), ".0f") + "%", " · ".join(note))
         else:
             self._tiles["gpu"].set("없음", "NVML 미탑재")
+
+    @QtCore.Slot(dict)
+    def mark_bottleneck(self, health: dict) -> None:
+        """진행 중 사건의 병목에 해당하는 타일만 강조한다.
+
+        **판정을 여기서 다시 하지 않는다.** 창은 "무엇이 병목인가"를 이미 답으로
+        받았고(`explain/bottleneck` → `incidents.bottleneck`), 여기서 하는 일은
+        그 답을 어느 타일 위에 놓을지 고르는 것뿐이다. 값을 보고 색을 정하면
+        하드웨어마다 틀리고(설계 규칙 2) 맨 윗줄과 갈린다.
+        """
+        incident = health.get("open") or {}
+        key = _BOTTLENECK_TILE.get(str(incident.get("bottleneck") or ""))
+        severity = str(incident.get("severity") or "warning") if key else None
+        for name, tile in self._tiles.items():
+            tile.mark(severity if name == key else None)
 
     # ------------------------------------------------------------------ 상태
 
