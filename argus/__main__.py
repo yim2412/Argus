@@ -303,6 +303,14 @@ def run(args: argparse.Namespace) -> int:
             # 프로그램 사용시간은 하루 단위다. 이 롤업이 `process_events` 의 보존을
             # 붙잡으므로, 빼면 원본이 접히기 전에 지워진다(retention._rules 참조).
             sup.add(ProgramUsageRollup(db, settings.rollup))
+
+        # 프로그램 설명("svchost 가 무엇인가"). 롤업은 아니지만 같은 원본
+        # (`process_events`)을 읽고 표시용 값을 채우므로 여기 함께 둔다.
+        # 빠져도 수집·탐지는 그대로 돌고 표에 설명만 비어 보인다.
+        from .collector.proginfo import ProgramInfoCollector
+
+        sup.add(ProgramInfoCollector(db))
+
         if settings.warm.enabled:
             from .storage.warm import WarmExporter
 

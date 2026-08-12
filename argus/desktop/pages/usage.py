@@ -94,7 +94,10 @@ class UsagePage(QtWidgets.QWidget):
 
         self._table = DataTable(
             [
-                Column("name", "프로그램", width=220),
+                Column("name", "프로그램", width=150),
+                # **이름만으로는 무엇인지 알 수 없다.** 상위를 차지하는 것 대부분이
+                # svchost · dwm · ctfmon 처럼 사용자가 설치한 적 없는 것들이다.
+                Column("description", "무슨 프로그램", width=230),
                 Column("hours", "사용시간", fmt=",.1f", suffix=" h", align_right=True, width=100),
                 Column("share", "관측 대비", fmt=".1f", suffix="%", align_right=True, width=90),
                 Column("launches", "실행", fmt=",.0f", suffix="회", align_right=True, width=80),
@@ -156,7 +159,8 @@ class UsagePage(QtWidgets.QWidget):
 
         self._observed.set(f"{observed / 3600.0:,.0f} h", "PC 가 켜져 있던 시간")
         best = shown[0]
-        self._top.set(best["name"], f"{best['hours']:,.1f} h")
+        # **타일에도 설명을 붙인다.** "가장 오래 켠 프로그램: svchost" 는 답이 아니다.
+        self._top.set(best["name"], f"{best['hours']:,.1f} h · {best.get('description') or ''}")
         self._counted.set(f"{len(rows)}종", "이 기간에 한 번이라도 뜬 것")
 
     @property

@@ -1091,6 +1091,30 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    # ---- 2026-08-12: 프로그램 설명. 둘 다 예외 없이 조용하다 — 전자는 빈 설명이
+    # 나올 뿐이고(그것도 한글 Windows 에서만), 후자는 그냥 느려진다.
+    Mutant(
+        "proginfo_locale_from_file",
+        "exe 의 언어를 파일에서 읽는다 (박아 두면 한글 Windows 에서 빈손이 된다)",
+        (
+            (
+                "argus/collector/proginfo.py",
+                'query = f"\\\\StringFileInfo\\\\{language:04x}{codepage:04x}\\\\{key}"',
+                'query = f"\\\\StringFileInfo\\\\040904b0\\\\{key}"  # MUTANT: 영어 고정',
+            ),
+        ),
+    ),
+    Mutant(
+        "proginfo_skips_described",
+        "이미 설명이 있는 이름은 다시 열지 않는다 (매 회차 수백 개 파일을 연다)",
+        (
+            (
+                "argus/collector/proginfo.py",
+                '"   AND (i.name IS NULL OR (i.description IS NULL AND i.attempts < ?))"',
+                '"   AND (i.name IS NULL OR i.attempts < ?)"  # MUTANT: 항상 재조회',
+            ),
+        ),
+    ),
 ]
 
 

@@ -41,6 +41,10 @@ class ProcessPoller(QtCore.QThread):
         while not self._stop:
             try:
                 rows = data.top_processes(seconds=self._window_s, limit=20)
+                # **설명은 워커에서 붙인다.** 조회 자체는 5분 캐시라 거의 공짜지만,
+                # UI 스레드에서 DB 를 만지는 경로를 하나라도 만들지 않는다.
+                described = data.program_descriptions()
+                rows = [{**row, "description": described.get(row["name"])} for row in rows]
             except Exception:
                 rows = []
             self.loaded.emit(rows)
@@ -104,7 +108,8 @@ class ProcessPage(QtWidgets.QWidget):
 
         self._table = DataTable(
             [
-                Column("name", "프로그램", width=180),
+                Column("name", "프로그램", width=140),
+                Column("description", "무슨 프로그램", width=200),
                 Column("pids", "PID", align_right=True, width=60),
                 Column("cpu", "CPU 평균", fmt=".2f", suffix="%", align_right=True, width=90),
                 Column("cpu_max", "CPU 최대", fmt=".1f", suffix="%", align_right=True, width=90),

@@ -369,11 +369,30 @@ def program_usage(days: int = 30, limit: int = 100) -> list[dict]:
     그동안 PC 가 몇 시간 켜져 있었는지가 있어야 뜻이 생긴다.
     """
     return query(
-        "SELECT name, SUM(seconds) AS seconds, SUM(launches) AS launches, "
-        "COUNT(*) AS days FROM program_usage_daily WHERE day >= ? "
-        "GROUP BY name ORDER BY seconds DESC LIMIT ?",
+        "SELECT u.name AS name, SUM(u.seconds) AS seconds, SUM(u.launches) AS launches,"
+        "       COUNT(*) AS days, i.description AS description, i.company AS company"
+        " FROM program_usage_daily u"
+        # **LEFT JOIN 이다.** 설명은 나중에 채워지는 표시용 값이라, 아직 없다고
+        # 사용시간 행이 사라지면 안 된다.
+        " LEFT JOIN program_info i ON i.name = u.name"
+        " WHERE u.day >= ?"
+        " GROUP BY u.name ORDER BY seconds DESC LIMIT ?",
         (_day_cutoff(days), limit),
     )
+
+
+@ttl_cache(300.0)
+def program_descriptions() -> dict[str, str]:
+    """이름 → 사람 말 설명. 프로세스 표처럼 사용시간 밖에서도 쓴다.
+
+    **캐시가 길다**(5분). 하루에 몇 개 늘까 말까 한 값이라 자주 물을 이유가 없다.
+    """
+    return {
+        row["name"]: row["description"]
+        for row in query(
+            "SELECT name, description FROM program_info WHERE description IS NOT NULL"
+        )
+    }
 
 
 @ttl_cache(300.0)
