@@ -953,6 +953,96 @@ Streamlit 멀티페이지:
 
 ---
 
+### Phase 15 — 일일 생산성 리포트 (설계만, 2026-08-12)
+
+**이상탐지와 별개 트랙이다.** 수집 기반만 재활용하고 `detection/`·`decide/` 는 읽지도
+쓰지도 않는다. "어제 무엇을 했나"는 "무엇이 이상한가"와 다른 질문이고, 둘을 한
+모듈에 넣으면 탐지 문턱을 고칠 때 리포트가 함께 흔들린다.
+
+#### 착수 전 점검에서 드러난 것 (전제 정정)
+
+요청에 담긴 전제 넷이 코드와 달랐다. **이 기록을 남기는 이유는 같은 착각이 반복되기
+때문이다** — 여기 적힌 것은 "이미 있으니 만들지 말 것"의 목록이다.
+
+| 전제 | 실제 |
+|---|---|
+| 포어그라운드 추적을 새로 만들어야 한다 | **이미 있다.** `collector/process.py:62` `foreground_pid()` — `GetForegroundWindow` + `GetWindowThreadProcessId`, **1초 주기** |
+| Streamlit 대시보드에 탭 추가 | **Streamlit 은 2026-08-09 삭제.** 창은 PySide6 |
+| Isolation Forest·LSTM 에 영향 없게 | **둘 다 미구현.** 탐지는 통계(중앙값/MAD)+룰. ML 은 Phase 5·7 로 재평가 대기 |
+| `daily_activity` 테이블 신설 | 같은 성격이 이미 셋: `process_metrics`(1초·foreground) · `process_5m`(5분·foreground_ratio) · `program_usage_daily`(하루) |
+
+#### 설계
+
+**A. `daily_report` 테이블 (migration 017)**
+
+원본을 그때그때 집계하지 않고 **하루 요약을 미리 만들어 남긴다.** 이유는 하나뿐이다 —
+`process_5m` 은 이틀 뒤 웜으로 밀리고 보존 기한이 지나면 사라지는데, 시간대별 패턴은
+그 5분 버킷이 있어야 만들 수 있다. 요약은 영구 보존 가치가 있다.
+
+```sql
+daily_report(
+  day TEXT PRIMARY KEY,        -- 'YYYY-MM-DD' 로컬. program_usage_daily 와 같은 기준
+  total_s REAL NOT NULL,       -- 그날 포어그라운드 총 시간
+  observed_s REAL NOT NULL,    -- 분모. **함께 저장하지 않으면 나중에 복원 못 한다**(014 교훈)
+  by_category TEXT NOT NULL,   -- JSON {카테고리: 초}
+  top_apps TEXT NOT NULL,      -- JSON [{name, seconds, category}] 상위 5
+  by_slot TEXT NOT NULL,       -- JSON {새벽|오전|오후|저녁: 초}
+  built_at REAL NOT NULL
+)
+```
+
+전날 대비 증감은 **저장하지 않는다.** 이웃 두 행의 뺄셈이라 저장하면 같은 값이 두 곳에
+생기고, 어제 리포트가 나중에 다시 만들어지면 갈린다.
+
+**B. 생성기 — `_RollupBase` 를 재사용한다**
+
+"부팅 시 마지막 생성일 확인 → 밀린 날짜 순차 처리 → 데이터 없는 날 건너뛰기"는
+**이미 있는 패턴이다.** `ProgramUsageRollup` 이 정확히 그것을 하고, 워터마크
+(`rollup_state`)·하루 경계·`days_per_run` 상한이 전부 그 골격에 있다. 별도 트리거
+로직을 새로 쓰면 같은 버그를 다시 만든다.
+
+- 설정 파일이 아니라 **`rollup_state` 에 워터마크**를 둔다(설정 파일은 사용자가 고치는
+  것이고 이건 프로그램 상태다 — `window.json` 을 `runtime.yaml` 과 나눈 것과 같은 이유).
+- 데이터 없는 날은 행을 만들지 않는다. 조회 쪽이 "기록 없음"으로 표시한다.
+- 하루가 끝난 뒤에만 접는다. 진행 중인 날을 접으면 부분값이 확정으로 남는다(014 와 동일).
+
+**C. 카테고리 매핑 — `config` 에 둔다**
+
+```yaml
+usage:
+  categories:            # 이름 -> 카테고리. 없으면 "기타"
+    게임: [league of legends, fczf, fm, civilizationvi_dx12, overwatch, tslgame, ...]
+    개발: [python, pythonw, claude, code, windowsterminal]
+    브라우징: [chrome, msedge]
+    소통: [discord, kakaotalk]
+    미디어: [medal, streamdeck, nliveconnector]
+```
+
+**`usage.exclude` 와 별개 목록이어야 한다.** 사용시간 표는 `python`·`windowsterminal`
+을 빼는데, 생산성 리포트에서 "개발"은 오히려 핵심 지표다. 같은 목록을 쓰면 둘 중
+하나가 반드시 틀린다.
+
+**D. 집계 4종** — 총 사용시간 / 카테고리별 / Top 5 / 시간대별(새벽·오전·오후·저녁).
+시간대는 `process_5m` 의 5분 버킷이라 구간 경계가 정확히 맞는다.
+
+**E. 창에 "일일 리포트" 탭** — PySide6. 날짜 선택 + 카테고리 바차트는 **pyqtgraph**
+로 그린다(이 프로젝트는 plotly·matplotlib 을 쓰지 않는다 — `widgets.py` 첫머리 참조).
+탭 위치는 "보기" 그룹.
+
+#### 정한 것 · 남은 것
+
+- **창 제목은 저장하지 않는다** (2026-08-12 결정). 설계 규칙 5가 창 제목을 민감
+  정보로 명시하고(문서명·URL·대화 상대가 들어간다), 프로세스명만으로 위 5개 항목이
+  전부 나온다. 나중에 부족하면 그때 다시 본다.
+- **카테고리 기본값은 이 PC 목록으로 초안을 잡되 배포 기본값으로 확정하지 않는다** —
+  남의 PC 에는 없는 이름들이다. 매핑에 없으면 "기타"로 두고, 사용자가 YAML 로 채운다.
+- 새 패키지는 `report/`. `dashboard/data.py` 처럼 **UI 를 모르게** 만든다.
+
+**DoD**: 며칠치 리포트가 자동 생성되고, 창에서 과거 날짜를 골라 볼 수 있으며,
+탐지·판정 코드가 한 줄도 바뀌지 않았다.
+
+---
+
 ## 5. 폴더 구조
 
 ```
@@ -1270,7 +1360,11 @@ done
 | 8 | 사용시간 "내가 쓴 프로그램만" (200→61종) | `8bf77a6` · `9def309` |
 | 9 | `load_gates` 코드 기본값 정합 | `e2094f6` |
 
-**남은 것은 전부 데이터·환경 대기다 — 오늘 착수 가능한 것은 없다.**
+**다음 세션의 1순위: Phase 15 — 일일 생산성 리포트.** 설계는 위에 적어 뒀고
+(전제 정정 · 스키마 · 모듈 구조 · 판단 둘) **구현만 남았다.** 이상탐지와 별개
+트랙이라 데이터 대기에 걸리지 않는 유일한 항목이다.
+
+**그 밖에 남은 것은 전부 데이터·환경 대기다.**
 
 - **알림 품질 라벨** — 며칠 쌓아야 한다(현재 사용자 라벨 0건).
 - **다른 PC 의 데이터** — 정확도 작업 전체가 여기 묶여 있다.
