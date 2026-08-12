@@ -848,6 +848,7 @@ def test_no_single_page_dictates_the_window_minimum_height(qapp) -> None:
         hint = window.minimumSizeHint().height()
         window.hide()
     finally:
+        window._health.stop()
         for page in (window.realtime, window.processes, window.incidents,
                      window.timeline, window.usage):
             page.stop()
@@ -974,6 +975,101 @@ def test_banner_hides_itself_when_there_is_nothing_to_say(qapp) -> None:
 
     banner.update_text(None)
     assert banner.isHidden()
+
+
+# ---------------------------------------------------------------- 상태 한 줄
+#
+# 창 맨 위의 "지금 괜찮은가". **이 줄이 틀리면 나머지가 다 맞아도 소용없다** —
+# 사용자는 이것만 보고 창을 닫는다.
+
+
+def test_status_says_collection_stopped_before_saying_normal() -> None:
+    """**수집이 멈추면 사건도 안 생긴다** — "정상"과 "죽음"이 똑같이 조용해 보인다.
+
+    순서가 뒤집혀 사건부터 보면, 상주가 죽은 PC 에 초록불이 켜진다. 사용자는
+    모니터가 죽은 것을 모른 채 안심한다(설계 규칙 4: 조용히 실패하지 않는다).
+    """
+    from argus.dashboard import theme
+    from argus.desktop.app import _health_line
+
+    now = 10_000.0
+    dead = {"open": None, "last_end_ts": None, "sample_ts": now - 600}
+    text, detail, colour, incident = _health_line(dead, now)
+    assert "멈췄" in text, f"수집이 10분 끊겼는데 '{text}' 라고 했다"
+    assert colour == theme.STATUS["critical"]
+    assert "10분" in detail
+
+    fresh = {"open": None, "last_end_ts": None, "sample_ts": now - 3}
+    assert _health_line(fresh, now)[0] == "정상"
+
+
+def test_status_does_not_cry_stopped_while_throttled() -> None:
+    """**스로틀은 정상 동작이다**(예산 초과 시 수집 주기 ×10).
+
+    그때마다 "수집 멈춤"이 뜨면 그것이 오탐이고, 오탐 3번이면 사용자는 이 줄을
+    믿지 않게 된다 — 그러면 맨 윗줄을 만든 의미가 사라진다.
+    """
+    from argus.desktop.app import _health_line
+
+    now = 10_000.0
+    throttled = {"open": None, "last_end_ts": None, "sample_ts": now - 11}  # 1초 주기 x10
+    assert _health_line(throttled, now)[0] == "정상"
+
+
+def test_status_shows_the_open_incident_with_its_severity_colour() -> None:
+    """진행 중인 사건이 있으면 **그 문장이 곧 답이다.**
+
+    `incidents.title` 은 이미 "디스크 병목 — chrome 68%" 형태다. 여기서 다시
+    문장을 만들지 않는다 — 두 곳에서 만들면 두 곳이 갈린다.
+    """
+    from argus.dashboard import theme
+    from argus.desktop.app import _health_line
+
+    now = 10_000.0
+    health = {
+        "open": {"id": 42, "ts_start": now - 720, "severity": "critical",
+                 "title": "디스크 병목 — chrome 68%"},
+        "last_end_ts": now - 99_999,
+        "sample_ts": now - 2,
+    }
+    text, detail, colour, incident = _health_line(health, now)
+    assert text == "디스크 병목 — chrome 68%"
+    assert colour == theme.STATUS["critical"], "심각한 사건인데 경고색이다"
+    assert "12분" in detail
+    assert incident == 42, "사건을 열 수 있어야 한다 — 못 열면 그냥 불안만 준다"
+
+
+def test_status_line_offers_the_incident_only_when_there_is_one(qapp) -> None:
+    """**배선 확인.** 판정이 맞아도 버튼이 안 뜨면 사용자는 사건에 닿지 못한다."""
+    from argus.desktop.app import _StatusLine
+
+    line = _keep(_StatusLine())
+    now = time.time()
+    line.update_health({"open": None, "last_end_ts": None, "sample_ts": now})
+    assert line._open_btn.isHidden(), "사건이 없는데 '사건 보기'가 떠 있다"
+    assert line.text == "정상"
+
+    line.update_health(
+        {
+            "open": {"id": 7, "ts_start": now - 60, "severity": "warning", "title": "CPU 병목"},
+            "last_end_ts": None,
+            "sample_ts": now,
+        }
+    )
+    assert not line._open_btn.isHidden()
+    assert line.text == "CPU 병목"
+
+
+def test_status_says_nothing_was_collected_yet() -> None:
+    """표본이 아예 없는 것은 고장이 아니라 **아직 안 켠 것**이다. 빨간불이 아니다."""
+    from argus.dashboard import theme
+    from argus.desktop.app import _health_line
+
+    text, _detail, colour, _id = _health_line(
+        {"open": None, "last_end_ts": None, "sample_ts": None}, 10_000.0
+    )
+    assert "없습니다" in text
+    assert colour != theme.STATUS["critical"], "안 켠 것을 고장으로 표시했다"
 
 
 # ---------------------------------------------------------------- 알림 → 사건

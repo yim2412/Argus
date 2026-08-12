@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -139,6 +140,149 @@ class _Banner(QtWidgets.QLabel):
         self.show()
 
 
+#: 마지막 표본이 이보다 오래됐으면 수집이 멈춘 것으로 본다(초). 수집 주기는 1초지만
+#: 스로틀이 걸리면 ×10 까지 늦춰지므로(`runtime/budget`) 그보다 넉넉해야 한다 —
+#: 스로틀은 정상 동작이고, 그때마다 "수집 멈춤"이 뜨면 그것이 오탐이다.
+STALE_SAMPLE_S = 60.0
+
+
+class _HealthPoller(QtCore.QThread):
+    """맨 윗줄이 쓸 답 하나를 5초마다 물어 온다.
+
+    **UI 스레드에서 DB 를 읽지 않는다**(다른 페이지와 같은 규칙). 조회 자체는
+    가볍지만, 성능 모니터가 자기 창에서 버벅이는 것보다 나쁜 인상은 없다.
+    """
+
+    loaded = QtCore.Signal(dict)
+
+    def __init__(self, interval_s: float = 5.0) -> None:
+        super().__init__()
+        self._interval_s = interval_s
+        self._stop = False
+
+    def run(self) -> None:
+        while not self._stop:
+            try:
+                self.loaded.emit(data.health())
+            except Exception:
+                # DB 가 아직 없거나 잠깐 잠겼을 뿐이다. 맨 윗줄 하나 때문에 창이
+                # 죽으면 안 된다 — 다음 주기에 다시 묻는다.
+                pass
+            self.msleep(int(self._interval_s * 1000))
+
+    def stop(self) -> None:
+        self._stop = True
+        self.wait(3000)
+
+
+class _StatusLine(QtWidgets.QFrame):
+    """**"지금 괜찮은가" 한 줄.** 어느 탭을 보든 맨 위에 있다.
+
+    이 줄이 이 창의 답이다. 그전까지는 사용자가 수치 다섯 개와 차트 다섯 개를
+    직접 해석해야 했고, 이미 문장으로 만들어 둔 판정(`incidents.title`)은 사건 탭을
+    따로 열어야만 보였다 — **탐지가 아니라 설명이 산출물이다**(설계 규칙).
+
+    **색만으로 뜻을 지지 않는다**(theme 규칙). 색과 함께 항상 말로 쓴다.
+    """
+
+    clicked = QtCore.Signal(int)  # 진행 중 사건 id — 누르면 그 사건을 편다
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        self._incident_id: int | None = None
+
+        row = QtWidgets.QHBoxLayout(self)
+        row.setContentsMargins(14, 9, 14, 9)
+        row.setSpacing(10)
+
+        self._dot = QtWidgets.QLabel("●")
+        self._text = QtWidgets.QLabel("확인하는 중…")
+        self._text.setStyleSheet(f"color: {theme.INK}; font-size: 14px; font-weight: 600;")
+        self._detail = QtWidgets.QLabel("")
+        self._detail.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 11px;")
+
+        row.addWidget(self._dot)
+        row.addWidget(self._text)
+        row.addWidget(self._detail)
+        row.addStretch(1)
+
+        self._open_btn = QtWidgets.QPushButton("사건 보기")
+        self._open_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self._open_btn.clicked.connect(self._on_clicked)
+        self._open_btn.hide()
+        row.addWidget(self._open_btn)
+
+        self._paint(theme.INK_MUTED)
+
+    def _paint(self, colour: str) -> None:
+        self._dot.setStyleSheet(f"color: {colour}; font-size: 14px;")
+        self.setStyleSheet(
+            f"QFrame {{ background: {theme.SURFACE}; border: 1px solid {colour};"
+            f" border-radius: 8px; }}"
+        )
+
+    def _on_clicked(self) -> None:
+        if self._incident_id is not None:
+            self.clicked.emit(self._incident_id)
+
+    @QtCore.Slot(dict)
+    def update_health(self, health: dict) -> None:
+        text, detail, colour, incident_id = _health_line(health, time.time())
+        self._incident_id = incident_id
+        self._text.setText(text)
+        self._detail.setText(detail)
+        self._paint(colour)
+        self._open_btn.setVisible(incident_id is not None)
+
+    # 테스트가 읽는다 — 창을 띄우지 않고 문구를 확인하기 위한 것이다.
+    @property
+    def text(self) -> str:
+        return self._text.text()
+
+
+def _health_line(health: dict, now: float) -> tuple[str, str, str, int | None]:
+    """상태 한 줄의 **문구·색 판정.** 위젯과 떼어 둬 테스트가 직접 부른다.
+
+    순서에 인과가 있다. **수집이 멈췄는지를 먼저 본다** — 멈추면 사건도 생기지
+    않으므로 "정상"과 "죽음"이 똑같이 조용해 보이고, 그 상태로 초록불을 켜면
+    사용자는 모니터가 죽은 것을 모른 채 안심한다(설계 규칙 4: 조용히 실패하지 않는다).
+    """
+    sample_ts = health.get("sample_ts")
+    if sample_ts is None:
+        return ("수집된 데이터가 없습니다", "상주가 아직 켜지지 않았습니다",
+                theme.INK_MUTED, None)
+
+    age = now - float(sample_ts)
+    if age > STALE_SAMPLE_S:
+        return ("수집이 멈췄습니다", f"마지막 표본 {_ago(age)} 전 — 상주를 확인하세요",
+                theme.STATUS["critical"], None)
+
+    incident = health.get("open")
+    if incident:
+        severity = str(incident.get("severity") or "warning")
+        colour = theme.STATUS.get(severity, theme.STATUS["warning"])
+        started = now - float(incident["ts_start"])
+        return (str(incident.get("title") or "이상 감지"), f"{_ago(started)}째 진행 중",
+                colour, int(incident["id"]))
+
+    last_end = health.get("last_end_ts")
+    detail = f"마지막 사건 {_ago(now - float(last_end))} 전" if last_end else "기록된 사건 없음"
+    return ("정상", detail, theme.STATUS["good"], None)
+
+
+def _ago(seconds: float) -> str:
+    """사람이 읽는 경과 시간. **초 단위 숫자는 판단에 쓰이지 않는다.**"""
+    seconds = max(0.0, seconds)
+    if seconds < 60:
+        return f"{seconds:.0f}초"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f}분"
+    if seconds < 86400:
+        return f"{seconds / 3600:.0f}시간"
+    return f"{seconds / 86400:.0f}일"
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, incident_id: int | None = None) -> None:
         super().__init__()
@@ -187,6 +331,10 @@ class MainWindow(QtWidgets.QMainWindow):
         content_box.setContentsMargins(16, 16, 16, 8)
         self._banner = _Banner()
         content_box.addWidget(self._banner)
+        # **답이 먼저, 근거가 뒤.** 페이지(수치·차트)는 이 한 줄의 근거다.
+        self.status_line = _StatusLine()
+        self.status_line.clicked.connect(self._open_incident)
+        content_box.addWidget(self.status_line)
         content_box.addWidget(self._stack)
         row.addWidget(content, stretch=1)
 
@@ -199,6 +347,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._clock.timeout.connect(self._refresh_status)
         self._clock.start(1000)
         self._refresh_status()
+
+        self._health = _HealthPoller()
+        self._health.loaded.connect(self.status_line.update_health)
+        self._health.start()
 
         # 알림을 눌러서 들어온 경우. **평가하러 온 사람을 목록 앞에 세우지 않는다** —
         # 그 사건을 찾는 일이 남아 있으면 거기서 그만둔다(14일간 피드백 0건이 그 결과다).
@@ -240,12 +392,18 @@ class MainWindow(QtWidgets.QMainWindow):
     def _page_index(self, widget: QtWidgets.QWidget) -> int:
         return self._page_of.get(widget, 0)
 
+    def _open_incident(self, incident_id: int) -> None:
+        """맨 윗줄의 "사건 보기". 알림을 누른 것과 같은 경로다."""
+        self._nav.setCurrentRow(self._page_index(self.incidents))
+        self.incidents.focus_incident(incident_id)
+
     def _refresh_status(self) -> None:
         self.statusBar().showMessage(self.realtime.status_text())
         # DB 존재 확인은 `Path.exists()` 한 번이라 1초마다 해도 된다. 조회가 아니다.
         self._banner.update_text(first_run_notice())
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self._health.stop()
         self.realtime.stop()
         self.processes.stop()
         self.incidents.stop()
@@ -299,6 +457,9 @@ def main(seconds: float | None = None, incident_id: int | None = None) -> int:
             f"  사용시간 조회 {window.usage.load_count}회 · "
             f"프로그램 {window.usage.row_count}종"
         )
+        # **맨 윗줄이 이 창의 답이다.** 실제로 무슨 문장이 떴는지 남긴다 —
+        # 폴러·시그널이 끊기면 "확인하는 중…" 이 그대로 찍힌다.
+        print(f"  상태 한 줄: {window.status_line.text}")
         if live == 0:
             print("[FAIL] 실시간 표본이 하나도 없다 — 조회나 시그널 경계가 깨졌다")
             return 1
@@ -311,6 +472,9 @@ def main(seconds: float | None = None, incident_id: int | None = None) -> int:
         # 데이터가 없어도 빈 결과가 한 번은 와야 한다 — 0 이면 워커·시그널이 끊긴 것이다.
         if window.usage.load_count == 0:
             print("[FAIL] 사용시간 조회가 한 번도 돌지 않았다")
+            return 1
+        if window.status_line.text == "확인하는 중…":
+            print("[FAIL] 상태 한 줄이 한 번도 갱신되지 않았다 — 폴러나 시그널이 끊겼다")
             return 1
         print("[OK] desktop.app")
     return code

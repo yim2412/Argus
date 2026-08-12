@@ -295,6 +295,34 @@ def incidents(days: float = 7.0, limit: int = 200) -> list[dict]:
     )
 
 
+@ttl_cache(5.0)
+def health() -> dict:
+    """**"지금 괜찮은가"의 답 한 줄.** 창 맨 위가 이것만 쓴다.
+
+    사용자가 창을 여는 이유는 "지금 괜찮은가"이지 "CPU 가 몇 %인가"가 아니다.
+    그 답은 이미 `incidents` 에 문장으로 들어 있는데(`title` 이 "디스크 병목 —
+    chrome 68%" 형태다) 지금까지는 사건 탭을 열어야만 보였다.
+
+    돌려주는 것은 셋이다 — 진행 중인 사건, 마지막으로 끝난 사건의 시각, 그리고
+    최신 표본의 시각. 마지막 것이 있어야 **"조용한 것"과 "죽은 것"을 가른다**:
+    수집이 멈추면 사건도 안 생기므로 둘 다 똑같이 조용해 보인다.
+    """
+    open_rows = query(
+        "SELECT id, ts_start, severity, title FROM incidents"
+        " WHERE ts_end IS NULL ORDER BY ts_start DESC LIMIT 1"
+    )
+    closed = query(
+        "SELECT ts_end FROM incidents WHERE ts_end IS NOT NULL"
+        " ORDER BY ts_end DESC LIMIT 1"
+    )
+    sample = query("SELECT MAX(ts) AS ts FROM metrics_raw")
+    return {
+        "open": open_rows[0] if open_rows else None,
+        "last_end_ts": closed[0]["ts_end"] if closed else None,
+        "sample_ts": sample[0]["ts"] if sample else None,
+    }
+
+
 @ttl_cache(10.0)
 def incident_signals(incident_id: int) -> list[dict]:
     return query(
