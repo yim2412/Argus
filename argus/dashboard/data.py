@@ -362,12 +362,22 @@ def _day_cutoff(days: int) -> str:
 
 # 하루에 한 번 접히는 값이라 캐시를 길게 잡는다. 창을 열 때마다 다시 물을 이유가 없다.
 @ttl_cache(300.0)
-def program_usage(days: int = 30, limit: int = 100) -> list[dict]:
+def program_usage(days: int = 30, limit: int = 100, user_only: bool = False) -> list[dict]:
     """최근 `days` 일 누적 사용시간 상위.
 
     **`observed_s` 를 함께 돌려준다.** "38시간"만 보면 많은지 적은지 알 수 없다 —
     그동안 PC 가 몇 시간 켜져 있었는지가 있어야 뜻이 생긴다.
+
+    `user_only` 는 **사람이 직접 쓰는 프로그램만** 남긴다(포어그라운드 이력이 있는
+    것). 그러지 않으면 상위가 전부 배경 서비스다 — svchost 238h · conhost 209h ·
+    runtimebroker 200h. 정의대로 동작한 결과지만 "내가 무엇을 얼마나 했나"의 답은
+    아니다. 판정은 `program_info.foreground_seen` 에 있고 `collector/proginfo` 가 채운다.
     """
+    where = "u.day >= ?"
+    if user_only:
+        # **`INNER JOIN` 으로 바꾸지 않는다.** 아래 LEFT JOIN 이 그대로 있어야
+        # 설명이 없는 프로그램(버전 리소스가 없는 exe)도 남는다.
+        where += " AND i.foreground_seen = 1"
     return query(
         "SELECT u.name AS name, SUM(u.seconds) AS seconds, SUM(u.launches) AS launches,"
         "       COUNT(*) AS days, i.description AS description, i.company AS company"
@@ -375,7 +385,7 @@ def program_usage(days: int = 30, limit: int = 100) -> list[dict]:
         # **LEFT JOIN 이다.** 설명은 나중에 채워지는 표시용 값이라, 아직 없다고
         # 사용시간 행이 사라지면 안 된다.
         " LEFT JOIN program_info i ON i.name = u.name"
-        " WHERE u.day >= ?"
+        f" WHERE {where}"
         " GROUP BY u.name ORDER BY seconds DESC LIMIT ?",
         (_day_cutoff(days), limit),
     )

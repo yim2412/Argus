@@ -1115,6 +1115,32 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    Mutant(
+        "usage_user_only_filter",
+        "사용시간 표가 사람이 쓰는 프로그램만 거른다 (아니면 상위가 전부 배경 서비스다)",
+        (
+            (
+                "argus/dashboard/data.py",
+                '        where += " AND i.foreground_seen = 1"',
+                "        pass  # MUTANT: 필터 없음",
+            ),
+        ),
+    ),
+    Mutant(
+        "foreground_mark_upserts",
+        "포어그라운드 표시는 없는 행도 만든다 (UPDATE 만 하면 설명 없는 게임이 빠진다)",
+        (
+            (
+                "argus/collector/proginfo.py",
+                '                " VALUES (?, NULL, NULL, 0, ?, 1)"\n'
+                '                " ON CONFLICT(name) DO UPDATE SET foreground_seen = 1",',
+                '                " VALUES (?, NULL, NULL, 0, ?, 1)"\n'
+                '                " ON CONFLICT(name) DO UPDATE SET foreground_seen = 1"'
+                "  # MUTANT 아래 줄에서 무력화\n"
+                '                " WHERE 0",',
+            ),
+        ),
+    ),
 ]
 
 

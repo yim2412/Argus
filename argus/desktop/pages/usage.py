@@ -32,6 +32,7 @@ class UsagePoller(QtCore.QThread):
         super().__init__()
         self.interval_s = interval_s
         self._days = 30
+        self._user_only = True
         self._stop = False
         self._wake = QtCore.QSemaphore(0)
 
@@ -39,11 +40,15 @@ class UsagePoller(QtCore.QThread):
         self._days = days
         self._wake.release()
 
+    def set_user_only(self, user_only: bool) -> None:
+        self._user_only = user_only
+        self._wake.release()
+
     def run(self) -> None:
         while not self._stop:
             days = self._days or _ALL_DAYS
             try:
-                rows = data.program_usage(days=days, limit=200)
+                rows = data.program_usage(days=days, limit=200, user_only=self._user_only)
                 observed = data.program_usage_observed(days=days)
             except Exception:
                 rows, observed = [], 0.0
@@ -74,6 +79,19 @@ class UsagePage(QtWidgets.QWidget):
         self._range.setCurrentIndex(1)  # 최근 30일
         self._range.currentIndexChanged.connect(self._on_range_changed)
         top.addWidget(self._range)
+
+        # **기본은 켜짐.** 끄면 상위가 전부 배경 서비스라(svchost 238h · conhost 209h)
+        # "내가 무엇을 얼마나 했나"를 읽을 수 없다. 그래도 끌 수 있게 두는 이유는
+        # 그 값이 틀린 것이 아니라 다른 질문의 답이기 때문이다.
+        self._user_only = QtWidgets.QCheckBox("내가 쓴 프로그램만")
+        self._user_only.setChecked(True)
+        self._user_only.setToolTip(
+            "창을 띄워 앞에 놓인 적이 있는 프로그램만 봅니다.\n"
+            "끄면 배경 서비스까지 전부 나옵니다."
+        )
+        self._user_only.toggled.connect(self._on_filter_changed)
+        top.addWidget(self._user_only)
+
         top.addStretch(1)
         outer.addLayout(top)
 
@@ -107,11 +125,13 @@ class UsagePage(QtWidgets.QWidget):
         split.addWidget(self._table, stretch=3)
         outer.addLayout(split, stretch=3)
 
-        # **배경 서비스가 상위를 차지하는 것은 버그가 아니다.** svchost 는 늘 떠 있으니
-        # 사용시간이 길다. 그 사실을 화면에서 말해 주지 않으면 값이 틀린 것처럼 보인다.
+        # **"켜져 있던 시간"과 "쓰고 있던 시간"은 다르다.** 게임을 켜 두고 자리를
+        # 비우면 그 시간도 세어진다. 그 사실을 화면에서 말해 주지 않으면 값이 틀린
+        # 것처럼 보인다.
         note = QtWidgets.QLabel(
-            "켜져 있던 시간입니다(창을 보고 있던 시간이 아닙니다). "
-            "늘 떠 있는 시스템 서비스가 상위에 오는 것이 정상입니다."
+            "프로그램이 켜져 있던 시간입니다(창을 보고 있던 시간이 아닙니다). "
+            "체크를 끄면 배경 서비스까지 전부 나옵니다 — 늘 떠 있는 것들이라 "
+            "상위를 차지하는 것이 정상입니다."
         )
         note.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 11px;")
         outer.addWidget(note)
@@ -127,6 +147,9 @@ class UsagePage(QtWidgets.QWidget):
 
     def _on_range_changed(self) -> None:
         self._poller.set_days(int(self._range.currentData()))
+
+    def _on_filter_changed(self, user_only: bool) -> None:
+        self._poller.set_user_only(user_only)
 
     @QtCore.Slot(list, float)
     def _on_rows(self, rows: list, observed: float) -> None:

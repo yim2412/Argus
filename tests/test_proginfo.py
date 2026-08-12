@@ -21,7 +21,14 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows 버전 
 
 
 @pytest.fixture()
-def db(tmp_path):
+def db(tmp_path, monkeypatch):
+    """**데이터 폴더째 격리한다.**
+
+    DB 만 `tmp_path` 로 돌려도 부족하다 — 웜 백필은 `warm_dir()` 을 보고, 그것은
+    `%APPDATA%\\Argus\\warm` 을 가리킨다. 처음에 그러고 돌렸더니 테스트가 실제
+    파티션을 읽어 이 PC 의 게임 목록이 단언에 튀어나왔다.
+    """
+    monkeypatch.setenv("ARGUS_DATA_DIR", str(tmp_path))
     database = Database(tmp_path / "t.db").open()
     yield database
     database.close()
@@ -128,6 +135,93 @@ def test_batch_limits_work_per_tick(db) -> None:
     assert collector.run_once() == 4
     assert collector.run_once() == 2, "남은 것을 마저 읽지 않았다"
     assert collector.run_once() == 0
+
+
+# ---------------------------------------------------------------- 포어그라운드
+
+
+def _buckets(db: Database, rows: list[tuple[str, float]]) -> None:
+    """`process_5m` 에 (이름, 포어그라운드 비율) 몇 개."""
+    db.insert_many(
+        "process_5m",
+        ("ts_5m", "name", "sample_count", "pid_count", "foreground_ratio"),
+        [(1000.0 + i * 300, name, 10, 1, ratio) for i, (name, ratio) in enumerate(rows)],
+    )
+
+
+def test_only_foreground_programs_are_marked(db) -> None:
+    """**배경 서비스와 사람이 쓰는 프로그램을 가른다.**
+
+    가르지 않으면 사용시간 상위가 전부 svchost·conhost·runtimebroker 다 —
+    정의대로 동작한 결과지만 "내가 무엇을 얼마나 했나"의 답은 아니다.
+    """
+    _buckets(db, [("chrome", 1.0), ("svchost", 0.0), ("league of legends", 0.61)])
+
+    ProgramInfoCollector(db).mark_foreground()
+
+    marked = {
+        row["name"]
+        for row in db.query("SELECT name FROM program_info WHERE foreground_seen = 1")
+    }
+    assert marked == {"chrome", "league of legends"}, marked
+
+
+def test_marking_adds_rows_for_programs_without_a_description(db) -> None:
+    """**UPDATE 가 아니라 UPSERT 다.**
+
+    설명을 못 얻은 이름은 `program_info` 에 행 자체가 없다(exe 경로를 못 찾은
+    것들 — 실측 427종 중 22종). UPDATE 만 하면 그것들이 조용히 빠지고, 하필 그
+    중에 사용자가 쓰는 프로그램이 있을 수 있다.
+    """
+    _buckets(db, [("설명없는게임", 0.9)])
+    assert db.query("SELECT COUNT(*) AS n FROM program_info")[0]["n"] == 0
+
+    ProgramInfoCollector(db).mark_foreground()
+
+    row = db.query("SELECT foreground_seen, description FROM program_info")[0]
+    assert row["foreground_seen"] == 1
+    assert row["description"] is None, "없던 설명을 지어내면 안 된다"
+
+
+def test_mark_survives_the_original_rolling_off(db) -> None:
+    """**한 번 참이면 계속 참이다.**
+
+    포어그라운드 원본(`process_5m`)은 이틀이 지나면 웜으로 옮겨가 SQLite 에서
+    사라진다. 매번 다시 판정하면 사흘 전에 한 게임이 목록에서 빠진다.
+    """
+    _buckets(db, [("어제한게임", 1.0)])
+    collector = ProgramInfoCollector(db)
+    collector.mark_foreground()
+
+    with db._lock:  # noqa: SLF001
+        db.conn.execute("DELETE FROM process_5m")  # 웜으로 옮겨간 상황
+        db.conn.commit()
+    collector.mark_foreground()
+
+    row = db.query("SELECT foreground_seen FROM program_info WHERE name = '어제한게임'")[0]
+    assert row["foreground_seen"] == 1, "원본이 사라지자 표시를 잃었다"
+
+
+def test_warm_backfill_runs_only_once(db, monkeypatch) -> None:
+    """웜(Parquet) 훑기는 **일회성 백필**이다.
+
+    과거치를 되살리는 것뿐이고 그 뒤로는 핫이 매일 따라잡는다. 10분마다 Parquet
+    전체를 읽을 이유가 없다(설계 규칙 1).
+    """
+    collector = ProgramInfoCollector(db)
+    calls: list[int] = []
+    monkeypatch.setattr(
+        collector, "_foreground_names_warm", lambda: calls.append(1) or {"옛게임"}
+    )
+
+    collector.mark_foreground()
+    collector.mark_foreground()
+    collector.mark_foreground()
+
+    assert len(calls) == 1, f"웜을 {len(calls)}번 훑었다"
+    assert db.query("SELECT foreground_seen FROM program_info WHERE name = '옛게임'")[0][
+        "foreground_seen"
+    ] == 1
 
 
 def test_only_the_most_recent_path_is_used(db) -> None:

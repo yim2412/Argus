@@ -39,6 +39,9 @@ BATCH = 40
 #: 실패가 일시적일 수 있어서다 — 업데이트 중이라 잠긴 순간에 걸리는 경우.
 MAX_ATTEMPTS = 3
 
+#: 웜까지 훑는 포어그라운드 백필을 이미 했는지. 일회성이다.
+_WARM_BACKFILL_KEY = "foreground_warm_backfill"
+
 _version_dll = None
 if sys.platform == "win32":  # pragma: no branch - 배포 대상은 Windows 뿐이다
     try:
@@ -109,6 +112,85 @@ class ProgramInfoCollector(Component):
 
     def tick(self) -> None:
         self.run_once()
+        self.mark_foreground()
+
+    def mark_foreground(self) -> int:
+        """포어그라운드에 있었던 프로그램에 표시한다. 새로 표시한 개수.
+
+        **한 번 참이면 계속 참이다.** 포어그라운드 원본(`process_5m`)은 이틀이
+        지나면 웜으로 옮겨가 SQLite 에서 사라지므로, 매번 다시 판정하면 사흘 전에
+        한 게임이 목록에서 빠진다.
+
+        핫은 매 회차 본다(싸다). **웜은 처음 한 번만 훑는다** — 과거치를 되살리는
+        일회성 백필이고, 그 뒤로는 핫이 매일 따라잡는다. 10분마다 Parquet 전체를
+        읽을 이유가 없다(설계 규칙 1).
+        """
+        names = self._foreground_names_hot()
+        if not self._warm_backfilled():
+            names |= self._foreground_names_warm()
+            self._set_state(_WARM_BACKFILL_KEY, "1")
+
+        if not names:
+            return 0
+
+        before = self._marked_count()
+        now = time.time()
+        # **UPDATE 가 아니라 UPSERT 다.** 설명을 아직 못 얻은 이름은 `program_info` 에
+        # 행 자체가 없다(exe 경로를 못 찾은 22종이 그렇다). UPDATE 만 하면 그것들이
+        # 조용히 빠지고, 하필 그 중에 사용자가 쓰는 프로그램이 있을 수 있다.
+        with self.db._lock:  # noqa: SLF001
+            self.db.conn.executemany(
+                "INSERT INTO program_info"
+                " (name, description, company, attempts, checked_at, foreground_seen)"
+                " VALUES (?, NULL, NULL, 0, ?, 1)"
+                " ON CONFLICT(name) DO UPDATE SET foreground_seen = 1",
+                [(name, now) for name in sorted(names)],
+            )
+            self.db.conn.commit()
+        marked = self._marked_count() - before
+        if marked:
+            log.info("포어그라운드 프로그램 %d개 표시", marked)
+        return marked
+
+    def _marked_count(self) -> int:
+        return int(
+            self.db.query("SELECT COUNT(*) AS n FROM program_info WHERE foreground_seen = 1")[0]["n"]
+        )
+
+    def _foreground_names_hot(self) -> set[str]:
+        return {
+            row["name"]
+            for row in self.db.query(
+                "SELECT DISTINCT name FROM process_5m WHERE foreground_ratio > 0"
+            )
+        }
+
+    def _foreground_names_warm(self) -> set[str]:
+        """웜(Parquet)까지 훑는 일회성 백필. 실패해도 조용히 넘어간다 —
+        과거치가 조금 늦게 채워질 뿐이고 핫이 매일 따라잡는다."""
+        try:
+            from ..storage import history
+
+            rows = history._by_day(  # noqa: SLF001 — 병합 규칙을 재구현하지 않는다
+                "process",
+                "SELECT strftime(to_timestamp(ts_5m), '%Y-%m-%d'), name"
+                " FROM warm_process WHERE foreground_ratio > 0",
+                "SELECT strftime('%Y-%m-%d', ts_5m, 'unixepoch', 'localtime'), name"
+                " FROM process_5m WHERE foreground_ratio > 0",
+            )
+        except Exception as exc:
+            log.debug("웜 포어그라운드 백필 실패 — 핫만 쓴다", extra={"error": str(exc)})
+            return set()
+        return {name for _day, name in rows}
+
+    def _warm_backfilled(self) -> bool:
+        rows = self.db.query(
+            "SELECT value FROM program_info_state WHERE key = ?", (_WARM_BACKFILL_KEY,)
+        )
+        return bool(rows)
+
+    def _set_state(self, key: str, value: str) -> None:
+        self.db.insert_many("program_info_state", ("key", "value"), [(key, value)], replace=True)
 
     def run_once(self) -> int:
         """이번 회차에 채운 개수. 더 채울 것이 없으면 0."""
