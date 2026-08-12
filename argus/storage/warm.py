@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -434,6 +435,7 @@ class WarmExporter(Component):
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_s,
+                env=export_env(),
                 # 콘솔 없는 상주(`pythonw`)에서 자식이 창을 띄우면 안 된다.
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
@@ -460,6 +462,10 @@ class WarmExporter(Component):
                 continue
             if payload.get("exported"):
                 log.info("웜 내보내기(자식)", extra={"exported": payload["exported"]})
+            else:
+                # **성공했는데 내보낼 것이 없는 경우도 남긴다.** 이 줄이 없으면
+                # "자식이 잘 돌았다"와 "자식이 아예 안 불렸다"가 똑같이 조용하다.
+                log.debug("웜 내보내기(자식) — 내보낼 날짜 없음")
             return
 
 
@@ -474,6 +480,26 @@ def export_command() -> list[str]:
     if is_frozen():
         return [sys.executable, "--export-warm"]
     return [sys.executable, "-m", "argus", "--export-warm"]
+
+
+def export_env() -> dict[str, str]:
+    """자식에게 물려줄 환경. **`sys.path` 를 통째로 넘긴다.**
+
+    상주는 base `pythonw.exe` 로 돌고 venv 경로를 `site.addsitedir()` 로 세운다
+    (`tools/soak_entry.py` — venv 트램폴린이 콘솔 창을 띄우기 때문이다). 그래서
+    `sys.executable` 은 venv 가 아닌 인터프리터이고, 자식을 그냥 띄우면
+    **`ModuleNotFoundError: psutil`** 로 죽는다. 2026-08-12 첫 배선에서 실제로
+    그랬다 — 자식이 뜨긴 뜨는데 아무것도 못 하고 매시간 실패 로그만 남겼다.
+
+    부모가 이미 세워 둔 경로를 그대로 물려주면 어떤 기동 방식이든 따라온다.
+    """
+    env = dict(os.environ)
+    inherited = [p for p in sys.path if p]
+    existing = env.get("PYTHONPATH")
+    if existing:
+        inherited.append(existing)
+    env["PYTHONPATH"] = os.pathsep.join(inherited)
+    return env
 
 
 if __name__ == "__main__":  # 스모크: python -m argus.storage.warm

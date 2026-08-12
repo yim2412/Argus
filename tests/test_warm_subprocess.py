@@ -126,6 +126,40 @@ def test_child_failure_does_not_raise(exporter, monkeypatch) -> None:
     component.tick()
 
 
+def test_child_actually_runs_under_the_resident_interpreter(tmp_path) -> None:
+    """**자식이 진짜로 뜨는지 본다.** 나머지 테스트는 `subprocess.run` 을 모킹한다.
+
+    2026-08-12 첫 배선이 여기서 걸렸다. 상주는 base `pythonw.exe` 로 돌고 venv
+    경로를 `site.addsitedir()` 로 세우는데(`tools/soak_entry.py` — venv 트램폴린이
+    콘솔 창을 띄우기 때문), 자식은 그 경로를 물려받지 못해
+    `ModuleNotFoundError: psutil` 로 죽었다. **모킹한 테스트는 전부 통과했다** —
+    자식이 뜨긴 뜨는데 아무것도 못 하고 매시간 실패 로그만 남겼다.
+
+    상주의 조건(venv 를 모르는 인터프리터)을 그대로 재현한다: `-E` 로 부모의
+    PYTHONPATH 를 끄고 `sys.path` 만 넘겨 준다.
+    """
+    from argus.storage.warm import export_command, export_env
+
+    command = export_command()
+    env = export_env()
+    env["ARGUS_DATA_DIR"] = str(tmp_path)
+
+    done = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(tmp_path),  # **프로젝트 밖에서 돈다** — cwd 덕에 되는 것이면 안 된다
+        timeout=180,
+    )
+
+    assert done.returncode == 0, (
+        f"자식이 실제로는 못 돈다 (returncode {done.returncode})\n{done.stderr[-800:]}"
+    )
+    payload = json.loads(done.stdout.strip().splitlines()[-1])
+    assert "exported" in payload, done.stdout
+
+
 def test_frozen_and_source_take_different_commands(monkeypatch) -> None:
     """**exe 와 소스 실행이 다른 명령이다.**
 
