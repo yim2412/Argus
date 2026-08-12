@@ -7,6 +7,32 @@
 
 ## [Unreleased]
 
+### 사용시간에 "내가 쓴 프로그램만" (2026-08-12)
+
+사용시간 표의 상위가 전부 배경 서비스였습니다 — svchost 238h · conhost 209h ·
+runtimebroker 200h. 정의대로 동작한 결과지만("켜져 있던 시간") 알고 싶은 것은
+"내가 무엇을 얼마나 했나"입니다.
+
+**포어그라운드 이력으로 가릅니다.** 창을 띄워 앞에 놓인 적이 있으면 사람이 쓰는
+프로그램입니다. 경로나 회사명으로는 안 갈립니다 — `crashpad_handler`(사용자 폴더)·
+`node`·`saclient`(Program Files)가 전부 통과하고, Microsoft 를 빼면 탐색기·
+작업관리자까지 사라집니다.
+
+거기에 **개발·운영 도구와 Windows 셸 호스트**를 `usage.exclude`(YAML)로 더 뺍니다.
+사람마다 경계가 다르므로 코드가 아니라 설정입니다 — 개발자에게 터미널은 도구지
+콘텐츠가 아니고, 누군가에게는 그 반대입니다. `explorer`·`taskmgr` 은 빼지 않았고,
+Argus 자신은 뺐습니다(관측자가 관측 대상 목록에 오르면 안 됩니다).
+
+```
+200종  →  74종(포어그라운드)  →  61종(제외 적용)
+
+chrome 213h · medal 199h · op.gg 148h · steamwebhelper 121h · discord 39h
+League of Legends · FC ONLINE · Football Manager · Delta Force · Civilization VI
+```
+
+체크박스는 기본 켜짐이고 끄면 전부 나옵니다 — 그 값이 틀린 것이 아니라 다른
+질문의 답이기 때문입니다.
+
 ### 상주 메모리 535MB → 208MB (2026-08-12)
 
 예산(RSS 300MB)을 넘겨 스로틀이 걸리던 문제의 실제 원인은 **`import pyarrow` 하나**
