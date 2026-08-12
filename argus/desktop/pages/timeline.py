@@ -20,6 +20,7 @@ from PySide6 import QtCore, QtWidgets
 from ...dashboard import data, theme
 from ..widgets import (
     MAIN_PLOT_HEIGHT,
+    Collapsible,
     Column,
     DataTable,
     HistoryChart,
@@ -103,7 +104,24 @@ class TimelinePage(QtWidgets.QWidget):
         grid.setRowStretch(1, 1)
         outer.addLayout(grid, stretch=4)
 
-        # --- 무엇을 하고 있었나 + 주입 이력
+        # --- 무엇을 하고 있었나 + 주입 이력 — **접어 둔다.**
+        #
+        # 이 페이지의 답은 차트에 있다("그때 무슨 수치였나"). 아래 두 표는 그 답을
+        # 얻은 뒤 이유를 찾을 때 보는 것이고, 주입 이력은 아예 개발용이다.
+        outer.addWidget(
+            Collapsible("자세히 — 무엇을 하고 있었나 · 결함 주입 이력", self._build_tables())
+        )
+
+        self._notice = message("1분 집계를 불러오는 중…")
+        outer.addWidget(self._notice)
+
+        self._reload()
+
+    def _build_tables(self) -> QtWidgets.QWidget:
+        panel = QtWidgets.QWidget()
+        outer = QtWidgets.QVBoxLayout(panel)
+        outer.setContentsMargins(0, 0, 0, 0)
+
         tables = QtWidgets.QHBoxLayout()
         tables.setSpacing(12)
 
@@ -133,12 +151,8 @@ class TimelinePage(QtWidgets.QWidget):
         )
         right.addWidget(self._faults)
         tables.addLayout(right)
-        outer.addLayout(tables, stretch=2)
-
-        self._notice = message("1분 집계를 불러오는 중…")
-        outer.addWidget(self._notice)
-
-        self._reload()
+        outer.addLayout(tables)
+        return panel
 
     # ------------------------------------------------------------------ 조회
 

@@ -588,6 +588,56 @@ def section(title: str) -> QtWidgets.QLabel:
     return label
 
 
+class Collapsible(QtWidgets.QWidget):
+    """제목 줄을 눌러 접었다 펴는 묶음.
+
+    **접힌 것은 최소 높이에 들어가지 않는다** — 이것이 이 위젯을 쓰는 이유다.
+    숨긴 위젯은 레이아웃 계산에서 빠지므로, 자주 안 보는 진단 항목을 접어 두면
+    페이지가 요구하는 높이 자체가 줄어든다(2026-08-12: 자기 상태 1179px 의 대부분이
+    저장소 표·스코어보드였다).
+
+    **`setVisible(False)` 로 숨긴다.** `setMaximumHeight(0)` 으로 눌러 접는 흔한
+    구현은 위젯이 여전히 살아 있어 최소 높이에 계속 잡히고, 그러면 접는 목적이
+    사라진다.
+
+    기본은 **접힘**이다. 펼 이유가 있는 사람만 편다.
+    """
+
+    def __init__(self, title: str, body: QtWidgets.QWidget, expanded: bool = False) -> None:
+        super().__init__()
+        self._body = body
+
+        box = QtWidgets.QVBoxLayout(self)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(6)
+
+        self._button = QtWidgets.QToolButton()
+        self._button.setText(title)
+        self._button.setCheckable(True)
+        self._button.setChecked(expanded)
+        self._button.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self._button.setArrowType(QtCore.Qt.DownArrow if expanded else QtCore.Qt.RightArrow)
+        self._button.setCursor(QtCore.Qt.PointingHandCursor)
+        self._button.setStyleSheet(
+            f"QToolButton {{ color: {theme.INK_SECONDARY}; font-size: 12px;"
+            f" font-weight: 600; border: none; padding: 4px 0; }}"
+            f"QToolButton:hover {{ color: {theme.INK}; }}"
+        )
+        self._button.toggled.connect(self._on_toggled)
+        box.addWidget(self._button)
+        box.addWidget(body)
+
+        body.setVisible(expanded)
+
+    def _on_toggled(self, checked: bool) -> None:
+        self._button.setArrowType(QtCore.Qt.DownArrow if checked else QtCore.Qt.RightArrow)
+        self._body.setVisible(checked)
+
+    @property
+    def expanded(self) -> bool:
+        return self._button.isChecked()
+
+
 def message(text: str) -> QtWidgets.QLabel:
     """데이터가 없을 때. **빈 화면 대신 왜 비었는지 말한다.**"""
     label = QtWidgets.QLabel(text)

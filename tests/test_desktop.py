@@ -820,6 +820,71 @@ def test_table_max_rows_never_undercuts_min_rows(qapp) -> None:
     assert table.maximumHeight() >= table.minimumHeight()
 
 
+#: 창이 열려야 하는 크기(px). **`_WANTED_H` 를 가져다 쓰지 않는다** — 기댓값을 검증
+#: 대상에서 가져오면 그 상수를 무엇으로 바꿔도 양쪽이 함께 바뀌어 통과한다
+#: (`READABLE_PLOT_PX` 와 같은 이유). HD 는 사용자가 정한 값이므로 여기 박아 둔다.
+HD_HEIGHT_PX = 720
+
+
+def test_no_single_page_dictates_the_window_minimum_height(qapp) -> None:
+    """**한 페이지가 창 전체의 하한을 정하지 못한다.**
+
+    `QStackedWidget` 은 담긴 페이지 전부의 최소 높이 중 최댓값을 자기 최소 높이로
+    삼는다. 스크롤 영역이 없으면 가장 빽빽한 페이지가 그대로 창의 하한이 되고,
+    나머지 페이지까지 그 크기를 끌고 다닌다 — 2026-08-12 실측: 자기 상태 페이지의
+    1179px 때문에 `resize(1280, 720)` 이 무시되고 창이 1280x1255 로 떴다.
+    **예외도 경고도 없었다.** 크기를 요청했는데 안 먹는 것뿐이라 `--seconds` 스모크는
+    그 상태에서도 전부 정상이었다.
+    """
+    from argus.desktop.app import MainWindow
+
+    window = _keep(MainWindow())
+    try:
+        window.resize(1280, HD_HEIGHT_PX)
+        window.show()
+        qapp.processEvents()
+        qapp.processEvents()
+        height = window.height()
+        hint = window.minimumSizeHint().height()
+        window.hide()
+    finally:
+        for page in (window.realtime, window.processes, window.incidents,
+                     window.timeline, window.usage):
+            page.stop()
+
+    assert height == HD_HEIGHT_PX, f"{HD_HEIGHT_PX}px 를 요청했는데 {height}px 로 열렸다"
+    assert hint <= HD_HEIGHT_PX, f"창 최소 높이가 {hint}px — 어떤 페이지가 하한을 밀고 있다"
+
+
+def test_collapsible_body_leaves_the_minimum_height(qapp) -> None:
+    """**접힌 것은 최소 높이에서 빠져야 한다.**
+
+    `setMaximumHeight(0)` 으로 눌러 접는 흔한 구현은 위젯이 살아 있어 최소 높이에
+    계속 잡힌다. 그러면 화면에서는 접혔는데 페이지가 요구하는 높이는 그대로라,
+    접는 목적(창을 작게 열기) 자체가 사라진다 — 보기에는 멀쩡해서 안 잡힌다.
+    """
+    from argus.desktop.widgets import Collapsible
+
+    body = QtWidgets.QWidget()
+    body.setMinimumHeight(400)  # 접기 전후 차이가 드러날 만큼 큰 내용
+    host = _keep(QtWidgets.QWidget())
+    box = QtWidgets.QVBoxLayout(host)
+    panel = Collapsible("자세히", body)
+    box.addWidget(panel)
+
+    collapsed = host.minimumSizeHint().height()
+    assert body.isHidden(), "기본이 접힘이 아니다"
+    assert collapsed < 400, f"접었는데 최소 높이 {collapsed}px 가 내용을 그대로 물고 있다"
+
+    panel._button.setChecked(True)
+    # 숨김 해제는 레이아웃을 무효화만 한다 — 다시 계산시켜야 값이 바뀐다. **안쪽부터**
+    # 해야 한다(바깥만 부르면 49px 그대로다). 실사용에서는 이벤트 루프가 알아서 한다.
+    panel.layout().activate()
+    box.activate()
+    assert not body.isHidden(), "펼쳤는데 내용이 안 보인다"
+    assert host.minimumSizeHint().height() >= 400, "펼쳤는데 자리를 요구하지 않는다"
+
+
 def test_window_never_opens_larger_than_the_screen(qapp) -> None:
     """**하드웨어를 가정하지 않는다**(설계 규칙 2).
 

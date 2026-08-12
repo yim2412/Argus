@@ -1067,6 +1067,30 @@ MUTANTS: list[Mutant] = [
         ),
         note="수집기는 첫 스냅샷에서 이미 떠 있던 프로세스 전부를 신규로 본다",
     ),
+    # ---- 2026-08-12: 창 크기. 둘 다 **예외 없이 창만 커지는** 종류다 —
+    # `--seconds` 스모크는 창이 1255px 로 뜨는 상태에서도 전부 정상이었다.
+    Mutant(
+        "page_scroll_area",
+        "페이지는 스크롤 영역에 담긴다 (아니면 가장 빽빽한 페이지가 창 하한을 정한다)",
+        (
+            (
+                "argus/desktop/app.py",
+                "        self._stack.addWidget(area)",
+                "        self._stack.addWidget(widget)  # MUTANT: 스크롤 영역 우회",
+            ),
+        ),
+    ),
+    Mutant(
+        "collapsible_starts_collapsed",
+        "접힌 묶음은 최소 높이에서 빠진다 (항상 펼치면 접는 의미가 없다)",
+        (
+            (
+                "argus/desktop/widgets.py",
+                "        body.setVisible(expanded)",
+                "        body.setVisible(True)  # MUTANT: 항상 펼침",
+            ),
+        ),
+    ),
 ]
 
 

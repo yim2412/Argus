@@ -19,6 +19,7 @@ from PySide6 import QtCore, QtWidgets
 from ...dashboard import data, theme
 from ..widgets import (
     MAIN_PLOT_HEIGHT,
+    Collapsible,
     Column,
     DataTable,
     HistoryChart,
@@ -127,8 +128,29 @@ class SelfStatePage(QtWidgets.QWidget):
         row.addWidget(self._io)
         outer.addLayout(row, stretch=2)
 
-        # --- 저장소
-        outer.addWidget(QtWidgets.QLabel("저장소"))
+        # --- 저장소 · 진단 기록 — **접어 둔다.**
+        #
+        # 이 페이지의 답은 "관측자가 병목이 되고 있나"이고, 그 답은 위 타일 다섯 개와
+        # 메모리 차트에 다 있다. 아래 넷(저장소 타일·테이블 보유·시스템 사건·채점
+        # 이력)은 무언가 이상할 때 찾아보는 것이지 매번 훑는 것이 아니다.
+        # 2026-08-12 실측: 이 페이지가 요구하는 1179px 중 504px 가 아래쪽이었고,
+        # 그 높이가 창 전체의 하한을 정하고 있었다.
+        outer.addWidget(Collapsible("저장소", self._build_storage()))
+        outer.addWidget(Collapsible("진단 기록 — 시스템 사건 · 탐지기 채점", self._build_diagnostics()))
+
+        self._notice = message("자기 계측 기록을 불러오는 중…")
+        outer.addWidget(self._notice)
+
+        self._reload()
+
+    # ------------------------------------------------------------------ 접힌 것
+
+    def _build_storage(self) -> QtWidgets.QWidget:
+        panel = QtWidgets.QWidget()
+        outer = QtWidgets.QVBoxLayout(panel)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
+
         self._storage_tiles = {
             key: StatTile(title)
             for key, title in (
@@ -164,8 +186,13 @@ class SelfStatePage(QtWidgets.QWidget):
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 10px;")
         outer.addWidget(hint)
+        return panel
 
-        # --- 시스템 사건 + 스코어보드
+    def _build_diagnostics(self) -> QtWidgets.QWidget:
+        panel = QtWidgets.QWidget()
+        outer = QtWidgets.QVBoxLayout(panel)
+        outer.setContentsMargins(0, 0, 0, 0)
+
         bottom = QtWidgets.QHBoxLayout()
         bottom.setSpacing(12)
 
@@ -198,12 +225,8 @@ class SelfStatePage(QtWidgets.QWidget):
         )
         right.addWidget(self._runs)
         bottom.addLayout(right)
-        outer.addLayout(bottom, stretch=2)
-
-        self._notice = message("자기 계측 기록을 불러오는 중…")
-        outer.addWidget(self._notice)
-
-        self._reload()
+        outer.addLayout(bottom)
+        return panel
 
     # ------------------------------------------------------------------ 조회
 
