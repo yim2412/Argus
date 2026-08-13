@@ -396,7 +396,7 @@ def test_incident_detail_renders_markdown_report(qapp) -> None:
     assert "디스크 응답이" in text
     assert "**" not in text, "마크다운이 그대로 문자로 남았다 — 렌더링되지 않았다"
     assert page._contributors.model().rowCount() == 1
-    assert page._normal_btn.isEnabled(), "사건을 골랐는데 피드백을 못 준다"
+    assert page._normal_box.isEnabled(), "사건을 골랐는데 피드백을 못 준다"
 
 
 def test_empty_incident_list_explains_why(qapp) -> None:
@@ -1477,7 +1477,7 @@ def test_incident_list_marks_unanswered_notifications() -> None:
     assert _list_row({**base, "id": 1, "notified": 1})["answer"] == "?"
     assert _list_row({**base, "id": 2, "notified": 0})["answer"] == ""
     assert _list_row({**base, "id": 3, "notified": 1, "user_label": "normal"})["answer"] == "정상"
-    assert _list_row({**base, "id": 4, "notified": 1, "user_label": "real"})["answer"] == "문제"
+    assert _list_row({**base, "id": 4, "notified": 1, "user_label": "real"})["answer"] == "비정상"
 
 
 def test_incident_tile_asks_instead_of_reporting_nothing(qapp) -> None:
@@ -1518,4 +1518,85 @@ def test_answer_button_goes_to_the_newest_unanswered(qapp, monkeypatch) -> None:
     page.focus_unlabeled()
     assert "없습니다" in page._detail_head.text(), "답할 것이 없다는 말을 하지 않았다"
     assert data.LABEL_WINDOW_DAYS  # 기간을 화면 문구가 쓴다 — 상수가 사라지면 여기서 걸린다
+
+
+
+def _selected_page(qapp, monkeypatch, rows):
+    """사건 하나를 고른 상태의 페이지 + 저장 호출 기록."""
+    from argus.desktop.pages import incidents as page_mod
+
+    page = _incident_page(qapp)
+    saved: list[tuple] = []
+    monkeypatch.setattr(page_mod.data, "set_user_label",
+                        lambda incident_id, label: saved.append((incident_id, label)))
+    monkeypatch.setattr(page, "_reload", lambda: None)
+    page._on_rows(rows)
+    return page, saved
+
+
+def test_answer_boxes_cannot_both_be_on(qapp, monkeypatch) -> None:
+    """**한 사건이 정상이면서 비정상일 수는 없다.**
+
+    상자를 쓰기로 한 이상 켜진 것이 곧 답이다. 둘 다 켜진 채 남으면 화면이 사용자가
+    주지 않은 답을 보이고, 다음에 열었을 때 무엇을 답했는지 알 수 없게 된다.
+
+    **켠 것을 다시 누르면 꺼지고, 그것이 취소다** — 상자에서 자연스러운 동작이다.
+    """
+    page, saved = _selected_page(qapp, monkeypatch, _rows(1))
+    assert page._selected_id == 1
+
+    page._normal_box.click()
+    assert saved[-1] == (1, "normal")
+    assert page._normal_box.isChecked() and not page._real_box.isChecked()
+
+    page._real_box.click()
+    assert saved[-1] == (1, "real")
+    assert page._real_box.isChecked() and not page._normal_box.isChecked(), (
+        "정상과 비정상이 함께 켜져 있다"
+    )
+
+    page._real_box.click()
+    assert saved[-1] == (1, None), "켠 것을 다시 눌렀는데 취소가 되지 않았다"
+    assert not page._real_box.isChecked() and not page._normal_box.isChecked()
+
+
+def test_selecting_an_incident_does_not_rewrite_its_label(qapp, monkeypatch) -> None:
+    """**고르기만 해서는 DB 를 건드리지 않는다.**
+
+    상자 상태를 세우는 신호로 `toggled`/`stateChanged` 를 쓰면 코드가 값을 비출 때도
+    울린다. 그러면 사건을 훑는 것만으로 라벨이 다시 쓰이고 `labeled_at` 이 갱신되어,
+    "언제 답했나"가 조용히 망가진다 — 예외가 아니라 값만 틀어지는 종류다.
+    """
+    rows = _rows(1, 2)
+    rows[0]["user_label"] = "normal"
+    rows[1]["user_label"] = "real"
+
+    page, saved = _selected_page(qapp, monkeypatch, rows)
+    assert page._normal_box.isChecked(), "저장된 답이 상자에 안 비쳤다"
+
+    page._table.selectRow(1)
+    assert page._real_box.isChecked() and not page._normal_box.isChecked()
+    assert saved == [], f"사건을 고르기만 했는데 DB 를 {len(saved)}번 썼다"
+
+
+def test_failed_save_does_not_leave_the_box_lying(qapp, monkeypatch) -> None:
+    """**저장에 실패하면 상자를 되돌린다.**
+
+    켜진 채로 두면 사용자는 답을 남겼다고 믿고 떠난다. 그러면 라벨은 없는데 다시
+    물어볼 기회까지 사라진다 — 조용히 실패하지 않는다(설계 규칙 4).
+    """
+    from argus.desktop.pages import incidents as page_mod
+
+    page = _incident_page(qapp)
+    monkeypatch.setattr(page, "_reload", lambda: None)
+    page._on_rows(_rows(1))
+
+    def boom(incident_id, label):
+        raise RuntimeError("디스크가 가득 찼다")
+
+    monkeypatch.setattr(page_mod.data, "set_user_label", boom)
+    page._normal_box.click()
+
+    assert not page._normal_box.isChecked(), "저장이 실패했는데 답한 것처럼 보인다"
+    assert "저장하지 못했" in page._detail_meta.text()
 

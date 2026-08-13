@@ -1374,6 +1374,29 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    Mutant(
+        "answer_boxes_mutually_exclusive",
+        "정상·비정상 상자는 서로를 끈다 (둘 다 켜지면 무엇을 답했는지 알 수 없다)",
+        (
+            (
+                "argus/desktop/pages/incidents.py",
+                "        self._show_label(label)\n"
+                "        self._clear_btn.setEnabled(label is not None)\n",
+                "        # MUTANT: 방금 켠 것만 남기지 않는다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "answer_box_signal_is_click_not_toggle",
+        "상자 상태를 비추는 것이 저장을 부르지 않는다 (훑기만 해도 labeled_at 이 갱신된다)",
+        (
+            (
+                "argus/desktop/pages/incidents.py",
+                '        self._normal_box.clicked.connect(lambda on: self._label("normal" if on else None))\n',
+                '        self._normal_box.toggled.connect(lambda on: self._label("normal" if on else None))  # MUTANT\n',
+            ),
+        ),
+    ),
 ]
 
 

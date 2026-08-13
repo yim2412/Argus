@@ -158,29 +158,47 @@ class IncidentPage(QtWidgets.QWidget):
         표가 사이에 있어 창이 작으면 시야 밖으로 밀렸다 — 사용자는 답할 자리가
         있다는 것조차 보지 못한다. 설명을 읽고 답하는 순서가 자연스러워 보였지만,
         **읽히지 않는 자리에 있는 버튼은 순서가 없다.**
+
+        **선택지는 상자로 보인다.** 누름 버튼이던 때는 눌러도 버튼 자체가 그대로여서
+        "내가 이 사건에 답을 했던가"가 화면에 남지 않았다 — 답한 것과 안 한 것이
+        같아 보이면 사용자는 같은 사건을 다시 열어 다시 누른다.
+
+        **둘은 서로를 끈다.** 한 사건이 정상이면서 비정상일 수는 없다. 켜진 것을 다시
+        누르면 꺼지고, 그것이 곧 취소다 — 상자를 쓰기로 한 이상 그 동작이 자연스럽고,
+        옆의 "취소" 버튼은 같은 일을 하는 두 번째 길로 남는다.
         """
         panel = QtWidgets.QWidget()
         row = QtWidgets.QHBoxLayout(panel)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
+        row.setSpacing(12)
 
         row.addWidget(QtWidgets.QLabel("이 판단이 맞았나요?"))
-        self._normal_btn = QtWidgets.QPushButton("정상이야")
-        self._real_btn = QtWidgets.QPushButton("맞아 문제야")
+        # 화면 문구는 "정상/비정상", 저장값은 normal/real 이다. **저장값을 바꾸지
+        # 않는다** — 이미 쌓인 라벨과 평가 경로(`--incident`)가 그 값을 읽는다.
+        self._normal_box = QtWidgets.QCheckBox("정상")
+        self._real_box = QtWidgets.QCheckBox("비정상")
         self._clear_btn = QtWidgets.QPushButton("취소")
-        self._normal_btn.clicked.connect(lambda: self._label("normal"))
-        self._real_btn.clicked.connect(lambda: self._label("real"))
+        # **`clicked` 다** — `toggled`/`stateChanged` 는 코드가 상태를 세울 때도
+        # 울려, 사건을 고르기만 해도 방금 그린 라벨을 DB 에 다시 쓰게 된다.
+        self._normal_box.clicked.connect(lambda on: self._label("normal" if on else None))
+        self._real_box.clicked.connect(lambda on: self._label("real" if on else None))
         self._clear_btn.clicked.connect(lambda: self._label(None))
-        for button in (self._normal_btn, self._real_btn, self._clear_btn):
-            button.setEnabled(False)
-            button.setCursor(QtCore.Qt.PointingHandCursor)
-            row.addWidget(button)
+        for widget in (self._normal_box, self._real_box, self._clear_btn):
+            widget.setEnabled(False)
+            widget.setCursor(QtCore.Qt.PointingHandCursor)
+            row.addWidget(widget)
 
         hint = QtWidgets.QLabel("'정상'으로 표시한 구간은 정상 데이터로 편입됩니다")
         hint.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 10px;")
         row.addWidget(hint)
         row.addStretch(1)
         return panel
+
+    def _show_label(self, label: str | None) -> None:
+        """지금 사건의 답을 상자에 비춘다. **사용자 클릭과 구분된다** — 여기서 세운
+        상태는 `clicked` 를 울리지 않으므로 DB 를 다시 건드리지 않는다."""
+        self._normal_box.setChecked(label == "normal")
+        self._real_box.setChecked(label == "real")
 
     # ------------------------------------------------------------------ 조회
 
@@ -334,7 +352,7 @@ class IncidentPage(QtWidgets.QWidget):
         if incident.get("user_label") == "normal":
             marks.append("사용자: 정상")
         elif incident.get("user_label") == "real":
-            marks.append("사용자: 실제 문제")
+            marks.append("사용자: 비정상")
         if incident.get("notify_skipped"):
             marks.append(f"알림 안 함: {incident['notify_skipped']}")
 
@@ -359,8 +377,9 @@ class IncidentPage(QtWidgets.QWidget):
             [_contributor_row(c) for c in json.loads(incident.get("contributors") or "[]")]
         )
 
-        self._normal_btn.setEnabled(True)
-        self._real_btn.setEnabled(True)
+        self._show_label(incident.get("user_label"))
+        self._normal_box.setEnabled(True)
+        self._real_box.setEnabled(True)
         self._clear_btn.setEnabled(bool(incident.get("user_label")))
 
     def _label(self, label: str | None) -> None:
@@ -371,7 +390,15 @@ class IncidentPage(QtWidgets.QWidget):
             data.set_user_label(self._selected_id, label)
         except Exception as exc:
             self._detail_meta.setText(f"피드백을 저장하지 못했습니다: {exc}")
+            # **화면을 저장된 값으로 되돌린다.** 저장에 실패했는데 상자가 켜진 채면
+            # 사용자는 답을 남겼다고 믿고 떠난다 — 그러면 라벨은 없는데 다시 물어볼
+            # 기회도 사라진다.
+            incident = self._incident_by_id(self._selected_id) or {}
+            self._show_label(incident.get("user_label"))
             return
+        # **한 사건이 정상이면서 비정상일 수는 없다.** 방금 켠 것만 남긴다.
+        self._show_label(label)
+        self._clear_btn.setEnabled(label is not None)
         # 방금 쓴 값이 목록에도 반영돼야 한다(오탐 비율이 여기서 바뀐다).
         self._reload()
 
@@ -415,7 +442,7 @@ def _answer_mark(incident: dict) -> str:
     if label == "normal":
         return "정상"
     if label == "real":
-        return "문제"
+        return "비정상"
     return "?" if incident.get("notified") else ""
 
 
