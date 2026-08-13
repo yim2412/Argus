@@ -442,7 +442,10 @@ class UsageSettings(BaseModel):
         # (`applicationframehost` 는 UWP 앱의 창틀인데 실측 155시간으로 3위였다).
         # `explorer`·`taskmgr` 은 뺀다 — 그건 실제로 쓰는 프로그램이다.
         "applicationframehost", "shellexperiencehost", "startmenuexperiencehost",
-        "searchhost", "textinputhost", "pickerhost", "openwith",
+        "searchhost", "textinputhost", "pickerhost",
+        # 다른 앱이 띄우는 내장 브라우저. 이름만 보면 브라우저지만 사용자가 실행한 것이
+        # 아니다 — 호스트(시작 메뉴 검색·Game Bar)는 이미 위에서 뺀다.
+        "msedgewebview2", "openwith",
         "easeofaccessdialog", "credentialuibroker", "werfault", "dwm",
         # Argus 자신. 관측자가 관측 대상 목록에 오르면 안 된다.
         "argus", "argus-ui",
