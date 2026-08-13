@@ -346,6 +346,13 @@ def run(args: argparse.Namespace) -> int:
             # 붙잡으므로, 빼면 원본이 접히기 전에 지워진다(retention._rules 참조).
             sup.add(ProgramUsageRollup(db, settings.rollup))
 
+            # 일일 리포트("어제 무엇을 했나"). 이상탐지와 별개 트랙이라 탐지가 꺼져
+            # 있어도 돈다. **`process_metrics` 의 보존을 붙잡는 두 번째 롤업이다** —
+            # 빼면 원본이 하루 만에 지워져 그날 리포트를 영영 만들 수 없다.
+            from .report.builder import DailyReportRollup
+
+            sup.add(DailyReportRollup(db, settings.rollup, settings.usage))
+
         # 프로그램 설명("svchost 가 무엇인가"). 롤업은 아니지만 같은 원본
         # (`process_events`)을 읽고 표시용 값을 채우므로 여기 함께 둔다.
         # 빠져도 수집·탐지는 그대로 돌고 표에 설명만 비어 보인다.

@@ -74,7 +74,16 @@ def scene(db: Database):
         )
         # 롤업이 접기 전에는 원본을 지우지 않는 규칙이 있다. 접었다고 표시해 둬야
         # 정리가 실제로 DELETE 를 돌린다 — 안 그러면 전부 남아 테스트가 통과해 버린다.
-        for name in ("metrics_1m", "process_5m", "net_activity_5m"):
+        #
+        # **이름을 손으로 나열하지 않는다.** 원본을 접는 롤업이 늘 때마다(2026-08-13 에
+        # `daily_report` 가 `process_metrics` 를 붙잡으면서 실제로 늘었다) 이 목록이
+        # 조용히 뒤처지고, 그러면 이 테스트는 "아무것도 안 지우는 정리"에도 통과한다.
+        every_rollup = {
+            name
+            for _t, _keep, rollups in Retention(db, RetentionSettings())._rules()  # noqa: SLF001
+            for name in rollups
+        }
+        for name in every_rollup:
             db.conn.execute(
                 "INSERT INTO rollup_state (name, watermark_ts, updated_at) VALUES (?, ?, ?)",
                 (name, now, now),

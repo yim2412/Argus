@@ -83,30 +83,36 @@ class Retention(Component):
         self.settings = settings
         self.interval_s = settings.interval_s
 
-    def _rules(self) -> list[tuple[str, float, str | None]]:
-        """(테이블, 보존 초, 이 원본을 접는 롤업의 이름) 목록.
+    def _rules(self) -> list[tuple[str, float, tuple[str, ...]]]:
+        """(테이블, 보존 초, 이 원본을 접는 롤업들의 이름) 목록.
 
-        세 번째 값이 있는 테이블은 **그 롤업이** 접기 전에는 지우지 않는다.
+        세 번째 값이 있는 테이블은 **그 롤업들이 전부** 접기 전에는 지우지 않는다.
 
         롤업 이름을 테이블마다 따로 적는 것이 중요하다. 처음에는 "롤업 워터마크"
         하나만 보게 해 뒀는데, 그 워터마크는 `metrics_1m` 것이었고 `process_metrics` 는
         1분 롤업이 접지 않는다. **접히지도 않은 채 "롤업이 지나갔으니 안전하다"는
         이유로 지워지고 있었다** — 보호 장치가 헛돌았다.
+
+        **하나가 아니라 목록인 이유**는 `process_metrics` 를 읽는 롤업이 2026-08-13 에
+        둘이 됐기 때문이다(`process_5m` · `daily_report`). 하나만 보면 다른 하나가
+        접기 전에 원본이 사라진다 — 위와 정확히 같은 사고가 다시 난다.
         """
         s = self.settings
         return [
-            ("metrics_raw", s.raw_hours * 3600, "metrics_1m"),
-            ("gpu_metrics", s.raw_hours * 3600, "metrics_1m"),
-            ("process_metrics", s.process_hours * 3600, "process_5m"),
-            ("net_connections", s.network_hours * 3600, "net_activity_5m"),
+            ("metrics_raw", s.raw_hours * 3600, ("metrics_1m",)),
+            ("gpu_metrics", s.raw_hours * 3600, ("metrics_1m",)),
+            # 일일 리포트가 포어그라운드 시간을 여기서 센다. `process_5m` 은 상위 N 만
+            # 남기므로 그걸로 대신할 수 없다(가벼운 앱이 최대 90% 깎인다 — 017 참조).
+            ("process_metrics", s.process_hours * 3600, ("process_5m", "daily_report")),
+            ("net_connections", s.network_hours * 3600, ("net_activity_5m",)),
             # 프로그램 사용시간 롤업이 이 원본을 접는다. 접기 전에 지워지면 그 날짜의
             # 사용시간은 **영구히 복원 불가능**하다 — 다른 테이블에 같은 정보가 없다
             # (`process_5m` 은 존재 여부만, 수명 합계는 이중계산이다).
-            ("process_events", s.events_days * 86400, "program_usage_daily"),
-            ("self_telemetry", s.self_telemetry_days * 86400, None),
+            ("process_events", s.events_days * 86400, ("program_usage_daily",)),
+            ("self_telemetry", s.self_telemetry_days * 86400, ()),
             # 시스템 사건은 양이 적고(하루 몇 건) 진단 가치가 커서 오래 남긴다.
             # 절전 공백 기록은 나중에 베이스라인이 그 구간을 제외하는 근거가 된다.
-            ("system_events", s.events_days * 86400, None),
+            ("system_events", s.events_days * 86400, ()),
         ]
 
     def _fault_windows(self, now: float) -> list[tuple[float, float]]:
@@ -203,18 +209,22 @@ class Retention(Component):
         watermarks = self._watermarks()
         fault_windows = self._fault_windows(now)
 
-        waiting = [t for t, _, rollup in self._rules() if rollup and rollup not in watermarks]
+        waiting = [
+            t for t, _, rollups in self._rules() if any(r not in watermarks for r in rollups)
+        ]
         if waiting:
             # 첫 기동 직후에는 정상이지만, 계속 이 상태면 롤업이 죽은 것이고 DB 가 자란다.
             log.warning("롤업 워터마크가 없어 원본 정리를 건너뛴다", extra={"tables": waiting})
 
-        for table, keep_seconds, rollup in self._rules():
+        for table, keep_seconds, rollups in self._rules():
             cutoff = now - keep_seconds
-            if rollup is not None:
-                watermark = watermarks.get(rollup)
-                if watermark is None:
-                    continue
-                cutoff = min(cutoff, watermark)
+            if rollups:
+                marks = [watermarks.get(r) for r in rollups]
+                if any(m is None for m in marks):
+                    continue  # 아직 접지 않은 롤업이 있다. 원본을 건드리지 않는다
+                # **가장 뒤처진 롤업에 맞춘다.** 하나라도 아직 그 구간을 접지 않았으면
+                # 지워서는 안 된다 — 앞선 롤업 기준으로 지우면 뒤처진 쪽은 영영 못 접는다.
+                cutoff = min(cutoff, *[m for m in marks if m is not None])
             where = " WHERE ts < ?"
             params: list[float] = [cutoff]
             if table in FAULT_PROTECTED:

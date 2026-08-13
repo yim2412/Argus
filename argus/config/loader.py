@@ -145,6 +145,32 @@ class RollupSettings(BaseModel):
     # 한 틱에 다 접으면 우리가 만든 IO 가 관측 대상을 오염시킨다(1분 롤업과 같은 이유).
     program_usage_days_per_run: int = Field(default=7, ge=1)
 
+    # 일일 리포트도 하루 단위다. 사용시간 롤업과 같은 이유로 한 시간에 한 번.
+    daily_report_interval_s: float = Field(default=3600.0, gt=0)
+    # **원본(`process_metrics`)의 보존이 짧다.** 이 값이 보존 기한보다 작으면 밀린
+    # 날을 따라잡기 전에 원본이 지워진다. `retention` 이 이 롤업의 워터마크로 원본을
+    # 붙잡지만, 붙잡힌 데이터가 쌓이는 것도 비용이라 따라잡을 수 있는 값이어야 한다.
+    daily_report_days_per_run: int = Field(default=7, ge=1)
+    # 포어그라운드 표본 하나를 몇 초로 셀 것인가의 상한.
+    #
+    # 표본 간격을 그대로 더하면 **수집이 멈춰 있던 공백까지 사용시간이 된다**(실측:
+    # 상한 없이 더하면 361.6시간, 실제는 13.8시간). 그래서 상한을 두고 자른다.
+    #
+    # **값 자체는 결과를 좌우하지 않는다** — 2026-08-13 실측에서 간격의 98.6% 가 정확히
+    # 1.0초, 99.5% 가 1.6초 이하였고, 상한을 2초로 잡든 30초로 잡든 합계는 13.8~14.0시간
+    # 안에서만 움직였다. 5초는 수집 스로틀 초기(주기 ×2~×3)까지 흡수하는 값이다.
+    daily_report_gap_cap_s: float = Field(default=5.0, gt=0)
+    # 원본이 그날 관측 시간의 몇 할을 덮어야 요약을 남길 것인가.
+    #
+    # **잘려나간 날을 영구 저장하지 않기 위한 것이다.** `daily_report` 는 영구 보존인데
+    # 원본은 하루면 지워지므로, 첫 실행에서 밀린 과거를 접으면 "그날 0.8시간 썼다"는
+    # 거짓 요약이 그대로 굳는다 — 나중에 원본이 없어 고칠 수도 없다.
+    #
+    # 2026-08-13 실측에서 두 무리가 뚜렷이 갈렸다: 보존에 잘린 날 6.6·10.4·12.8·17.9%
+    # vs 원본이 온전한 날 79.5%. 0.5 는 그 사이 어디에 둬도 판정이 같은 자리다.
+    # (79.5% 가 100% 가 아닌 나머지는 세션 경계 부근으로 보이나 특정하지 못했다.)
+    daily_report_min_coverage: float = Field(default=0.5, ge=0.0, le=1.0)
+
 
 class WarmSettings(BaseModel):
     """웜 스토어(Parquet + DuckDB). 완전히 끝난 날짜만 내보낸다."""
@@ -454,6 +480,40 @@ class UsageSettings(BaseModel):
         # Argus 자신. 관측자가 관측 대상 목록에 오르면 안 된다.
         "argus", "argus-ui",
     )
+
+    # 이름 → 카테고리. 일일 리포트가 "무엇을 하며 보냈나"를 묶는 단위다.
+    #
+    # **`exclude` 와 같은 목록을 쓰지 않는다.** 사용시간 표는 `python`·
+    # `windowsterminal` 을 빼는데(그건 도구지 콘텐츠가 아니다), 생산성 리포트에서
+    # "개발"은 오히려 핵심 지표다. 하나로 합치면 둘 중 하나가 반드시 틀린다.
+    #
+    # **여기 목록은 이 개발 PC 의 것이라 배포 기본값의 근거가 아니다.** 남의 PC 에는
+    # 없는 이름들이고, 있는 이름도 다르게 분류될 수 있다(누군가에게 `chrome` 은
+    # 브라우징이 아니라 업무다). 매핑에 없으면 "기타"로 두고 사용자가 YAML 로 채운다 —
+    # 그래서 분류가 비어도 총 시간·Top 5·시간대는 그대로 나온다.
+    # 하루를 가르는 시간대. [시작시, 끝시) 로 로컬 시각을 나눈다.
+    #
+    # **경계는 사실이 아니라 습관이다.** 누군가의 "새벽"은 다른 사람의 근무 시간이라
+    # 코드에 박을 값이 아니다. 구간이 24시간을 다 덮지 않아도 되고(덮지 않은 시간은
+    # 어느 칸에도 안 들어간다) 이름도 자유롭게 바꿔 쓰면 된다.
+    slots: dict[str, tuple[int, int]] = {
+        "새벽": (0, 6),
+        "오전": (6, 12),
+        "오후": (12, 18),
+        "저녁": (18, 24),
+    }
+
+    categories: dict[str, tuple[str, ...]] = {
+        "게임": (
+            "league of legends", "leagueclientux", "tslgame", "overwatch",
+            "rainbowsix", "rainbowsix_be", "fczf", "fm", "civilizationvi_dx12",
+            "mahjong-jp", "steam", "steamwebhelper", "upc", "belaunchernew",
+        ),
+        "개발": ("python", "pythonw", "claude", "code", "windowsterminal", "wt"),
+        "브라우징": ("chrome", "msedge", "whale", "firefox"),
+        "소통": ("discord", "kakaotalk"),
+        "미디어": ("medal", "streamdeck", "nliveconnector", "potplayermini64", "vlc"),
+    }
 
 
 class Settings(BaseModel):

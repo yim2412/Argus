@@ -848,10 +848,10 @@ def test_no_single_page_dictates_the_window_minimum_height(qapp) -> None:
         hint = window.minimumSizeHint().height()
         window.hide()
     finally:
-        window._health.stop()
-        for page in (window.realtime, window.processes, window.incidents,
-                     window.timeline, window.usage):
-            page.stop()
+        # **페이지를 손으로 나열하지 않는다.** 탭이 늘면 이 목록이 조용히 뒤처지고,
+        # 남은 QThread 가 파괴되면서 프로세스가 죽는다 — 테스트는 전부 통과한 채
+        # 종료 코드만 비0 이 되므로 원인이 보이지 않는다(2026-08-13).
+        window.stop_all()
 
     assert height == HD_HEIGHT_PX, f"{HD_HEIGHT_PX}px 를 요청했는데 {height}px 로 열렸다"
     assert hint <= HD_HEIGHT_PX, f"창 최소 높이가 {hint}px — 어떤 페이지가 하한을 밀고 있다"
@@ -883,10 +883,43 @@ def test_nav_sections_do_not_shift_the_pages(qapp) -> None:
                 f"{nav.currentItem().text()} 를 골랐는데 다른 페이지가 떴다"
             )
     finally:
-        window._health.stop()
-        for page in (window.realtime, window.processes, window.incidents,
-                     window.timeline, window.usage):
-            page.stop()
+        # **페이지를 손으로 나열하지 않는다.** 탭이 늘면 이 목록이 조용히 뒤처지고,
+        # 남은 QThread 가 파괴되면서 프로세스가 죽는다 — 테스트는 전부 통과한 채
+        # 종료 코드만 비0 이 되므로 원인이 보이지 않는다(2026-08-13).
+        window.stop_all()
+
+
+def test_every_tab_gets_stopped(qapp) -> None:
+    """**등록된 탭은 전부 멈춘다 — 목록을 손으로 유지하지 않는다.**
+
+    2026-08-13 에 일일 리포트 탭을 붙였는데 종료 경로의 페이지 목록이 그대로여서,
+    그 탭의 `QThread` 가 살아 있는 채로 파괴되며 프로세스가 죽었다(0xC0000409).
+    **증상이 지독하다**: 461개가 전부 통과한 뒤 종료 코드만 비0 이라 실패한 테스트가
+    하나도 없고, mutation sweep 은 "무력화 전부터 테스트가 실패한다"며 기준선에서
+    멈춘다 — 코드가 아니라 종료 경로가 문제인데 그 사실이 어디에도 안 보인다.
+
+    그래서 `stop_all()` 이 **탭 목록에서** 도는지를 잰다. 이름을 나열하는 구현으로
+    되돌리면 이 테스트가 새 탭을 잡아낸다.
+    """
+    from argus.desktop.app import MainWindow
+
+    window = _keep(MainWindow())
+    try:
+        tabs = set(window._nav_row_of)
+        registered = set(window._pages)
+        assert tabs <= registered, (
+            f"탭에는 있는데 정리 목록에 없는 페이지: {[type(p).__name__ for p in tabs - registered]}"
+        )
+
+        window.stop_all()
+        still_running = [
+            type(page).__name__
+            for page in window._pages
+            if getattr(getattr(page, "_poller", None), "isRunning", bool)()
+        ]
+        assert not still_running, f"멈추지 않은 폴러: {still_running}"
+    finally:
+        window.stop_all()
 
 
 def test_collapsible_body_leaves_the_minimum_height(qapp) -> None:

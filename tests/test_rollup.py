@@ -366,7 +366,13 @@ def test_retention_uses_the_rollup_that_folds_it(db: Database) -> None:
     처음에는 워터마크가 하나뿐이었고 그것은 `metrics_1m` 것이었다. 프로세스 데이터는
     1분 롤업이 접지 않는데도 "롤업이 지나갔으니 안전하다"는 이유로 지워지고 있었다 —
     보호 장치가 헛돌았다.
+
+    **2026-08-13 부터 이 원본을 접는 롤업이 둘이다**(`process_5m` · `daily_report`).
+    하나만 보고 지우면 다른 하나는 영영 접지 못한다 — 같은 사고의 재발이라 여기서
+    **둘 다 지나갔을 때만** 지워지는 것까지 잰다.
     """
+    from argus.config.loader import UsageSettings
+    from argus.report.builder import DailyReportRollup
     from argus.storage.rollup import ProcessRollup
 
     old = bucket_of(time.time() - 40 * 3600, 300)
@@ -380,8 +386,15 @@ def test_retention_uses_the_rollup_that_folds_it(db: Database) -> None:
         "프로세스 롤업이 돌지 않았는데 원본이 지워졌다"
     )
 
-    # 프로세스 롤업이 지나간 뒤에는 지운다
+    # 프로세스 롤업만 지나가도 **아직** 안 된다 — 일일 리포트가 같은 원본을 읽는다
     ProcessRollup(db, RollupSettings()).run_once()
+    Retention(db, RetentionSettings()).purge_once()
+    assert db.query("SELECT COUNT(*) AS c FROM process_metrics")[0]["c"] > 0, (
+        "일일 리포트가 접기 전에 원본이 지워졌다 — 그날 리포트는 영영 만들 수 없다"
+    )
+
+    # 둘 다 지나간 뒤에 지운다
+    DailyReportRollup(db, RollupSettings(), UsageSettings()).run_once()
     Retention(db, RetentionSettings()).purge_once()
     assert db.query("SELECT COUNT(*) AS c FROM process_metrics")[0]["c"] == 0
     assert db.query("SELECT COUNT(*) AS c FROM process_5m")[0]["c"] > 0

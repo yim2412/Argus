@@ -113,6 +113,19 @@ rollup:
   program_usage_interval_s: 3600.0
   # 한 번에 접을 날짜 수. 첫 실행은 `process_events` 가 남아 있는 만큼 밀려 있다.
   program_usage_days_per_run: 7
+  # 일일 리포트도 하루 단위다. 같은 이유로 한 시간에 한 번.
+  daily_report_interval_s: 3600.0
+  daily_report_days_per_run: 7
+  # 포어그라운드 표본 하나를 몇 초로 셀 것인가의 상한. 표본 간격을 그대로 더하면
+  # **수집이 멈춰 있던 공백까지 사용시간이 된다**(실측: 상한 없이 361.6h, 실제 13.8h).
+  # 값 자체는 결과를 거의 바꾸지 않는다 — 간격의 98.6% 가 정확히 1.0초라, 2초로 잡든
+  # 30초로 잡든 합계가 13.8~14.0h 안에서만 움직였다(2026-08-13 측정).
+  daily_report_gap_cap_s: 5.0
+  # 원본이 그날 관측 시간의 몇 할을 덮어야 요약을 남길 것인가. **잘려나간 날을 영구
+  # 저장하지 않기 위한 것이다** — daily_report 는 영구 보존인데 원본은 하루면 지워지므로,
+  # 밀린 과거를 접으면 "그날 0.8시간 썼다"는 거짓이 굳고 나중에 고칠 수도 없다.
+  # 실측에서 잘린 날 6.6~17.9% vs 온전한 날 79.5% 로 갈렸다(2026-08-13).
+  daily_report_min_coverage: 0.5
 
 warm:
   # 웜 스토어 — 끝난 날짜를 Parquet 일별 파티션으로 내보낸다.
@@ -389,3 +402,62 @@ usage:
     # Argus 자신. 관측자가 관측 대상 목록에 오르면 안 된다.
     - argus
     - argus-ui
+
+  # 하루를 가르는 시간대. [시작시, 끝시) 로 로컬 시각을 나눈다.
+  #
+  # **경계는 사실이 아니라 습관이다.** 누군가의 "새벽"은 다른 사람의 근무 시간이라
+  # 코드에 박을 값이 아니다. 24시간을 다 덮지 않아도 되고(안 덮은 시간은 어느 칸에도
+  # 들어가지 않는다) 이름도 자유롭게 바꿔 쓰면 된다.
+  slots:
+    새벽: [0, 6]
+    오전: [6, 12]
+    오후: [12, 18]
+    저녁: [18, 24]
+
+  # 일일 리포트가 "무엇을 하며 보냈나"를 묶는 단위. 이름 -> 카테고리.
+  #
+  # **위 `exclude` 와 별개 목록이다.** 사용시간 표는 python·windowsterminal 을
+  # 빼지만(도구지 콘텐츠가 아니다) 생산성 리포트에서 "개발"은 오히려 핵심 지표다.
+  # 하나로 합치면 둘 중 하나가 반드시 틀린다.
+  #
+  # **이 목록은 개발 PC 의 것이라 배포 기본값의 근거가 아니다.** 남의 PC 에는 없는
+  # 이름이고, 있어도 다르게 분류될 수 있다(누군가에게 chrome 은 브라우징이 아니라
+  # 업무다). 없는 이름은 "기타"로 가며, 분류가 비어도 총 시간·Top 5·시간대는
+  # 그대로 나온다. 카테고리 이름 자체도 자유롭게 바꿔 쓰면 된다.
+  categories:
+    게임:
+      - league of legends
+      - leagueclientux
+      - tslgame
+      - overwatch
+      - rainbowsix
+      - rainbowsix_be
+      - fczf
+      - fm
+      - civilizationvi_dx12
+      - mahjong-jp
+      - steam
+      - steamwebhelper
+      - upc
+      - belaunchernew
+    개발:
+      - python
+      - pythonw
+      - claude
+      - code
+      - windowsterminal
+      - wt
+    브라우징:
+      - chrome
+      - msedge
+      - whale
+      - firefox
+    소통:
+      - discord
+      - kakaotalk
+    미디어:
+      - medal
+      - streamdeck
+      - nliveconnector
+      - potplayermini64
+      - vlc

@@ -22,6 +22,7 @@ from ..paths import icon_path, is_frozen, window_state_path
 from .pages.incidents import IncidentPage
 from .pages.processes import ProcessPage
 from .pages.realtime import RealtimePage
+from .pages.report import ReportPage
 from .pages.selfstate import SelfStatePage
 from .pages.settings import SettingsPage
 from .pages.timeline import TimelinePage
@@ -336,6 +337,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.incidents = IncidentPage()
         self.timeline = TimelinePage()
         self.usage = UsagePage()
+        self.report = ReportPage()
         self.selfstate = SelfStatePage()
         self.settings = SettingsPage()
 
@@ -351,6 +353,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stack = QtWidgets.QStackedWidget()
         self._page_of: dict[QtWidgets.QWidget, int] = {}
         self._nav_row_of: dict[QtWidgets.QWidget, int] = {}
+        # **등록된 페이지를 여기 모은다.** 폴러를 멈출 때 이름을 손으로 나열하면
+        # 페이지를 추가할 때마다 그 목록이 조용히 뒤처지고, 남은 `QThread` 가
+        # 파괴되면서 프로세스가 통째로 죽는다(0xC0000409). 2026-08-13 에 일일 리포트
+        # 탭을 붙이자 테스트 전체가 그렇게 됐다 — **461개가 다 통과한 채 종료 코드만
+        # 비0 이라** 원인이 보이지 않았고, mutation sweep 이 기준선에서 멈췄다.
+        self._pages: list[QtWidgets.QWidget] = []
 
         # **매일 보는 것과 이상할 때 보는 것을 섞어 두지 않는다.** 일곱 개가 한 줄로
         # 늘어서 있으면 어디부터 봐야 하는지가 목록에 없다. 순서도 사용 빈도순으로
@@ -360,6 +368,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._add_page("프로세스", self.processes)
         self._add_page("사건", self.incidents)
         self._add_page("사용시간", self.usage)
+        # 사용시간 바로 아래에 둔다 — 둘은 같은 질문의 다른 답이라("켜져 있던" 대
+        # "쓰고 있던") 떨어뜨려 놓으면 어느 것을 보고 있는지 헷갈린다.
+        self._add_page("일일 리포트", self.report)
         self._add_section("진단")
         self._add_page("타임라인", self.timeline)
         self._add_page("자기 상태", self.selfstate)
@@ -439,6 +450,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # 페이지 위젯 → 스택 인덱스. **`indexOf(page)` 는 이제 -1 이다** — 스택에
         # 들어간 것은 페이지가 아니라 그것을 감싼 스크롤 영역이기 때문이다.
         self._page_of[widget] = self._stack.count() - 1
+        self._pages.append(widget)
 
     def _add_section(self, title: str) -> None:
         """탭 목록의 구분 머리. **고를 수 없는 항목이다.**
@@ -480,14 +492,23 @@ class MainWindow(QtWidgets.QMainWindow):
         # 아닌 창이 화면을 꽉 채운 채 뜨고, 사용자는 그걸 되돌릴 방법을 찾아야 한다.
         if not self.isMaximized() and not self.isMinimized():
             save_window_state(self.width(), self.height())
-        self._health.stop()
-        self.realtime.stop()
-        self.processes.stop()
-        self.incidents.stop()
-        self.timeline.stop()
-        self.usage.stop()
-        self.selfstate.stop()
+        self.stop_all()
         super().closeEvent(event)
+
+    def stop_all(self) -> None:
+        """폴러를 전부 멈춘다. **창을 만든 쪽은 반드시 이것을 불러야 한다.**
+
+        살아 있는 `QThread` 가 파괴되면 프로세스가 죽는다 — 테스트에서는 전부
+        통과한 뒤 종료 코드만 비0 이 되어 원인을 찾기 어렵다.
+
+        `_pages` 를 도는 이유는 목록을 손으로 나열하지 않기 위해서다. 페이지가
+        늘 때마다 여기와 테스트 양쪽을 고쳐야 한다면 언젠가 한쪽을 빠뜨린다.
+        """
+        self._health.stop()
+        for page in self._pages:
+            stop = getattr(page, "stop", None)
+            if callable(stop):
+                stop()
 
 
 def main(seconds: float | None = None, incident_id: int | None = None) -> int:
@@ -533,6 +554,12 @@ def main(seconds: float | None = None, incident_id: int | None = None) -> int:
         print(
             f"  사용시간 조회 {window.usage.load_count}회 · "
             f"프로그램 {window.usage.row_count}종"
+        )
+        # **조회 횟수만 세면 부족하다** — 행이 하나도 없어도 조회는 돈다. 리포트가
+        # 실제로 그려졌는지를 함께 남긴다(첫날에는 "없음"이 정상이다).
+        print(
+            f"  일일 리포트 조회 {window.report.load_count}회 · "
+            f"{'그림' if window.report.has_report else '기록 없음'}"
         )
         # **맨 윗줄이 이 창의 답이다.** 실제로 무슨 문장이 떴는지 남긴다 —
         # 폴러·시그널이 끊기면 "확인하는 중…" 이 그대로 찍힌다.

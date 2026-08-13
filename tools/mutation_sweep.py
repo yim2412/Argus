@@ -1166,6 +1166,115 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    # ---- 2026-08-13: 일일 리포트. **전부 조용히 되돌아간다** — 리포트는 어느 쪽이든
+    # 그럴듯한 숫자를 보여 주고, 사용자에게는 그게 맞는지 확인할 방법이 없다.
+    Mutant(
+        "daily_report_skips_today",
+        "진행 중인 날은 접지 않는다 (부분값이 확정으로 남는다)",
+        (
+            (
+                "argus/report/builder.py",
+                "        while cursor < today and len(days) < self.settings.daily_report_days_per_run:\n",
+                "        while cursor <= today and len(days) < self.settings.daily_report_days_per_run:  # MUTANT\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "daily_report_coverage_floor",
+        "원본이 잘려 나간 날은 요약을 만들지 않는다 (영구 보존이라 나중에 못 고친다)",
+        (
+            (
+                "argus/report/builder.py",
+                "            if coverage < self.settings.daily_report_min_coverage:\n",
+                "            if False:  # MUTANT: 잘린 날도 그대로 저장\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "daily_report_gap_cap",
+        "표본 사이의 공백은 사용시간이 아니다 (상한이 없으면 361.6h vs 실제 13.8h)",
+        (
+            (
+                "argus/report/builder.py",
+                "                gap = min(seen[i + 1][0] - ts, cap)\n",
+                "                gap = seen[i + 1][0] - ts  # MUTANT: 상한 제거\n",
+            ),
+        ),
+    ),
+    # 표본 수가 아니라 **간격**을 더한다. 이것이 "같은 시각은 한 번만"과 "수집 주기가
+    # 흔들려도 값이 같다"를 동시에 보장한다 — 표본당 고정값으로 바꾸면 둘 다 깨진다.
+    # (중복을 미리 걸러내는 코드를 따로 뒀었는데, 값에 영향이 없어 무력화해도 아무
+    #  테스트가 울지 않았다. 검증할 수 없는 방어라 빼고 이 mutant 로 대체했다.)
+    Mutant(
+        "daily_report_counts_gaps_not_samples",
+        "표본 수가 아니라 간격을 더한다 (같은 시각의 행이 여럿이면 시간이 부풀어 오른다)",
+        (
+            (
+                "argus/report/builder.py",
+                "                gap = min(seen[i + 1][0] - ts, cap)\n",
+                "                gap = cap  # MUTANT: 표본당 고정값\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "daily_report_categories_from_config",
+        "분류가 config 에서 온다 (코드에 박히면 YAML 을 고쳐도 안 바뀐다)",
+        (
+            (
+                "argus/report/builder.py",
+                "    for category, names in categories.items():\n",
+                "    for category, names in {}.items():  # MUTANT: 설정 무시\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "daily_report_keeps_unmapped",
+        "분류에 없는 이름을 버리지 않는다 (남의 PC 는 매핑이 비어 있다)",
+        (
+            (
+                "argus/report/builder.py",
+                "                key = categorize(name, self.usage.categories)\n"
+                "                by_category[key] = by_category.get(key, 0.0) + seconds\n",
+                "                key = categorize(name, self.usage.categories)\n"
+                "                if key == OTHER:  # MUTANT: 미분류를 버린다\n"
+                "                    continue\n"
+                "                by_category[key] = by_category.get(key, 0.0) + seconds\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "desktop_stop_all_covers_every_tab",
+        "등록된 탭을 전부 멈춘다 (남은 QThread 가 프로세스를 죽인다 — 종료 코드만 비0)",
+        (
+            (
+                "argus/desktop/app.py",
+                "        for page in self._pages:\n",
+                "        for page in self._pages[:2]:  # MUTANT: 일부만 정리\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "daily_report_wiring",
+        "상주가 이 롤업을 등록한다 (안 하면 리포트가 안 생기고 원본도 안 지워진다)",
+        (
+            (
+                "argus/__main__.py",
+                "            sup.add(DailyReportRollup(db, settings.rollup, settings.usage))\n",
+                "            # MUTANT: 일일 리포트 롤업 등록 제거\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "daily_report_retention_hold",
+        "보존이 이 롤업도 기다린다 (안 기다리면 원본이 먼저 지워진다)",
+        (
+            (
+                "argus/storage/retention.py",
+                '            ("process_metrics", s.process_hours * 3600, ("process_5m", "daily_report")),\n',
+                '            ("process_metrics", s.process_hours * 3600, ("process_5m",)),  # MUTANT\n',
+            ),
+        ),
+    ),
     Mutant(
         "notify_sound_wiring",
         "general.notify_sound 가 트레이에 닿는다 (안 닿으면 YAML 을 고쳐도 안 바뀐다)",
