@@ -1350,6 +1350,30 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    # ---- 2026-08-14 커넥션 닫기. 정리 최적화 하나가 웜 내보내기 자식을 통째로
+    #      실패로 만들었다(02:19, `PRAGMA optimize` 의 database is locked).
+    Mutant(
+        "close_survives_locked_optimize",
+        "정리 최적화 실패가 닫기를 죽이지 않는다 (성공한 작업이 실패로 보고된다)",
+        (
+            (
+                "argus/storage/hot.py",
+                "                except sqlite3.OperationalError as exc:",
+                "                except sqlite3.ProgrammingError as exc:  # MUTANT: 락은 안 삼킨다",
+            ),
+        ),
+    ),
+    Mutant(
+        "close_does_not_swallow_everything",
+        "삼키는 것은 OperationalError 뿐 (범위를 넓히면 진짜 고장이 조용해진다)",
+        (
+            (
+                "argus/storage/hot.py",
+                "                except sqlite3.OperationalError as exc:",
+                "                except BaseException as exc:  # MUTANT: 전부 삼킨다",
+            ),
+        ),
+    ),
 ]
 
 

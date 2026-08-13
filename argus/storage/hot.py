@@ -82,6 +82,21 @@ class Database:
                 try:
                     self._conn.execute("PRAGMA optimize")
                     self._conn.commit()
+                except sqlite3.OperationalError as exc:
+                    # **정리 최적화가 프로세스의 성패를 뒤집으면 안 된다.**
+                    # `PRAGMA optimize` 는 ANALYZE 를 돌릴 수 있어 쓰기 트랜잭션을
+                    # 잡는데, 상주 본체가 백필 중이면 `busy_timeout` 10초를 넘겨
+                    # `database is locked` 가 난다(2026-08-14 02:19 실측: 25초짜리
+                    # 쓰기가 관측된 적도 있다). 그날 웜 내보내기 자식이 이것 하나로
+                    # 종료 코드 1 이 됐고, 부모는 "웜 내보내기 자식이 실패했다"로
+                    # 남겼다 — 그 회차는 내보낼 날짜조차 없어 **실제로는 아무 일도
+                    # 하지 않은 회차**였다. 성공한 내보내기에 같은 일이 나면 부모는
+                    # 멀쩡한 결과를 실패로 읽는다.
+                    #
+                    # 데이터에는 영향이 없다. 최적화는 다음 닫기에서 다시 시도된다.
+                    # **조용히 넘기지는 않는다**(설계 규칙 4) — 이것이 잦아지면
+                    # 그때는 락 경합 자체가 봐야 할 문제다.
+                    log.debug("커넥션 정리 최적화를 건너뛴다", extra={"error": str(exc)})
                 finally:
                     self._conn.close()
                     self._conn = None
