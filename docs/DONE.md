@@ -293,6 +293,54 @@ rss 300MB 초과 표본 394 / 72,938 = 0.5%
 
 ---
 
+## 풍선 알림을 무음으로 (2026-08-13)
+
+알림이 뜰 때마다 Windows 기본 알림음이 났다. **소리는 알림의 부가가 아니라 알림 자체의
+비용을 바꾼다** — 상주의 알림은 사용자가 부른 것이 아니라 끼어드는 것이고, 오탐 3번이면
+사용자는 알림을 끈다(탐지 규칙 1). 그래서 기본을 무음으로 두고 원하면 켜게 했다.
+
+`Shell_NotifyIcon` 의 `dwInfoFlags` 에 `NIIF_NOSOUND`(0x10)를 **OR** 한다. 덮어쓰면
+등급 아이콘(`NIIF_INFO`/`WARNING`/`ERROR`)이 함께 사라져 등급 구분이 없어진다.
+`general.notify_sound: false` 가 기본. **Windows 전역 알림음은 건드리지 않는다** —
+다른 앱의 소리는 Windows 설정 소관이고, 상주 프로그램이 남의 알림음을 끄면 그건 버그다.
+
+**셋 다 조용히 되돌아간다.** 알림은 어느 쪽이든 똑같이 뜨고, 소리는 이 개발 PC 에서
+원래 안 나서 눈으로도 귀로도 구분되지 않는다. 그래서 판정·반대쪽·배선을 따로 쟀다.
+
+```
+notify_sound_silent_default    잡힘   test_balloon_is_silent_by_default
+notify_sound_respects_setting  잡힘   test_balloon_makes_a_sound_when_asked
+notify_sound_wiring            잡힘   test_notify_sound_setting_reaches_the_tray
+```
+
+각 mutant 가 **대응하는 테스트 하나씩만** 깼다 — 셋이 겹치지 않게 재고 있다는 뜻이다.
+배선 테스트는 `settings.general.notify_sound` 가 `TrayIcon` 에 실제로 넘어가는지를
+AST 로 보고, 코드·YAML 기본값이 둘 다 `False` 라 **기본값이 아닌 값(`True`)으로** 잰다.
+복원 후 461 통과, 캐시 감사 `[OK]`.
+
+### 커밋 사이에 끼어 있던 것 둘
+
+**1. 어제 짠 테스트가 자정에 깨졌다.** `test_excluded_names_come_from_config_not_code`
+가 픽스처의 `day` 를 `"2026-08-12"` 로 박아 뒀는데 조회는 `days=1` 이고 그 하한은
+`date.today()` 다(`dashboard/data.py:360`). 날짜가 넘어가자 픽스처 행이 통째로 잘려
+결과가 `[]` 가 됐다 — 제외 목록 배선은 멀쩡한데 **그것과 무관한 이유로** 실패했다.
+날짜를 고정하는 픽스처는 하루짜리 시한폭탄이다.
+
+**2. `pytest` 가 끝난 뒤에 죽어 mutation sweep 이 통째로 막혔다.**
+`%LOCALAPPDATA%\Temp\pytest-of-준\pytest-current` (pytest 가 매 실행마다 다시 만드는
+편의용 심볼릭 링크)가 열 수도 지울 수도 없는 상태가 돼, 세션 종료 정리에서
+`PermissionError` 가 났다. **테스트는 전부 돌고 난 뒤였다** — 그런데 요약 줄이 예외에
+밀려 안 찍히고 종료코드가 1 이 되므로, `run_pytest()` 의 `returncode != 0` 판정에
+걸려 sweep 이 "무력화 전부터 실패한다"며 기준선에서 멈췄다. **증상과 원인이 멀다** —
+sweep 은 코드가 잘못됐다고 말했지만 잘못된 것은 임시 폴더였다.
+
+`rmdir`·`Directory.Delete`·`fsutil` 이 전부 접근 거부라 부모 폴더를
+`pytest-of-준-old-20260813` 으로 **이름만 바꿨다**(삭제 아님). pytest 가 새로 만들고
+종료코드가 0 으로 돌아왔다. 접근 거부의 근본 원인은 밝히지 못했다 — 재발하면 그때
+다시 판다. `--basetemp` 를 주면 그 경로를 아예 건드리지 않으므로 임시 회피가 된다.
+
+---
+
 ## 완료 목록
 
 | # | 무엇 | 언제 | 결과 |
