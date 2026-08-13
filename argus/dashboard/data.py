@@ -295,6 +295,31 @@ def incidents(days: float = 7.0, limit: int = 200) -> list[dict]:
     )
 
 
+# 답 대기로 세는 기간. 이보다 오래된 알림은 "그때 실제로 느렸나"를 사용자가 기억하지
+# 못한다 — 기억이 아니라 짐작으로 붙인 라벨은 문턱을 고칠 근거가 되지 못하므로,
+# 모을 수 있는 양보다 답할 수 있는 양에 맞춘다.
+LABEL_WINDOW_DAYS = 14.0
+
+
+@ttl_cache(10.0)
+def unlabeled_notified(days: float = LABEL_WINDOW_DAYS) -> list[dict]:
+    """답을 안 준 알림. **알림이 나간 것만 센다.**
+
+    사건 전체를 물으면 아무도 답하지 않는다(2026-08-14 기준 사건 173건 · 알림 50건 ·
+    라벨 0건). 실제로 사용자를 방해한 것은 발송된 알림이고, 문턱과 억제를 고칠 근거도
+    거기서 나온다 — 알림이 안 나간 사건은 맞았든 틀렸든 아무도 성가시게 하지 않았다.
+
+    최신순인 것은 화면이 "가장 최근 것부터 답하기"로 쓰기 때문이다. 기억이 남아 있는
+    쪽부터 물어야 라벨이 실제 판단이 된다.
+    """
+    return query(
+        "SELECT id, ts_start, severity, title FROM incidents"
+        " WHERE notified = 1 AND user_label IS NULL AND ts_start > ?"
+        " ORDER BY ts_start DESC",
+        (time.time() - days * 86400,),
+    )
+
+
 @ttl_cache(5.0)
 def health() -> dict:
     """**"지금 괜찮은가"의 답 한 줄.** 창 맨 위가 이것만 쓴다.
@@ -303,9 +328,13 @@ def health() -> dict:
     그 답은 이미 `incidents` 에 문장으로 들어 있는데(`title` 이 "디스크 병목 —
     chrome 68%" 형태다) 지금까지는 사건 탭을 열어야만 보였다.
 
-    돌려주는 것은 셋이다 — 진행 중인 사건, 마지막으로 끝난 사건의 시각, 그리고
-    최신 표본의 시각. 마지막 것이 있어야 **"조용한 것"과 "죽은 것"을 가른다**:
+    돌려주는 것은 넷이다 — 진행 중인 사건, 마지막으로 끝난 사건의 시각, 최신 표본의
+    시각, 그리고 답을 안 준 알림 수. 셋째가 있어야 **"조용한 것"과 "죽은 것"을 가른다**:
     수집이 멈추면 사건도 안 생기므로 둘 다 똑같이 조용해 보인다.
+
+    **넷째가 여기 있는 이유**는 이 줄이 창에서 유일하게 항상 보이는 자리이기 때문이다.
+    라벨 경로는 08-09 에 뚫렸는데 5일 뒤에도 0건이었다 — 창을 열어도 "답할 것이 있다"는
+    신호가 어디에도 없었고, 라벨 자리까지는 탭·선택·스크롤 세 단계가 걸린다.
     """
     open_rows = query(
         "SELECT id, ts_start, severity, title, bottleneck FROM incidents"
@@ -320,6 +349,7 @@ def health() -> dict:
         "open": open_rows[0] if open_rows else None,
         "last_end_ts": closed[0]["ts_end"] if closed else None,
         "sample_ts": sample[0]["ts"] if sample else None,
+        "unlabeled": len(unlabeled_notified()),
     }
 
 
@@ -349,7 +379,13 @@ def set_user_label(incident_id: int, label: str | None) -> None:
     # 방금 쓴 값이 곧바로 보이게 캐시를 비운다. **`st.cache_data` 시절에는 `.clear()`
     # 였다** — `ttl_cache` 로 바꾸면서 이름이 `cache_clear` 가 됐고, 그대로 두었으면
     # 피드백을 누를 때마다 AttributeError 가 났다(2026-08-03, 사건 페이지 이식 중 발견).
+    #
+    # **답 대기 수도 같이 비운다.** 방금 답한 것이 맨 윗줄의 "답하기 N건"에 안 빠지면
+    # 사용자는 답이 저장되지 않았다고 읽는다 — 목록은 즉시 바뀌는데 카운트만 최대
+    # 10초 남아 있는, 예외 없이 값만 어긋나는 종류다.
     incidents.cache_clear()
+    unlabeled_notified.cache_clear()
+    health.cache_clear()
 
 
 # ------------------------------------------------------------ 프로그램 사용시간

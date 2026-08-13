@@ -92,7 +92,11 @@ class IncidentPage(QtWidgets.QWidget):
                 Column("when", "시각", width=130),
                 Column("severity_ko", "등급", width=60),
                 Column("span", "지속", align_right=True, width=70),
-                Column("title", "제목", width=280),
+                # **답을 안 준 알림이 목록에서 보여야 한다.** 상세를 열기 전에는
+                # 어느 것이 남았는지 알 수 없었고, 그래서 하나씩 눌러 보는 수밖에
+                # 없었다 — 그 수고가 라벨 0건의 이유 중 하나다.
+                Column("answer", "답", width=54),
+                Column("title", "제목", width=240),
             ]
         )
         self._table.row_selected.connect(self._on_row_selected)
@@ -122,6 +126,8 @@ class IncidentPage(QtWidgets.QWidget):
         self._detail_meta.setWordWrap(True)
         box.addWidget(self._detail_meta)
 
+        box.addWidget(self._build_feedback())
+
         # 리포트가 이미 마크다운이라 그대로 그린다.
         self._report = QtWidgets.QTextBrowser()
         self._report.setOpenExternalLinks(False)
@@ -143,10 +149,22 @@ class IncidentPage(QtWidgets.QWidget):
             max_rows=6,
         )
         box.addWidget(self._contributors, stretch=2)
+        return panel
 
-        # --- 피드백. **대시보드에서 유일하게 DB 를 쓰는 곳이다.**
-        feedback = QtWidgets.QHBoxLayout()
-        feedback.addWidget(QtWidgets.QLabel("이 판단이 맞았나요?"))
+    def _build_feedback(self) -> QtWidgets.QWidget:
+        """피드백 줄. **대시보드에서 유일하게 DB 를 쓰는 곳이다.**
+
+        **제목 바로 아래에 둔다.** 처음에는 상세 맨 아래였는데, 리포트와 원인 후보
+        표가 사이에 있어 창이 작으면 시야 밖으로 밀렸다 — 사용자는 답할 자리가
+        있다는 것조차 보지 못한다. 설명을 읽고 답하는 순서가 자연스러워 보였지만,
+        **읽히지 않는 자리에 있는 버튼은 순서가 없다.**
+        """
+        panel = QtWidgets.QWidget()
+        row = QtWidgets.QHBoxLayout(panel)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+
+        row.addWidget(QtWidgets.QLabel("이 판단이 맞았나요?"))
         self._normal_btn = QtWidgets.QPushButton("정상이야")
         self._real_btn = QtWidgets.QPushButton("맞아 문제야")
         self._clear_btn = QtWidgets.QPushButton("취소")
@@ -155,17 +173,13 @@ class IncidentPage(QtWidgets.QWidget):
         self._clear_btn.clicked.connect(lambda: self._label(None))
         for button in (self._normal_btn, self._real_btn, self._clear_btn):
             button.setEnabled(False)
-            feedback.addWidget(button)
-        feedback.addStretch(1)
-        box.addLayout(feedback)
+            button.setCursor(QtCore.Qt.PointingHandCursor)
+            row.addWidget(button)
 
-        hint = QtWidgets.QLabel(
-            "이 피드백은 Phase 11 의 학습 입력이 됩니다 — "
-            "'정상'으로 표시한 구간은 정상 데이터로 편입됩니다."
-        )
+        hint = QtWidgets.QLabel("'정상'으로 표시한 구간은 정상 데이터로 편입됩니다")
         hint.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 10px;")
-        hint.setWordWrap(True)
-        box.addWidget(hint)
+        row.addWidget(hint)
+        row.addStretch(1)
         return panel
 
     # ------------------------------------------------------------------ 조회
@@ -214,6 +228,27 @@ class IncidentPage(QtWidgets.QWidget):
         if self._rows:
             self._select_pending()
 
+    def focus_unlabeled(self) -> None:
+        """답 안 준 알림 중 **가장 최근 것**으로 간다. 맨 윗줄 "답하기"가 여기로 온다.
+
+        최근 것부터인 이유는 기억이다 — 오늘 아침 알림이 맞았는지는 답할 수 있어도
+        열흘 전 것은 짐작이 된다. 짐작으로 붙인 라벨은 문턱을 고칠 근거가 못 된다.
+
+        **여기서 목록을 다시 묻는 이유**는 화면의 구간(기본 7일)이 답 대기 창(14일)보다
+        좁을 수 있어서다. 화면에 있는 것만 보면 8일 전 알림은 영영 안 물어본다.
+        """
+        try:
+            pending = data.unlabeled_notified()
+        except Exception:
+            pending = []
+        if not pending:
+            self._detail_head.setText("답할 알림이 없습니다")
+            self._detail_meta.setText(
+                f"최근 {int(data.LABEL_WINDOW_DAYS)}일 안에 발송된 알림에는 모두 답이 달려 있습니다."
+            )
+            return
+        self.focus_incident(int(pending[0]["id"]))
+
     def _select_pending(self) -> None:
         """대기 중인 사건을 고르거나, 구간을 넓히거나, 못 찾았다고 말한다.
 
@@ -256,11 +291,21 @@ class IncidentPage(QtWidgets.QWidget):
         self._tiles["total"].set(str(len(rows)))
         self._tiles["open"].set(str(open_now))
         self._tiles["notified"].set(str(notified), "발송은 설정에서 켠다")
+
+        # **라벨이 없을 때 "피드백 없음"으로 두지 않는다.** 그 문구는 결과처럼 읽혀
+        # 사용자가 할 일이 있다는 것을 전하지 못했다(08-09 ~ 08-14, 알림 50건에 라벨 0건).
+        # 밀린 수를 세어 요구로 바꾼다.
+        pending = sum(1 for r in rows if r.get("notified") and not r.get("user_label"))
         if labeled:
             rate = len(false_positives) / len(labeled) * 100
-            self._tiles["fp"].set(f"{rate:.0f}%", f"피드백 {len(labeled)}건 기준")
+            detail = f"피드백 {len(labeled)}건 기준"
+            if pending:
+                detail += f" · {pending}건 답 대기"
+            self._tiles["fp"].set(f"{rate:.0f}%", detail)
+        elif pending:
+            self._tiles["fp"].set("—", f"알림 {pending}건이 맞았는지 알려주세요")
         else:
-            self._tiles["fp"].set("—", "피드백 없음")
+            self._tiles["fp"].set("—", "답할 알림 없음")
 
     # ------------------------------------------------------------------ 상세
 
@@ -355,8 +400,23 @@ def _list_row(incident: dict) -> dict:
         "when": datetime.fromtimestamp(start).strftime("%m-%d %H:%M:%S"),
         "severity_ko": _SEVERITY_LABEL.get(incident.get("severity"), incident.get("severity")),
         "span": span,
+        "answer": _answer_mark(incident),
         "title": incident.get("title") or "",
     }
+
+
+def _answer_mark(incident: dict) -> str:
+    """목록의 "답" 칸.
+
+    **알림이 안 나간 사건은 빈칸으로 둔다.** 답을 안 준 것과 물은 적이 없는 것은
+    다르고, 173건 전부에 물음표를 세우면 밀린 50건이 그 안에 묻힌다.
+    """
+    label = incident.get("user_label")
+    if label == "normal":
+        return "정상"
+    if label == "real":
+        return "문제"
+    return "?" if incident.get("notified") else ""
 
 
 def _contributor_row(contributor: dict) -> dict:

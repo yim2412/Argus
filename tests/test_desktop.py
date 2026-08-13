@@ -1306,3 +1306,216 @@ def test_cli_passes_the_incident_through(monkeypatch) -> None:
     app.cli()
 
     assert seen.get("incident_id") == 156, f"사건 id 가 전달되지 않았다: {seen}"
+
+
+# ------------------------------------------------------- 답 대기 알림 (라벨 유입)
+#
+# **2026-08-14 에 만든 경로다.** 라벨 UI 는 08-09 에 이미 있었는데 5일 뒤에도 라벨이
+# 0건이었다(사건 173 · 알림 50 · 라벨 0). 경로가 없었던 게 아니라 그리로 갈 이유가
+# 화면에 없었다. 여기서 고정하는 것은 "무엇을 물을 것인가"와 "언제 묻지 않을 것인가"다.
+
+
+def _label_db(tmp_path, rows):
+    """`incidents` 만 있는 작은 DB. `rows` 는 (id, 며칠 전, notified, label)."""
+    import sqlite3
+
+    database = tmp_path / "labels.db"
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "CREATE TABLE incidents (id INTEGER PRIMARY KEY, ts_start REAL, ts_end REAL,"
+            " severity TEXT, title TEXT, notified INTEGER, user_label TEXT, labeled_at REAL)"
+        )
+        for incident_id, days_ago, notified, label in rows:
+            conn.execute(
+                "INSERT INTO incidents (id, ts_start, severity, title, notified, user_label)"
+                " VALUES (?, ?, 'warning', ?, ?, ?)",
+                (incident_id, time.time() - days_ago * 86400, f"사건 {incident_id}",
+                 notified, label),
+            )
+    return database
+
+
+def test_pending_answers_count_only_the_notifications_we_sent(monkeypatch, tmp_path) -> None:
+    """**답 대기는 "알림이 나갔고 답이 없는" 것뿐이다.**
+
+    셋을 가른다. 알림이 안 나간 사건은 아무도 성가시게 하지 않았으니 물을 것이 없고,
+    이미 답한 것은 다시 묻지 않으며, 오래된 것은 사용자가 기억하지 못한다 — 짐작으로
+    붙인 라벨은 문턱을 고칠 근거가 못 되므로 없는 것만 못하다.
+
+    **기간을 기본값(14일)이 아닌 값으로도 잰다.** 기본값으로만 재면 인자가 무시되어도
+    통과한다 — 코드 기본값과 시험값이 같아 신호가 없던 실패를 2026-08-04 에 네 번 겪었다.
+    """
+    from argus.dashboard import data
+
+    database = _label_db(
+        tmp_path,
+        [
+            (1, 0.5, 1, None),      # 오늘 알림, 답 없음 → 센다
+            (2, 3.0, 1, None),      # 사흘 전 알림, 답 없음 → 센다
+            (3, 1.0, 0, None),      # 알림이 안 나갔다 → 물을 것이 없다
+            (4, 1.0, 1, "normal"),  # 이미 답했다
+            (5, 1.0, 1, "real"),    # 이미 답했다
+            (6, 20.0, 1, None),     # 20일 전 — 기억이 없다
+        ],
+    )
+    monkeypatch.setattr(data, "db_path", lambda: database)
+    data.unlabeled_notified.cache_clear()
+
+    pending = [row["id"] for row in data.unlabeled_notified()]
+    assert pending == [1, 2], f"답 대기가 {pending} 다 — 알림·답·기간 중 하나를 안 가렸다"
+
+    data.unlabeled_notified.cache_clear()
+    narrow = [row["id"] for row in data.unlabeled_notified(days=1.0)]
+    assert narrow == [1], f"기간 1일을 줬는데 {narrow} 를 세었다 — 인자가 흐르지 않는다"
+
+
+def test_pending_answers_are_asked_newest_first(monkeypatch, tmp_path) -> None:
+    """**최근 것부터 묻는다.** 오늘 아침 알림은 답할 수 있어도 열흘 전 것은 짐작이 된다.
+
+    맨 윗줄의 "답하기"가 이 순서의 첫 줄로 데려가므로, 순서가 뒤집히면 사용자는 매번
+    가장 기억나지 않는 것을 먼저 받는다.
+    """
+    from argus.dashboard import data
+
+    database = _label_db(tmp_path, [(1, 9.0, 1, None), (2, 0.2, 1, None), (3, 4.0, 1, None)])
+    monkeypatch.setattr(data, "db_path", lambda: database)
+    data.unlabeled_notified.cache_clear()
+
+    assert [r["id"] for r in data.unlabeled_notified()] == [2, 3, 1]
+
+
+def test_health_carries_the_pending_answer_count(monkeypatch, tmp_path) -> None:
+    """**배선 확인.** 세는 것이 맞아도 맨 윗줄까지 오지 않으면 사용자는 못 본다.
+
+    `health()` 는 창에서 유일하게 항상 보이는 줄이 읽는 값이다. 여기 빠지면 답 대기는
+    사건 탭을 연 사람만 알게 되고, 그것이 08-09~08-14 의 상태였다.
+    """
+    import sqlite3
+
+    from argus.dashboard import data
+
+    database = _label_db(tmp_path, [(1, 0.5, 1, None), (2, 0.6, 1, None), (3, 0.7, 0, None)])
+    with sqlite3.connect(database) as conn:
+        conn.execute("CREATE TABLE metrics_raw (ts REAL)")
+        conn.execute("INSERT INTO metrics_raw (ts) VALUES (?)", (time.time(),))
+    monkeypatch.setattr(data, "db_path", lambda: database)
+    data.unlabeled_notified.cache_clear()
+    data.health.cache_clear()
+
+    assert data.health()["unlabeled"] == 2
+
+
+def test_answering_clears_the_pending_count_too(monkeypatch, tmp_path) -> None:
+    """**답한 것이 곧바로 카운트에서 빠져야 한다.**
+
+    목록은 `_reload` 로 즉시 바뀌는데 맨 윗줄의 "N건"만 최대 10초 남으면, 사용자는
+    답이 저장되지 않았다고 읽고 다시 누른다. 예외가 아니라 값만 어긋나는 종류라
+    조용히 지나간다.
+    """
+    from argus.dashboard import data
+
+    database = _label_db(tmp_path, [(1, 0.5, 1, None)])
+    monkeypatch.setattr(data, "db_path", lambda: database)
+
+    cleared: list[str] = []
+    monkeypatch.setattr(data.unlabeled_notified, "cache_clear",
+                        lambda: cleared.append("unlabeled"))
+    monkeypatch.setattr(data.health, "cache_clear", lambda: cleared.append("health"))
+
+    data.set_user_label(1, "normal")
+
+    assert "unlabeled" in cleared, "답을 저장하고도 답 대기 캐시를 비우지 않았다"
+    assert "health" in cleared, "맨 윗줄이 읽는 캐시를 비우지 않았다"
+
+
+def test_answer_prompt_is_quiet_when_there_is_nothing_to_ask() -> None:
+    """**0건에 버튼을 남기지 않는다.** 늘 떠 있는 것은 배경이 되어 눈에 걸리지 않는다.
+
+    수집이 멈춘 상태에서도 묻지 않는다 — 그때 화면이 시켜야 할 일은 "상주를 확인하라"
+    하나뿐이고, 옆에 라벨 요청을 나란히 두면 어느 쪽이 급한지 흐려진다(설계 규칙 4).
+    """
+    from argus.desktop.app import _label_prompt
+
+    now = 10_000.0
+    assert _label_prompt({"unlabeled": 0, "sample_ts": now - 2}, now) is None
+    assert _label_prompt({"sample_ts": now - 2}, now) is None, "값이 없으면 조용해야 한다"
+    assert _label_prompt({"unlabeled": 3, "sample_ts": None}, now) is None, "첫 실행"
+    assert _label_prompt({"unlabeled": 3, "sample_ts": now - 600}, now) is None, "수집 멈춤"
+
+    prompt = _label_prompt({"unlabeled": 3, "sample_ts": now - 2}, now)
+    assert prompt is not None and "3" in prompt, f"밀린 3건을 말하지 않았다: {prompt!r}"
+
+
+def test_status_line_shows_the_answer_button_even_when_all_is_well(qapp) -> None:
+    """**배선 확인.** 판정이 맞아도 버튼이 안 뜨면 라벨은 계속 0건이다.
+
+    "정상"일 때 보이는 것이 요점이다 — 답할 알림은 대개 이미 끝난 사건이라, 진행 중인
+    사건이 있을 때만 뜨는 `사건 보기` 옆자리로는 영영 닿지 않는다.
+    """
+    from argus.desktop.app import _StatusLine
+
+    line = _keep(_StatusLine())
+    now = time.time()
+    line.update_health({"open": None, "last_end_ts": None, "sample_ts": now, "unlabeled": 4})
+    assert line.text == "정상"
+    assert "4" in line.label_text, f"정상일 때 답하기가 안 보인다: {line.label_text!r}"
+
+    line.update_health({"open": None, "last_end_ts": None, "sample_ts": now, "unlabeled": 0})
+    assert line.label_text == "", "답할 것이 없는데 버튼이 남았다"
+
+
+def test_incident_list_marks_unanswered_notifications() -> None:
+    """**목록에서 답 안 준 것이 보여야 한다.**
+
+    상세를 열기 전에는 어느 것이 남았는지 알 수 없어 하나씩 눌러 봐야 했다.
+    **알림이 안 나간 사건은 빈칸이다** — 답을 안 준 것과 물은 적이 없는 것은 다르고,
+    173건 전부에 물음표를 세우면 밀린 50건이 그 안에 묻힌다.
+    """
+    from argus.desktop.pages.incidents import _list_row
+
+    base = {"ts_start": 1000.0, "ts_end": 1100.0, "severity": "warning", "title": "t"}
+    assert _list_row({**base, "id": 1, "notified": 1})["answer"] == "?"
+    assert _list_row({**base, "id": 2, "notified": 0})["answer"] == ""
+    assert _list_row({**base, "id": 3, "notified": 1, "user_label": "normal"})["answer"] == "정상"
+    assert _list_row({**base, "id": 4, "notified": 1, "user_label": "real"})["answer"] == "문제"
+
+
+def test_incident_tile_asks_instead_of_reporting_nothing(qapp) -> None:
+    """**"피드백 없음"은 결과처럼 읽힌다.** 밀린 수를 세어 요구로 바꾼다.
+
+    이 문구가 08-09~08-14 동안 화면에 있던 전부였고, 그동안 라벨은 0건이었다.
+    """
+    page = _incident_page(qapp)
+    rows = _rows(1, 2, 3)
+    for row, notified in zip(rows, (1, 1, 0)):
+        row["notified"] = notified
+
+    page._update_summary(rows)
+    detail = page._tiles["fp"].note
+    assert "2" in detail and "알려주세요" in detail, f"답을 청하지 않는다: {detail!r}"
+
+    rows[0]["user_label"] = "normal"
+    page._update_summary(rows)
+    detail = page._tiles["fp"].note
+    assert "1건 답 대기" in detail, f"남은 하나를 말하지 않는다: {detail!r}"
+
+
+def test_answer_button_goes_to_the_newest_unanswered(qapp, monkeypatch) -> None:
+    """**"답하기"는 화면 구간이 아니라 답 대기 창에서 고른다.**
+
+    목록의 기본 구간은 7일인데 답 대기는 14일이다. 화면에 있는 것만 보면 8일 전
+    알림은 영영 안 물어보게 된다.
+    """
+    from argus.dashboard import data
+    from argus.desktop.pages import incidents as page_mod
+
+    page = _incident_page(qapp)
+    monkeypatch.setattr(page_mod.data, "unlabeled_notified", lambda *a, **k: [{"id": 9}])
+    page.focus_unlabeled()
+    assert page._pending_id == 9, "가장 최근 답 대기 알림을 고르지 않았다"
+
+    monkeypatch.setattr(page_mod.data, "unlabeled_notified", lambda *a, **k: [])
+    page.focus_unlabeled()
+    assert "없습니다" in page._detail_head.text(), "답할 것이 없다는 말을 하지 않았다"
+    assert data.LABEL_WINDOW_DAYS  # 기간을 화면 문구가 쓴다 — 상수가 사라지면 여기서 걸린다
+

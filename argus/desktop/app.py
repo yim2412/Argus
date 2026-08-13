@@ -229,6 +229,7 @@ class _StatusLine(QtWidgets.QFrame):
     """
 
     clicked = QtCore.Signal(int)  # 진행 중 사건 id — 누르면 그 사건을 편다
+    label_requested = QtCore.Signal()  # "답하기" — 답 안 준 알림으로 데려간다
 
     def __init__(self) -> None:
         super().__init__()
@@ -256,6 +257,14 @@ class _StatusLine(QtWidgets.QFrame):
         self._open_btn.hide()
         row.addWidget(self._open_btn)
 
+        # **정상일 때도 보이는 유일한 버튼이다.** 답할 알림은 대개 이미 끝난 사건이라
+        # 진행 중인 것이 없을 때 물어야 하고, 그때가 사용자에게도 여유가 있는 때다.
+        self._label_btn = QtWidgets.QPushButton("알림 답하기")
+        self._label_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self._label_btn.clicked.connect(self.label_requested.emit)
+        self._label_btn.hide()
+        row.addWidget(self._label_btn)
+
         self._paint(theme.INK_MUTED)
 
     def _paint(self, colour: str) -> None:
@@ -271,17 +280,29 @@ class _StatusLine(QtWidgets.QFrame):
 
     @QtCore.Slot(dict)
     def update_health(self, health: dict) -> None:
-        text, detail, colour, incident_id = _health_line(health, time.time())
+        now = time.time()
+        text, detail, colour, incident_id = _health_line(health, now)
         self._incident_id = incident_id
         self._text.setText(text)
         self._detail.setText(detail)
         self._paint(colour)
         self._open_btn.setVisible(incident_id is not None)
 
+        prompt = _label_prompt(health, now)
+        self._label_btn.setText(prompt or "")
+        self._label_btn.setVisible(prompt is not None)
+
     # 테스트가 읽는다 — 창을 띄우지 않고 문구를 확인하기 위한 것이다.
     @property
     def text(self) -> str:
         return self._text.text()
+
+    @property
+    def label_text(self) -> str:
+        # **`isVisible()` 이 아니라 `isHidden()` 이다.** 창을 띄우지 않는 테스트에서는
+        # 보이도록 세운 위젯도 `isVisible()` 이 거짓이라(부모가 안 떠 있다) 늘 빈 문자열이
+        # 됐다. `isHidden()` 은 "숨기라고 했는가"만 본다 — 여기서 물어야 할 것이 그것이다.
+        return "" if self._label_btn.isHidden() else self._label_btn.text()
 
 
 def _health_line(health: dict, now: float) -> tuple[str, str, str, int | None]:
@@ -312,6 +333,26 @@ def _health_line(health: dict, now: float) -> tuple[str, str, str, int | None]:
     last_end = health.get("last_end_ts")
     detail = f"마지막 사건 {_ago(now - float(last_end))} 전" if last_end else "기록된 사건 없음"
     return ("정상", detail, theme.STATUS["good"], None)
+
+
+def _label_prompt(health: dict, now: float) -> str | None:
+    """**"답하기" 버튼의 문구.** 없으면 `None` — 버튼을 숨긴다.
+
+    `_health_line` 과 같은 이유로 위젯에서 떼어 뒀다. 판정이 셋이다.
+
+    - 답할 알림이 없으면 묻지 않는다. **0건에 버튼을 남겨 두면 그것이 곧 배경이 되어**
+      실제로 밀렸을 때도 눈에 걸리지 않는다.
+    - **수집이 멈춰 있으면 묻지 않는다.** 그때 화면이 시켜야 할 일은 "상주를 확인하라"
+      하나뿐인데, 옆에 라벨 요청을 나란히 두면 어느 쪽이 급한지 흐려진다(규칙 4).
+    - 표본이 아예 없을 때(첫 실행)도 같다.
+    """
+    pending = int(health.get("unlabeled") or 0)
+    if pending <= 0:
+        return None
+    sample_ts = health.get("sample_ts")
+    if sample_ts is None or now - float(sample_ts) > STALE_SAMPLE_S:
+        return None
+    return f"알림 {pending}건 답하기"
 
 
 def _ago(seconds: float) -> str:
@@ -393,6 +434,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # **답이 먼저, 근거가 뒤.** 페이지(수치·차트)는 이 한 줄의 근거다.
         self.status_line = _StatusLine()
         self.status_line.clicked.connect(self._open_incident)
+        self.status_line.label_requested.connect(self._open_unlabeled)
         content_box.addWidget(self.status_line)
         content_box.addWidget(self._stack)
         row.addWidget(content, stretch=1)
@@ -482,6 +524,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._nav.setCurrentRow(self._nav_row_of[self.incidents])
         self.incidents.focus_incident(incident_id)
 
+    def _open_unlabeled(self) -> None:
+        """맨 윗줄의 "알림 N건 답하기". 답 안 준 알림 중 **가장 최근 것**으로 간다."""
+        self._nav.setCurrentRow(self._nav_row_of[self.incidents])
+        self.incidents.focus_unlabeled()
+
     def _refresh_status(self) -> None:
         self.statusBar().showMessage(self.realtime.status_text())
         # DB 존재 확인은 `Path.exists()` 한 번이라 1초마다 해도 된다. 조회가 아니다.
@@ -564,6 +611,9 @@ def main(seconds: float | None = None, incident_id: int | None = None) -> int:
         # **맨 윗줄이 이 창의 답이다.** 실제로 무슨 문장이 떴는지 남긴다 —
         # 폴러·시그널이 끊기면 "확인하는 중…" 이 그대로 찍힌다.
         print(f"  상태 한 줄: {window.status_line.text}")
+        # 답하기 버튼은 **실제 DB 에 밀린 알림이 있어야만** 뜬다. 단위 테스트는 가짜
+        # health 로 판정을 재므로, 이 기계에서 실제로 켜지는지는 여기서만 보인다.
+        print(f"  답 대기: {window.status_line.label_text or '없음'}")
         if live == 0:
             print("[FAIL] 실시간 표본이 하나도 없다 — 조회나 시그널 경계가 깨졌다")
             return 1

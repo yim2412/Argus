@@ -1286,6 +1286,70 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    # ---- 2026-08-14 답 대기 알림(라벨 유입). 라벨 UI 는 08-09 에 있었는데 5일 뒤에도
+    #      0건이었다 — 고친 것은 "무엇을 물을지"와 "어디서 물을지"라 둘 다 잰다.
+    Mutant(
+        "pending_answers_only_notified",
+        "답 대기는 알림이 나간 것만 센다 (사건 전체를 물으면 밀린 것이 그 안에 묻힌다)",
+        (
+            (
+                "argus/dashboard/data.py",
+                " WHERE notified = 1 AND user_label IS NULL AND ts_start > ?",
+                " WHERE user_label IS NULL AND ts_start > ?",  # MUTANT: 알림 여부 무시
+            ),
+        ),
+    ),
+    Mutant(
+        "pending_answers_window",
+        "답 대기 기간 상한 (기억하지 못하는 알림에 붙인 라벨은 근거가 못 된다)",
+        (
+            ("argus/dashboard/data.py", "LABEL_WINDOW_DAYS = 14.0", "LABEL_WINDOW_DAYS = 3650.0"),
+        ),
+    ),
+    Mutant(
+        "pending_count_reaches_the_status_line",
+        "답 대기 수가 health() 에 실린다 (안 실리면 사건 탭을 연 사람만 알게 된다)",
+        (
+            (
+                "argus/dashboard/data.py",
+                '        "unlabeled": len(unlabeled_notified()),\n',
+                "        # MUTANT: 답 대기 수를 맨 윗줄에 안 준다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "answer_button_wiring",
+        "답하기 버튼이 실제로 뜬다 (판정이 맞아도 안 뜨면 라벨은 계속 0건이다)",
+        (
+            (
+                "argus/desktop/app.py",
+                "        self._label_btn.setVisible(prompt is not None)\n",
+                "        self._label_btn.setVisible(False)  # MUTANT: 버튼을 안 띄운다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "answer_mark_separates_unasked",
+        "물은 적 없는 사건은 빈칸 (전부 물음표면 밀린 것이 구분되지 않는다)",
+        (
+            (
+                "argus/desktop/pages/incidents.py",
+                '    return "?" if incident.get("notified") else ""\n',
+                '    return "?"  # MUTANT: 알림 안 나간 것도 답 대기로\n',
+            ),
+        ),
+    ),
+    Mutant(
+        "answering_clears_pending_cache",
+        "답을 저장하면 답 대기 캐시도 비운다 (안 비우면 답이 안 저장된 것처럼 보인다)",
+        (
+            (
+                "argus/dashboard/data.py",
+                "    unlabeled_notified.cache_clear()\n    health.cache_clear()\n",
+                "    # MUTANT: 답 대기·맨 윗줄 캐시를 안 비운다\n",
+            ),
+        ),
+    ),
 ]
 
 
