@@ -1141,6 +1141,42 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    # ---- 2026-08-13: 풍선 무음. **셋 다 조용히 되돌아간다** — 알림은 어느 쪽이든
+    # 똑같이 뜨고, 소리는 이 개발 PC 에서 원래 안 나서(실측 확인) 눈으로도 귀로도
+    # 구분되지 않는다. 판정·반대쪽·배선을 따로 재는 이유가 그것이다.
+    Mutant(
+        "notify_sound_silent_default",
+        "풍선은 기본이 무음이다 (소리가 나면 오탐 한 번의 비용이 훨씬 커진다 — 탐지 규칙 1)",
+        (
+            (
+                "argus/ui/tray.py",
+                "        if not self.notify_sound:\n            flags |= _NIIF_NOSOUND\n",
+                "        # MUTANT: 무음 플래그 제거\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "notify_sound_respects_setting",
+        "소리를 켜면 실제로 난다 (항상 무음으로 못 박으면 설정이 거짓말이 된다)",
+        (
+            (
+                "argus/ui/tray.py",
+                "        if not self.notify_sound:\n",
+                "        if True:  # MUTANT: 설정 무시하고 항상 무음\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "notify_sound_wiring",
+        "general.notify_sound 가 트레이에 닿는다 (안 닿으면 YAML 을 고쳐도 안 바뀐다)",
+        (
+            (
+                "argus/__main__.py",
+                "                notify_sound=settings.general.notify_sound,\n",
+                "                # MUTANT: notify_sound 배선 제거\n",
+            ),
+        ),
+    ),
 ]
 
 

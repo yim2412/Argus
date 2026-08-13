@@ -62,6 +62,11 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 그대로 종료합니다(자동 시작과 수동 실행이 겹치는 것은 흔한 일이라 실패로 다루지 않습니다).
 `ARGUS_DATA_DIR` 로 분리한 인스턴스는 서로 막지 않습니다.
 
+**알림은 소리 없이 뜹니다.** 상주의 알림은 사용자가 부른 것이 아니라 끼어드는 것이라,
+소리까지 나면 오탐 한 번의 비용이 훨씬 커집니다. 소리를 원하면 `%APPDATA%\Argus\settings.yaml`
+의 `general.notify_sound` 를 `true` 로 두세요. **다른 앱의 알림음은 Windows 설정 소관입니다**
+(설정 → 시스템 → 알림 → 해당 앱 → "알림 소리 재생").
+
 ### 창
 
 ```powershell

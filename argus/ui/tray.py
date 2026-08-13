@@ -36,6 +36,8 @@ log = get_logger(__name__)
 
 # 풍선 알림 아이콘. 등급을 시각적으로 구분한다.
 _INFO_FLAGS = {"info": 0x01, "warning": 0x02, "critical": 0x03}  # NIIF_INFO/WARNING/ERROR
+# 풍선을 소리 없이 띄운다(shellapi.h). 아이콘 플래그와 OR 해서 넘긴다.
+_NIIF_NOSOUND = 0x10
 
 _WM_TRAY = 0x0400 + 20  # WM_APP + 20. 트레이 아이콘이 보내는 콜백 메시지
 # 풍선을 클릭했을 때 오는 알림. pywin32 상수에 없어 직접 적는다(shellapi.h).
@@ -82,6 +84,13 @@ class TrayIcon(Component):
 
     **트레이가 설정 파일을 직접 다루지 않는다.** 파일 형식과 원자적 쓰기는 한 곳에만
     있어야 하고(창도 같은 파일을 쓴다), 트레이는 켜고 끄는 창구일 뿐이다.
+    """
+
+    notify_sound: bool = False
+    """풍선에 Windows 기본 알림음을 낼 것인가. `general.notify_sound` 가 정한다.
+
+    **기본은 무음이다.** 상주 프로그램의 알림은 사용자가 부른 것이 아니라 끼어드는
+    것이라, 소리까지 나면 오탐 한 번의 비용이 훨씬 커진다(탐지 규칙 1).
     """
 
     _hwnd: int = 0
@@ -258,6 +267,10 @@ class TrayIcon(Component):
         # 않으므로, 지금 띄우는 것이 무엇인지 여기서 붙잡아 두는 수밖에 없다.
         self._balloon_incident = incident_id
 
+        flags = _INFO_FLAGS.get(severity, 0x01)
+        if not self.notify_sound:
+            flags |= _NIIF_NOSOUND
+
         with self._lock:
             try:
                 import win32gui
@@ -274,7 +287,7 @@ class TrayIcon(Component):
                         message,
                         _BALLOON_TIMEOUT_MS,
                         title,
-                        _INFO_FLAGS.get(severity, 0x01),
+                        flags,
                     ),
                 )
                 return True

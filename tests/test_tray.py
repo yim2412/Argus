@@ -17,6 +17,7 @@ import subprocess
 
 import pytest
 
+from argus.ui import tray as tray_module
 from argus.ui.tray import TrayIcon
 
 
@@ -190,6 +191,72 @@ def _armed_tray(monkeypatch) -> tuple[TrayIcon, _FakeShell]:
     tray._hwnd = 1
     tray._hicon = 1
     return tray, shell
+
+
+def _info_flags(shell: _FakeShell) -> int:
+    """마지막 풍선의 `dwInfoFlags`. `Shell_NotifyIcon` 페이로드의 마지막 칸이다."""
+    return shell.calls[-1][1][9]
+
+
+def test_balloon_is_silent_by_default(monkeypatch) -> None:
+    """**기본은 무음이다.** 상주의 알림은 사용자가 부른 것이 아니라 끼어드는 것이라,
+    소리까지 나면 오탐 한 번의 비용이 훨씬 커진다(탐지 규칙 1).
+    """
+    tray, shell = _armed_tray(monkeypatch)
+    monkeypatch.delenv("ARGUS_NO_NOTIFY", raising=False)
+
+    assert tray.notify("제목", "본문") is True
+    assert _info_flags(shell) & tray_module._NIIF_NOSOUND, "NIIF_NOSOUND 없이 띄웠다 — 소리가 난다"
+
+
+def test_balloon_keeps_the_severity_icon_while_silencing(monkeypatch) -> None:
+    """소리를 끄면서 등급 아이콘까지 지우면 안 된다. 플래그를 덮어쓰면 여기서 걸린다."""
+    tray, shell = _armed_tray(monkeypatch)
+    monkeypatch.delenv("ARGUS_NO_NOTIFY", raising=False)
+
+    tray.notify("제목", "본문", severity="critical")
+    assert _info_flags(shell) & 0x03 == 0x03, "NIIF_ERROR 아이콘이 사라졌다"
+
+
+def test_balloon_makes_a_sound_when_asked(monkeypatch) -> None:
+    """반대쪽. 이게 없으면 "항상 무음"으로 못 박아도 위 테스트가 통과한다."""
+    tray, shell = _armed_tray(monkeypatch)
+    monkeypatch.delenv("ARGUS_NO_NOTIFY", raising=False)
+    tray.notify_sound = True
+
+    tray.notify("제목", "본문")
+    assert not (_info_flags(shell) & tray_module._NIIF_NOSOUND), "소리를 켰는데 무음 플래그가 붙었다"
+
+
+def test_notify_sound_setting_reaches_the_tray() -> None:
+    """**배선을 로직과 따로 잰다.** 위 테스트들은 판정만 보고 `general.notify_sound` 가
+    실제로 트레이에 닿는지는 보지 않는다 — 조립부에서 인자를 빠뜨려도 전부 통과한다.
+
+    코드 기본값과 YAML 기본값이 둘 다 `False` 라 **기본값이 아닌 값으로 잰다**
+    (2026-08-04 에 같은 유형의 구멍이 네 번 나왔다).
+    """
+    import ast
+    import inspect
+
+    import argus.__main__ as main_module
+
+    tree = ast.parse(inspect.getsource(main_module))
+    wired = [
+        kw
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "TrayIcon"
+        for kw in node.keywords
+        if kw.arg == "notify_sound"
+    ]
+    assert wired, "상주가 TrayIcon 에 notify_sound 를 넘기지 않는다 — YAML 을 고쳐도 안 바뀐다"
+    assert ast.unparse(wired[0].value) == "settings.general.notify_sound"
+
+    # 그리고 그 설정이 YAML 에서 실제로 읽히는가 — 기본값(False)이 아닌 값으로.
+    from argus.config.loader import Settings
+
+    assert Settings.model_validate({"general": {"notify_sound": True}}).general.notify_sound is True
 
 
 def test_suppression_stops_the_balloon_from_reaching_the_screen(monkeypatch) -> None:

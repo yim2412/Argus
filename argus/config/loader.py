@@ -30,6 +30,10 @@ class GeneralSettings(BaseModel):
     # 트레이 아이콘. 상주 프로그램인데 살아 있는지 보이지 않으면 사용자는 껐는지도 모른다.
     # 알림(풍선)도 이 아이콘을 통해 나가므로, 끄면 알림 경로가 함께 사라진다.
     tray: bool = True
+    # 풍선 알림에 Windows 기본 알림음을 낼 것인가. 상주 프로그램의 알림은 사용자가
+    # 부른 것이 아니라 **끼어드는 것**이라, 소리까지 나면 오탐 한 번의 비용이 훨씬
+    # 커진다(탐지 규칙 1). 그래서 기본은 무음이고, 원하면 여기서 켠다.
+    notify_sound: bool = False
 
     @field_validator("log_level")
     @classmethod

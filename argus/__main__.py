@@ -299,7 +299,11 @@ def run(args: argparse.Namespace) -> int:
         # 넘겨줄 수 있다. 실패해도 수집은 계속된다(내부에서 삼키고 비활성 상태로 간다).
         tray: TrayIcon | None = None
         if settings.general.tray:
-            tray = TrayIcon(on_stop=sup.request_stop, live=live)
+            tray = TrayIcon(
+                on_stop=sup.request_stop,
+                live=live,
+                notify_sound=settings.general.notify_sound,
+            )
             sup.add(tray)
 
         # 런타임 — 스로틀을 받지 않는다(부하가 클 때야말로 제때 돌아야 하는 것들)
