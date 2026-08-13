@@ -172,11 +172,18 @@ class IncidentPage(QtWidgets.QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(12)
 
-        row.addWidget(QtWidgets.QLabel("이 판단이 맞았나요?"))
+        # **"맞았나요"가 아니라 "쓸모 있었나요"다.** 앞의 물음은 사실 판정으로 읽힌다 —
+        # "롤이 CPU 26% 를 썼나"는 매번 참이라 그렇게 모은 라벨은 전부 비정상이 되고
+        # 아무것도 못 거른다. 이 라벨의 유일한 쓰임이 "알림을 줄일지"를 정하는 것이므로
+        # 재는 축도 그것이어야 한다. 08-06 에 점수 하한으로 가르려다 기각된 이유가
+        # 여기 있다 — 하한을 걸면 op.gg 가 남고 GPU 발열이 걸러졌다.
+        row.addWidget(QtWidgets.QLabel("이 알림이 쓸모 있었나요?"))
         # 화면 문구는 "정상/비정상", 저장값은 normal/real 이다. **저장값을 바꾸지
         # 않는다** — 이미 쌓인 라벨과 평가 경로(`--incident`)가 그 값을 읽는다.
         self._normal_box = QtWidgets.QCheckBox("정상")
+        self._normal_box.setToolTip("안 알려도 됐다 — 내가 돌린 작업이고 불편하지 않았다")
         self._real_box = QtWidgets.QCheckBox("비정상")
+        self._real_box.setToolTip("알려줄 만했다 — 실제로 느려졌거나 조치할 것이 있었다")
         self._clear_btn = QtWidgets.QPushButton("취소")
         # **`clicked` 다** — `toggled`/`stateChanged` 는 코드가 상태를 세울 때도
         # 울려, 사건을 고르기만 해도 방금 그린 라벨을 DB 에 다시 쓰게 된다.
@@ -188,7 +195,11 @@ class IncidentPage(QtWidgets.QWidget):
             widget.setCursor(QtCore.Qt.PointingHandCursor)
             row.addWidget(widget)
 
-        hint = QtWidgets.QLabel("'정상'으로 표시한 구간은 정상 데이터로 편입됩니다")
+        # **아직 하지 않는 일을 적지 않는다.** 전에는 "정상으로 표시한 구간은 정상
+        # 데이터로 편입됩니다"였는데, `user_label` 을 읽는 곳은 이 화면의 오탐 비율
+        # 타일뿐이다 — 탐지기·평가·학습 어디에도 소비처가 없다(2026-08-14 확인).
+        # 하지도 않는 일을 적으면 사용자는 자기 답이 이미 쓰이고 있다고 믿는다.
+        hint = QtWidgets.QLabel("알림 문턱을 고칠 때 근거로 씁니다 · 애매하면 넘기세요")
         hint.setStyleSheet(f"color: {theme.INK_MUTED}; font-size: 10px;")
         row.addWidget(hint)
         row.addStretch(1)
