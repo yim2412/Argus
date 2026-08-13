@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import date
 
 import pytest
 
@@ -234,7 +235,10 @@ def _usage_rows(db: Database, rows: list[tuple[str, float]]) -> None:
     db.insert_many(
         "program_usage_daily",
         ("day", "name", "seconds", "launches", "observed_s"),
-        [("2026-08-12", name, seconds, 1, 100_000.0) for name, seconds in rows],
+        # **날짜를 박아 두지 않는다.** 아래 테스트가 `days=1` 로 조회하는데 그 하한은
+        # `date.today()` 다 — 고정 날짜로 두면 다음 날 자정에 픽스처 행이 통째로 잘려
+        # 배선과 무관한 이유로 깨진다(2026-08-13 에 실제로 그렇게 됐다).
+        [(date.today().isoformat(), name, seconds, 1, 100_000.0) for name, seconds in rows],
     )
 
 
