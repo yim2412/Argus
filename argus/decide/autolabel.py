@@ -32,6 +32,20 @@ GPU 를 쓴 게임이지 저것들이 아니다.
 CPU 에는 잴 자가 없어서다. 못 재는 것을 잰다고 적지 않는다 — 메모리 쪽에 붙일 때
 그 축을 함께 넣는다.
 
+**관측자(Argus 자신)는 이름이 아니라 실측으로 가린다 (2026-08-15).** 처음에는
+`python`·`pythonw` 를 무조건 판정에서 뺐다. 취지는 설계 규칙 1 이었지만 — 관측자가
+병목이 된 상황을 자동 라벨이 가리면 안 된다 — **관측자가 결백한 경우까지 같이 막았다.**
+답 대기 6건 중 4건이 그렇게 걸린 개발 도구였다(pytest·mutation_sweep).
+
+이름으로는 못 가른다는 것이 실측으로 확인됐다: 사건 #179 의 `python` 기여자 PID
+25개 안에 `tests/test_shutdown.py` 가 띄운 `-m argus` 자식이 섞여 있었다. 그래서
+`self_telemetry` 의 `throttle_level`·`drop_count` 로 판단한다 — **예산 판정은 이미
+`runtime.budget` 이 자기 설정으로 하고 있고, 그 결과가 이 두 값이다.** 여기서 문턱을
+다시 만들면 설정이 두 곳이 된다(설계 규칙 3).
+
+그 실측은 7일만 보존되고 웜으로 나가지 않는다. **오래된 사건은 결백을 증명할 수
+없으므로 예전처럼 사람에게 남긴다** — 확인할 수 없는 것을 확인했다고 적지 않는다.
+
 **이 판정은 `user_label` 을 덮지 않는다.** 칸이 따로 있고(`auto_label`), 사람이 답한
 사건은 그 답이 이긴다. 섞으면 기계가 매긴 것으로 기계를 고치게 된다.
 
@@ -48,6 +62,29 @@ from ..config.loader import AutoLabelSettings
 
 LABEL_NORMAL = "normal"
 LABEL_REAL = "real"
+
+
+@dataclass(frozen=True)
+class ObserverWindow:
+    """사건 구간 동안 **관측자 자신**이 어떤 상태였나 (`self_telemetry`).
+
+    **예산 초과 여부를 여기서 다시 계산하지 않는다.** 문턱(`budget.cpu_percent` 등)은
+    `runtime.budget` 이 갖고 있고, 그 판정 결과가 이미 `throttle_level` 로 남는다.
+    autolabel 이 임계값을 복제하면 설정이 두 곳이 되어 설계 규칙 3 위반이다.
+
+    `dropped` 는 큐가 넘쳐 버린 표본 수다. 스로틀이 오르기 전에도 관측자가 못 따라간
+    구간이 있을 수 있어 함께 본다 — 둘 다 0이어야 "결백"이다.
+    """
+
+    samples: int
+    cpu_max: float
+    throttle_max: int
+    dropped: int
+
+    @property
+    def clean(self) -> bool:
+        """관측자가 이 구간에서 병목이 아니었다고 말할 수 있는가."""
+        return self.samples > 0 and self.throttle_max == 0 and self.dropped == 0
 
 
 @dataclass(frozen=True)
@@ -81,12 +118,17 @@ def judge(
     incident: dict,
     *,
     foreground: dict[str, bool],
+    observer: ObserverWindow | None,
     settings: AutoLabelSettings,
 ) -> Verdict:
     """사건 하나를 판정한다. **순수 함수다** — DB 를 읽지 않는다.
 
     `foreground` 는 `program_info.foreground_seen` 을 이름으로 찾을 수 있게 만든 표다.
-    조회를 밖으로 뺀 이유는 리플레이·백필·실시간이 같은 판정을 쓰게 하기 위해서다.
+    `observer` 는 그 구간의 관측자 자신 상태다(없으면 `None`). 둘 다 조회를 밖으로 뺀
+    이유는 리플레이·백필·실시간이 같은 판정을 쓰게 하기 위해서다.
+
+    **`observer` 는 기본값이 없다.** 넘기는 것을 잊은 호출부가 조용히 "판정 없음"으로
+    떨어지면, 배선이 끊긴 것과 정상 동작이 구별되지 않는다(08-04 에 네 번 겪은 유형).
     """
     if not settings.enabled:
         return Verdict(None, "자동 라벨이 꺼져 있다")
@@ -113,9 +155,34 @@ def judge(
         return Verdict(None, f"1위 기여가 {share:.0%} 뿐이라 원인을 지목할 수 없다")
 
     if name.lower() in {x.lower() for x in settings.exclude}:
-        # Argus 자신·개발 도구. 이걸 "내가 띄운 앱"으로 덮으면 관측자가 병목이 된
-        # 상황(설계 규칙 1)을 자동 라벨이 가린다. 사람에게 남긴다.
-        return Verdict(None, f"{name} 은 판정에서 빼는 이름이다 (자기 자신·개발 도구)")
+        # 관측자일 수 없는 개발 도구. 판정 근거를 아직 세우지 않아 사람에게 남긴다.
+        return Verdict(None, f"{name} 은 판정에서 빼는 이름이다 (개발 도구)")
+
+    if name.lower() in {x.lower() for x in settings.observer_names}:
+        # **관측자일 수 있는 이름. 여기서 이름으로 판단하지 않는다.**
+        #
+        # 예전에는 이 이름들을 무조건 거부했다. 취지는 옳았지만(설계 규칙 1 — 관측자가
+        # 병목이 된 상황을 자동 라벨이 가리면 안 된다) **관측자가 결백한 경우까지 같이
+        # 막았다.** 2026-08-15 기준 답 대기 6건 중 4건이 여기 걸린 개발 도구였다.
+        #
+        # 이름으로는 가를 수 없다는 것이 실측으로 확인됐다 — 사건 #179 의 `python`
+        # 기여자 PID 25개에 `tests/test_shutdown.py` 가 띄운 `-m argus` 자식이 섞여
+        # 있었다. 그래서 **관측자 자신의 실측**으로 가른다.
+        if observer is None or observer.samples == 0:
+            # `self_telemetry` 는 7일만 보존되고 웜으로 내보내지 않는다. 오래된 사건은
+            # 결백을 증명할 방법이 영영 없다 — 그때는 사람에게 남긴다.
+            return Verdict(None, f"{name} — 관측자 실측이 없어 결백을 확인할 수 없다")
+        if not observer.clean:
+            # ★ 관측자가 스스로 샘플링을 낮췄거나 표본을 버렸다. 설계 규칙 1 이
+            #   말하는 실패 상태다. 이걸 normal 로 덮으면 제품 실패가 묻힌다.
+            return Verdict(
+                None,
+                f"관측자가 예산을 넘었다 (스로틀 {observer.throttle_max}"
+                f" · 드롭 {observer.dropped} · CPU 최대 {observer.cpu_max:.1f}%)"
+                " — 사람이 봐야 한다",
+            )
+        # 결백이 확인됐다. 아래 포어그라운드 검사로 계속 간다 — 사용자가 직접 띄운
+        # 개발 도구이므로 ② 와 같은 판정을 받는 것이 맞다.
 
     if not foreground.get(name.lower()):
         return Verdict(None, f"{name} 을 직접 띄운 적이 있는지 모른다")
@@ -129,6 +196,30 @@ def foreground_map(db) -> dict[str, bool]:
     """`program_info` 를 이름→포어그라운드 이력 표로. 이름은 소문자로 맞춘다."""
     rows = db.query("SELECT name, foreground_seen FROM program_info")
     return {str(r["name"]).lower(): bool(r["foreground_seen"]) for r in rows}
+
+
+def observer_window(db, ts_start: float, ts_end: float | None) -> ObserverWindow | None:
+    """사건 구간의 관측자 자신 상태. 표본이 하나도 없으면 `None`.
+
+    **`drop_count` 는 누적값이라 차이를 본다.** 구간 최대값만 보면 예전에 한 번 버린
+    적이 있는 프로세스는 영원히 "더러운" 상태가 되어, 그 뒤 사건이 전부 판정에서 빠진다.
+    """
+    end = ts_end if ts_end is not None else ts_start
+    rows = db.query(
+        "SELECT COUNT(*) AS n, MAX(cpu_percent) AS cpu, MAX(throttle_level) AS thr,"
+        " MAX(drop_count) - MIN(drop_count) AS dropped"
+        " FROM self_telemetry WHERE ts BETWEEN ? AND ?",
+        (ts_start, end),
+    )
+    if not rows or not rows[0]["n"]:
+        return None
+    row = rows[0]
+    return ObserverWindow(
+        samples=int(row["n"]),
+        cpu_max=float(row["cpu"] or 0.0),
+        throttle_max=int(row["thr"] or 0),
+        dropped=int(row["dropped"] or 0),
+    )
 
 
 def during_injection(db, incident_id: int) -> bool:
@@ -156,7 +247,8 @@ def apply(db, incident_id: int, settings: AutoLabelSettings) -> Verdict:
     "무엇이 왜 안 걸렸나"를 세어 볼 수 있어야 한다.
     """
     rows = db.query(
-        "SELECT id, bottleneck, contributors, user_label, notified FROM incidents WHERE id = ?",
+        "SELECT id, bottleneck, contributors, user_label, notified, ts_start, ts_end"
+        " FROM incidents WHERE id = ?",
         (incident_id,),
     )
     if not rows:
@@ -174,7 +266,12 @@ def apply(db, incident_id: int, settings: AutoLabelSettings) -> Verdict:
         # 내가 일부러 만든 부하에 대한 판단은 실사용 문턱을 고칠 근거가 아니다.
         return Verdict(None, "결함 주입 구간이다")
 
-    verdict = judge(row, foreground=foreground_map(db), settings=settings)
+    verdict = judge(
+        row,
+        foreground=foreground_map(db),
+        observer=observer_window(db, row["ts_start"], row["ts_end"]),
+        settings=settings,
+    )
     with db._lock:  # noqa: SLF001
         db.conn.execute(
             "UPDATE incidents SET auto_label = ?, auto_label_reason = ?, auto_labeled_at = ?"

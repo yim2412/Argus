@@ -383,7 +383,13 @@ class AutoLabelSettings(BaseModel):
     hardware_limit_bottlenecks: list[str] = Field(default=["THERMAL"])
     user_workload_bottlenecks: list[str] = Field(default=["CPU", "CONTENTION"])
     min_top_share: float = Field(default=0.15, ge=0.0, le=1.0)
-    exclude: list[str] = Field(default=["python", "pythonw", "py", "claude", "code"])
+    # **관측자일 수 없는 이름.** 무조건 판정에서 뺀다.
+    exclude: list[str] = Field(default=["claude", "code"])
+    # **관측자일 수 있는 이름.** 여기 걸리면 이름만으로 판단하지 않고 관측자 자신의
+    # 실측(`self_telemetry`)으로 결백을 확인한 뒤에만 판정한다. `python` 이 섞여 있는
+    # 이유는 `-m argus` 로 뜬 상주·자식이 그 이름으로 잡히기 때문이다(2026-08-15 실측:
+    # 사건 #179 의 `python` 기여자 PID 25개에 테스트가 띄운 `-m argus` 가 들어 있었다).
+    observer_names: list[str] = Field(default=["pythonw", "python", "py"])
 
 
 class FingerprintSettings(BaseModel):

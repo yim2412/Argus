@@ -408,6 +408,37 @@ MUTANTS: list[Mutant] = [
         note="예광탄 실측: TTL 2초일 때 12초에 6개만 그렸다",
     ),
     Mutant(
+        "observer_guard",
+        "관측자가 예산을 넘은 구간은 자동 라벨이 덮지 않는다 (설계 규칙 1)",
+        (
+            (
+                "argus/decide/autolabel.py",
+                "        if not observer.clean:\n",
+                "        if False:  # MUTANT: 관측자가 더러워도 판정한다\n",
+            ),
+        ),
+        note=(
+            "모니터가 병목이 된 상황을 자동 라벨이 normal 로 덮으면 제품 실패가 묻힌다. "
+            "무력화하면 스로틀·드롭 구간까지 normal 이 붙는다"
+        ),
+    ),
+    Mutant(
+        "observer_needs_telemetry",
+        "관측자 실측이 없으면 결백을 단정하지 않는다",
+        (
+            (
+                "argus/decide/autolabel.py",
+                "        if observer is None or observer.samples == 0:\n",
+                "        if observer is None:  # MUTANT: 빈 표본을 실측으로 본다\n",
+            ),
+        ),
+        note=(
+            "self_telemetry 는 7일 보존이라 오래된 사건은 증명할 방법이 없다. "
+            "`observer is None` 은 남긴다 — 지우면 다음 줄이 None.clean 으로 AttributeError 를 "
+            "내서 논리가 아니라 예외가 잡히고, 그건 측정이 아니다"
+        ),
+    ),
+    Mutant(
         "warm_child_encoding",
         "자식 출력을 로캘이 아니라 UTF-8 로 디코딩한다",
         (
