@@ -160,6 +160,65 @@ def test_child_actually_runs_under_the_resident_interpreter(tmp_path) -> None:
     assert "exported" in payload, done.stdout
 
 
+def test_child_output_is_decoded_as_utf8_not_locale(exporter, monkeypatch) -> None:
+    """**자식의 출력 인코딩을 로캘에 맡기지 않는다.**
+
+    자식은 우리 자신이고 `logging_setup.setup()` 이 stdout/stderr 를 UTF-8 로
+    reconfigure 한다. 부모가 `text=True` 만 쓰면 **실행 PC 의 ACP** 로 디코딩하므로
+    CP949 PC 에서 어긋난다. 개발 PC 는 2026-08-15 부터 UTF-8 로캘이라
+    **실행만으로는 이 회귀가 절대 드러나지 않는다** — 그래서 인자를 직접 본다.
+    """
+    component, _db = exporter
+    seen: dict = {}
+
+    class _Done:
+        returncode = 0
+        stdout = '{"exported": {"metrics": 3}}'
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        seen.update(kwargs)
+        return _Done()
+
+    monkeypatch.setattr(warm_mod.subprocess, "run", fake_run)
+    component.tick()
+
+    assert seen.get("encoding") == "utf-8", (
+        "자식 출력 디코딩을 로캘에 맡겼다. CP949 PC 에서 stderr 가 None 이 되고 "
+        f"실패 원인이 통째로 사라진다. 넘긴 인자={sorted(seen)}"
+    )
+    # 로그 한 줄 때문에 내보내기 결과를 잃으면 안 된다.
+    assert seen.get("errors") == "replace", f"errors 를 지정하지 않았다: {sorted(seen)}"
+
+
+def test_locale_decoding_really_loses_stderr() -> None:
+    """위 테스트가 막는 것이 **실재하는 피해**임을 보인다.
+
+    인자를 세는 테스트만 있으면 "왜 그 인자가 필요한가"가 남지 않는다. 여기서는
+    진짜 자식을 띄워, 로캘이 어긋났을 때 `subprocess` 가 **예외를 던지지 않고
+    스트림을 `None` 으로** 돌려준다는 것을 확인한다 — 이게 조용해서 위험한 이유다.
+    """
+    child = (
+        "import sys;"
+        "sys.stderr.reconfigure(encoding='utf-8', errors='replace');"
+        "sys.stderr.write('디스크 병목\\n')"
+    )
+    argv = [sys.executable, "-c", child]
+
+    # CP949 PC 재현. 예외가 나지 않는다는 것 자체가 요점이다.
+    broken = subprocess.run(argv, capture_output=True, text=True, encoding="cp949", timeout=30)
+    assert broken.stderr is None, (
+        "이 테스트의 전제가 깨졌다 — 로캘 불일치가 더 이상 stderr 를 삼키지 않는다면 "
+        "warm.py 의 방어 근거를 다시 확인해야 한다"
+    )
+
+    # warm.py 가 쓰는 인자. 실행 PC 로캘과 무관하게 한글이 온전히 온다.
+    fixed = subprocess.run(
+        argv, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30
+    )
+    assert "디스크 병목" in fixed.stderr, repr(fixed.stderr)
+
+
 def test_frozen_and_source_take_different_commands(monkeypatch) -> None:
     """**exe 와 소스 실행이 다른 명령이다.**
 

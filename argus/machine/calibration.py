@@ -120,6 +120,13 @@ def _disk_media_type(drive_letter: str) -> str:
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
             text=True,
+            # MediaType 값 자체는 영문이라 로캘이 달라도 대개 맞는다. 그래도 못박는 이유는
+            # PowerShell 오류 메시지가 실행 PC 의 언어로 나오기 때문이다 — 그때 디코딩이
+            # 깨지면 `subprocess` 가 예외를 던지지 않고 **`stdout` 을 `None` 으로** 돌려주고,
+            # 아래 `(result.stdout or "")` 가 조용히 "unknown" 으로 떨어진다.
+            # HDD/SSD 판정이 틀린 채로 machine_profile 이 굳는 게 최악이다(규칙 2).
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )

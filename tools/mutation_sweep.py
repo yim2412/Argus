@@ -408,6 +408,26 @@ MUTANTS: list[Mutant] = [
         note="예광탄 실측: TTL 2초일 때 12초에 6개만 그렸다",
     ),
     Mutant(
+        "warm_child_encoding",
+        "자식 출력을 로캘이 아니라 UTF-8 로 디코딩한다",
+        (
+            # **인자 두 줄을 지운다.** `pass` 로 치환하면 인자 자리에서 SyntaxError 가 나
+            # 모듈이 임포트조차 안 되고, 그러면 "잡힘"이 나와도 그건 테스트가 잡은 게
+            # 아니라 문법 오류가 잡힌 것이다 (2026-08-15 첫 등록에서 실제로 그랬다).
+            # 무력화는 **돌아가는 코드**여야 측정이 성립한다.
+            (
+                "argus/storage/warm.py",
+                '                encoding="utf-8",\n'
+                '                errors="replace",  # 로그 한 줄 때문에 내보내기 결과를 잃지 않는다\n',
+                "",
+            ),
+        ),
+        note=(
+            "개발 PC 가 UTF-8 로캘(2026-08-15~)이라 실행만으로는 절대 안 드러난다. "
+            "CP949 PC 에서 stderr 가 None 이 되어 실패 원인이 조용히 사라진다"
+        ),
+    ),
+    Mutant(
         "dashboard_pythonpath",
         "창에 sys.path 를 물려준다 (base 인터프리터엔 PySide6 가 없다)",
         (

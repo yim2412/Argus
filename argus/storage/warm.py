@@ -434,6 +434,21 @@ class WarmExporter(Component):
                 command,
                 capture_output=True,
                 text=True,
+                # **자식의 출력 인코딩을 로캘에 맡기지 않는다.** 자식은 우리 자신이고
+                # `logging_setup.setup()` 이 stdout/stderr 를 UTF-8 로 reconfigure 한다.
+                # 생략하면 부모는 실행 PC 의 ACP 로 디코딩하므로 CP949 PC 에서 어긋난다.
+                #
+                # **그 실패는 조용하다 — 그래서 위험하다.** 디코딩은 `subprocess` 의 reader
+                # 스레드 안에서 일어나므로 예외가 여기까지 오지 않는다. `run()` 은 정상
+                # 반환하고 **깨진 스트림만 `None`** 이 된다. 그러면 아래 실패 로그의
+                # `(done.stderr or "")` 가 빈 문자열이 되어 **자식이 왜 실패했는지가
+                # 통째로 사라진다.** 예외도 백오프도 없으니 신호가 아예 없다(규칙 4 위반).
+                # 스레드 traceback 은 상주의 진짜 stderr 로 새는데 `pythonw` 라 안 남는다.
+                #
+                # 개발 PC 는 UTF-8 로캘이라 **여기서는 재현되지 않는다**(2026-08-15~).
+                # 재현: `encoding="cp949"` 로 바꿔 돌리면 stderr 가 `None` 이 된다.
+                encoding="utf-8",
+                errors="replace",  # 로그 한 줄 때문에 내보내기 결과를 잃지 않는다
                 timeout=self.timeout_s,
                 env=export_env(),
                 # 콘솔 없는 상주(`pythonw`)에서 자식이 창을 띄우면 안 된다.
