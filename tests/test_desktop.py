@@ -1687,3 +1687,68 @@ def test_injected_incidents_are_not_counted_as_pending(qapp) -> None:
     detail = page._tiles["fp"].note
     assert "1" in detail and "알려주세요" in detail, f"주입 건까지 세었다: {detail!r}"
 
+
+
+def test_unknown_is_not_asked_again(monkeypatch, tmp_path) -> None:
+    """**"모르겠음"도 답이다 — 다시 묻지 않는다.**
+
+    아무것도 안 누르고 지나가면 답 대기에 그대로 남아, "답하기" 를 누를 때마다 같은
+    사건으로 되돌아온다. 애매한 것이 가장 최근이면 거기서 막힌다.
+    """
+    from argus.dashboard import data
+
+    database = _label_db(
+        tmp_path,
+        [(1, 0.5, 1, None), (2, 0.6, 1, "unknown"), (3, 0.7, 1, "normal")],
+    )
+    monkeypatch.setattr(data, "db_path", lambda: database)
+    data.unlabeled_notified.cache_clear()
+
+    assert [r["id"] for r in data.unlabeled_notified()] == [1], "모르겠음을 다시 묻고 있다"
+
+
+def test_three_answer_boxes_are_mutually_exclusive(qapp, monkeypatch) -> None:
+    """상자가 셋이 돼도 **켜지는 것은 언제나 하나뿐이다.**"""
+    page, saved = _selected_page(qapp, monkeypatch, _rows(1))
+
+    page._unknown_box.click()
+    assert saved[-1] == (1, "unknown")
+    assert page._unknown_box.isChecked()
+    assert not page._normal_box.isChecked() and not page._real_box.isChecked()
+
+    page._normal_box.click()
+    assert saved[-1] == (1, "normal")
+    assert not page._unknown_box.isChecked(), "모르겠음이 켜진 채 남았다"
+
+    page._normal_box.click()
+    assert saved[-1] == (1, None)
+    assert not any(
+        b.isChecked() for b in (page._normal_box, page._real_box, page._unknown_box)
+    )
+
+
+def test_unknown_does_not_dilute_the_false_positive_rate(qapp) -> None:
+    """**"모르겠음"은 오탐 비율의 분모가 아니다.**
+
+    판단이 아니라 판단할 수 없었다는 표시다. 분모에 넣으면 답을 모을수록 오탐
+    비율이 낮아져 **문제가 작아 보인다** — 고칠 근거를 모으는 일이 근거를 흐린다.
+    """
+    page = _incident_page(qapp)
+    rows = _rows(1, 2, 3, 4)
+    for row, label in zip(rows, ("normal", "real", "unknown", "unknown")):
+        row["notified"] = 1
+        row["user_label"] = label
+
+    page._update_summary(rows)
+    assert page._tiles["fp"].value == "50%", (
+        f"정상 1 · 비정상 1 · 모르겠음 2 인데 {page._tiles['fp'].value} 라고 한다"
+    )
+
+
+def test_unknown_shows_in_the_list(qapp) -> None:
+    """목록에서도 답한 것으로 보여야 한다 — 안 그러면 다시 열어 보게 된다."""
+    from argus.desktop.pages.incidents import _list_row
+
+    base = {"ts_start": 1000.0, "ts_end": 1100.0, "severity": "warning", "title": "t"}
+    assert _list_row({**base, "id": 1, "notified": 1, "user_label": "unknown"})["answer"] == "모름"
+

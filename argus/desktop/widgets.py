@@ -168,6 +168,10 @@ class StatTile(QtWidgets.QFrame):
         """보조 설명. **테스트가 읽는다** — 창을 띄우지 않고 문구를 확인하기 위한 것이다."""
         return self._note.text().strip()
 
+    @property
+    def value(self) -> str:
+        return self._value.text()
+
 
 class TimeSeriesChart(QtWidgets.QWidget):
     """시간축 꺾은선. **x 는 "몇 초 전"이다** — 절대 시각은 폭을 먹고 읽히지 않는다.

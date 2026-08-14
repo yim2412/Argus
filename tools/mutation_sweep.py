@@ -1387,6 +1387,17 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "unknown_is_not_a_false_positive_denominator",
+        "모르겠음은 오탐 비율의 분모가 아니다 (답을 모을수록 문제가 작아 보인다)",
+        (
+            (
+                "argus/desktop/pages/incidents.py",
+                '        labeled = [r for r in rows if r.get("user_label") in ("normal", "real")]\n',
+                '        labeled = [r for r in rows if r.get("user_label")]  # MUTANT\n',
+            ),
+        ),
+    ),
+    Mutant(
         "pending_answers_skip_injections",
         "결함 주입 구간은 묻지 않는다 (내가 만든 부하에 대한 답은 실사용 근거가 아니다)",
         (

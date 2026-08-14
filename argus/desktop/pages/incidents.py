@@ -184,13 +184,20 @@ class IncidentPage(QtWidgets.QWidget):
         self._normal_box.setToolTip("안 알려도 됐다 — 내가 돌린 작업이고 불편하지 않았다")
         self._real_box = QtWidgets.QCheckBox("비정상")
         self._real_box.setToolTip("알려줄 만했다 — 실제로 느려졌거나 조치할 것이 있었다")
+        # **넘기는 것도 답이다.** 아무것도 안 누르고 지나가면 답 대기에 그대로 남아,
+        # "답하기" 를 누를 때마다 같은 사건으로 되돌아온다 — 애매한 것이 가장 최근이면
+        # 거기서 막힌다. 그리고 이 수가 쌓이면 그것대로 발견이다: 무슨 일이었는지
+        # 모르겠는 알림은 **문턱이 아니라 설명이 부족한** 알림이다.
+        self._unknown_box = QtWidgets.QCheckBox("모르겠음")
+        self._unknown_box.setToolTip("판단할 수 없다 — 다시 묻지 않는다")
         self._clear_btn = QtWidgets.QPushButton("취소")
         # **`clicked` 다** — `toggled`/`stateChanged` 는 코드가 상태를 세울 때도
         # 울려, 사건을 고르기만 해도 방금 그린 라벨을 DB 에 다시 쓰게 된다.
         self._normal_box.clicked.connect(lambda on: self._label("normal" if on else None))
         self._real_box.clicked.connect(lambda on: self._label("real" if on else None))
+        self._unknown_box.clicked.connect(lambda on: self._label("unknown" if on else None))
         self._clear_btn.clicked.connect(lambda: self._label(None))
-        for widget in (self._normal_box, self._real_box, self._clear_btn):
+        for widget in (self._normal_box, self._real_box, self._unknown_box, self._clear_btn):
             widget.setEnabled(False)
             widget.setCursor(QtCore.Qt.PointingHandCursor)
             row.addWidget(widget)
@@ -210,6 +217,7 @@ class IncidentPage(QtWidgets.QWidget):
         상태는 `clicked` 를 울리지 않으므로 DB 를 다시 건드리지 않는다."""
         self._normal_box.setChecked(label == "normal")
         self._real_box.setChecked(label == "real")
+        self._unknown_box.setChecked(label == "unknown")
 
     # ------------------------------------------------------------------ 조회
 
@@ -314,7 +322,9 @@ class IncidentPage(QtWidgets.QWidget):
     def _update_summary(self, rows: list[dict]) -> None:
         open_now = sum(1 for r in rows if r.get("ts_end") is None)
         notified = sum(1 for r in rows if r.get("notified"))
-        labeled = [r for r in rows if r.get("user_label")]
+        # **"모르겠음"은 분모에 넣지 않는다.** 판단이 아니라 판단할 수 없었다는 표시라,
+        # 세면 오탐 비율이 실제보다 낮게 나온다 — 답을 모을수록 문제가 작아 보인다.
+        labeled = [r for r in rows if r.get("user_label") in ("normal", "real")]
         false_positives = [r for r in rows if r.get("user_label") == "normal"]
 
         self._tiles["total"].set(str(len(rows)))
@@ -368,6 +378,8 @@ class IncidentPage(QtWidgets.QWidget):
             marks.append("사용자: 정상")
         elif incident.get("user_label") == "real":
             marks.append("사용자: 비정상")
+        elif incident.get("user_label") == "unknown":
+            marks.append("사용자: 모르겠음")
         if incident.get("notify_skipped"):
             marks.append(f"알림 안 함: {incident['notify_skipped']}")
         # **왜 안 물어보는지가 보여야 한다.** 답 대기에서 빼 놓고 이유를 안 적으면
@@ -399,6 +411,7 @@ class IncidentPage(QtWidgets.QWidget):
         self._show_label(incident.get("user_label"))
         self._normal_box.setEnabled(True)
         self._real_box.setEnabled(True)
+        self._unknown_box.setEnabled(True)
         self._clear_btn.setEnabled(bool(incident.get("user_label")))
 
     def _label(self, label: str | None) -> None:
@@ -465,6 +478,8 @@ def _answer_mark(incident: dict) -> str:
         return "정상"
     if label == "real":
         return "비정상"
+    if label == "unknown":
+        return "모름"
     if not incident.get("notified"):
         return ""
     return "주입" if incident.get("during_injection") else "?"
