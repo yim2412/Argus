@@ -1315,22 +1315,33 @@ def test_cli_passes_the_incident_through(monkeypatch) -> None:
 # 화면에 없었다. 여기서 고정하는 것은 "무엇을 물을 것인가"와 "언제 묻지 않을 것인가"다.
 
 
-def _label_db(tmp_path, rows):
-    """`incidents` 만 있는 작은 DB. `rows` 는 (id, 며칠 전, notified, label)."""
+def _label_db(tmp_path, rows, injections=()):
+    """작은 DB. `rows` 는 (id, 며칠 전, notified, label), `injections` 는 (며칠 전, 며칠 전)."""
     import sqlite3
 
     database = tmp_path / "labels.db"
+    now = time.time()
     with sqlite3.connect(database) as conn:
         conn.execute(
             "CREATE TABLE incidents (id INTEGER PRIMARY KEY, ts_start REAL, ts_end REAL,"
             " severity TEXT, title TEXT, notified INTEGER, user_label TEXT, labeled_at REAL)"
         )
+        conn.execute(
+            "CREATE TABLE fault_injections (id INTEGER PRIMARY KEY, scenario TEXT,"
+            " ts_start REAL, ts_end REAL)"
+        )
         for incident_id, days_ago, notified, label in rows:
+            start = now - days_ago * 86400
             conn.execute(
-                "INSERT INTO incidents (id, ts_start, severity, title, notified, user_label)"
-                " VALUES (?, ?, 'warning', ?, ?, ?)",
-                (incident_id, time.time() - days_ago * 86400, f"사건 {incident_id}",
-                 notified, label),
+                "INSERT INTO incidents (id, ts_start, ts_end, severity, title, notified,"
+                " user_label) VALUES (?, ?, ?, 'warning', ?, ?, ?)",
+                (incident_id, start, start + 60, f"사건 {incident_id}", notified, label),
+            )
+        for start_days, end_days in injections:
+            conn.execute(
+                "INSERT INTO fault_injections (scenario, ts_start, ts_end)"
+                " VALUES ('handle_leak', ?, ?)",
+                (now - start_days * 86400, None if end_days is None else now - end_days * 86400),
             )
     return database
 
@@ -1599,4 +1610,80 @@ def test_failed_save_does_not_leave_the_box_lying(qapp, monkeypatch) -> None:
 
     assert not page._normal_box.isChecked(), "저장이 실패했는데 답한 것처럼 보인다"
     assert "저장하지 못했" in page._detail_meta.text()
+
+
+
+def test_injected_windows_are_not_asked_about(monkeypatch, tmp_path) -> None:
+    """**내가 만든 부하에 대한 알림은 묻지 않는다.**
+
+    2026-08-14 에 답 대기 28건 중 5건이 08-02 의 `handle_leak` 배치 구간이었다 —
+    `메모리 압박 — python 24%`(주입기 자신)까지 "이 알림이 쓸모 있었나"로 묻고
+    있었다. 답할 수 없는 질문이고, 답한다 해도 실사용 문턱의 근거가 아니다.
+
+    **경계가 요점이다.** 겹치는 것만 빠지고 인접한 것은 남아야 한다 — 주입 하나가
+    그날 알림을 통째로 삼키면 실제로 답할 것까지 사라진다.
+    """
+    from argus.dashboard import data
+
+    database = _label_db(
+        tmp_path,
+        [
+            (1, 2.0, 1, None),   # 주입 한복판
+            (2, 3.0, 1, None),   # 주입과 무관한 날
+            (3, 1.5, 1, None),   # 주입이 끝난 뒤
+        ],
+        injections=[(2.2, 1.8)],  # 2.2일 전 ~ 1.8일 전
+    )
+    monkeypatch.setattr(data, "db_path", lambda: database)
+    data.unlabeled_notified.cache_clear()
+
+    pending = [row["id"] for row in data.unlabeled_notified()]
+    assert 1 not in pending, "주입 구간의 알림을 답하라고 내밀고 있다"
+    assert pending == [3, 2], f"주입 밖의 알림까지 사라졌다: {pending}"
+
+
+def test_open_injection_does_not_swallow_everything_after_it(monkeypatch, tmp_path) -> None:
+    """**닫히지 않은 주입을 무한한 구간으로 읽지 않는다.**
+
+    전원이 끊기면 주입기의 `finally` 가 돌지 못해 `ts_end` 가 비어 남는다
+    (2026-07-30 실제). 그것을 "그 뒤로 계속 주입 중"으로 읽으면 이후 알림이
+    전부 답 대기에서 사라지고, 그 사실은 아무 데도 보이지 않는다.
+    """
+    from argus.dashboard import data
+
+    database = _label_db(
+        tmp_path,
+        [(1, 1.0, 1, None), (2, 0.5, 1, None)],
+        injections=[(3.0, None)],  # 사흘 전에 시작하고 닫히지 않았다
+    )
+    monkeypatch.setattr(data, "db_path", lambda: database)
+    data.unlabeled_notified.cache_clear()
+
+    assert [r["id"] for r in data.unlabeled_notified()] == [2, 1]
+
+
+def test_incident_list_marks_injection_instead_of_asking(qapp) -> None:
+    """**답 대기에서 뺐으면 왜 안 묻는지가 목록에 보여야 한다.**
+
+    물음표를 달면 거짓말이고, 빈칸으로 두면 알림이 안 나간 사건과 구분되지 않는다.
+    """
+    from argus.desktop.pages.incidents import _list_row
+
+    base = {"ts_start": 1000.0, "ts_end": 1100.0, "severity": "warning", "title": "t"}
+    assert _list_row({**base, "id": 1, "notified": 1, "during_injection": 1})["answer"] == "주입"
+    assert _list_row({**base, "id": 2, "notified": 1, "during_injection": 0})["answer"] == "?"
+
+
+def test_injected_incidents_are_not_counted_as_pending(qapp) -> None:
+    """타일의 "답 대기 N건"도 같은 수를 세야 한다. **두 곳이 갈리면 어느 쪽이
+    맞는지 알 수 없고, 사용자는 없는 일을 하라는 말을 듣는다.**"""
+    page = _incident_page(qapp)
+    rows = _rows(1, 2, 3)
+    for row, notified, injected in zip(rows, (1, 1, 1), (0, 1, 1)):
+        row["notified"] = notified
+        row["during_injection"] = injected
+
+    page._update_summary(rows)
+    detail = page._tiles["fp"].note
+    assert "1" in detail and "알려주세요" in detail, f"주입 건까지 세었다: {detail!r}"
 

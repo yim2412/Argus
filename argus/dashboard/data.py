@@ -287,10 +287,28 @@ def eval_runs(limit: int = 40) -> list[dict]:
     return query("SELECT * FROM eval_runs ORDER BY ts DESC, detector LIMIT ?", (limit,))
 
 
+# 사건이 결함 주입 구간과 겹치는가. **한 곳에만 둔다** — 답 대기에서 빼는 판정과
+# 화면에 "주입 중"을 붙이는 판정이 갈리면, 목록에서는 사라졌는데 이유는 안 보이는
+# 상태가 된다(같은 개념에 두 값을 두지 않는다).
+#
+# 주입 중에 난 알림은 **내가 일부러 만든 부하**에 대한 것이라 실사용 판단이 아니다.
+# 2026-08-14 에 답 대기 28건 중 5건이 08-02 의 handle_leak 배치 구간이었다 —
+# `python 24%`(주입기 자신)까지 "이 알림이 쓸모 있었나"로 물어보고 있었다.
+#
+# 열린 주입(`ts_end IS NULL`)은 시작 시각만으로 본다. 전원이 끊겨 라벨이 안 닫힌
+# 경우인데, 그것을 무한한 구간으로 읽으면 그 뒤 사건이 전부 빠진다.
+_DURING_INJECTION = (
+    "EXISTS (SELECT 1 FROM fault_injections f"
+    " WHERE f.ts_start <= COALESCE(i.ts_end, i.ts_start)"
+    " AND COALESCE(f.ts_end, f.ts_start) >= i.ts_start)"
+)
+
+
 @ttl_cache(10.0)
 def incidents(days: float = 7.0, limit: int = 200) -> list[dict]:
     return query(
-        "SELECT * FROM incidents WHERE ts_start > ? ORDER BY ts_start DESC LIMIT ?",
+        f"SELECT i.*, {_DURING_INJECTION} AS during_injection FROM incidents i"
+        " WHERE i.ts_start > ? ORDER BY i.ts_start DESC LIMIT ?",
         (time.time() - days * 86400, limit),
     )
 
@@ -311,11 +329,15 @@ def unlabeled_notified(days: float = LABEL_WINDOW_DAYS) -> list[dict]:
 
     최신순인 것은 화면이 "가장 최근 것부터 답하기"로 쓰기 때문이다. 기억이 남아 있는
     쪽부터 물어야 라벨이 실제 판단이 된다.
+
+    **결함 주입 구간은 뺀다.** 내가 만든 부하에 대한 알림을 "쓸모 있었나"로 물으면
+    답할 수 없고, 답한다 해도 실사용 문턱을 고칠 근거가 아니다.
     """
     return query(
-        "SELECT id, ts_start, severity, title FROM incidents"
-        " WHERE notified = 1 AND user_label IS NULL AND ts_start > ?"
-        " ORDER BY ts_start DESC",
+        "SELECT i.id, i.ts_start, i.severity, i.title FROM incidents i"
+        " WHERE i.notified = 1 AND i.user_label IS NULL AND i.ts_start > ?"
+        f" AND NOT {_DURING_INJECTION}"
+        " ORDER BY i.ts_start DESC",
         (time.time() - days * 86400,),
     )
 

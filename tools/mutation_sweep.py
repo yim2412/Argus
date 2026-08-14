@@ -1387,6 +1387,28 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "pending_answers_skip_injections",
+        "결함 주입 구간은 묻지 않는다 (내가 만든 부하에 대한 답은 실사용 근거가 아니다)",
+        (
+            (
+                "argus/dashboard/data.py",
+                '        f" AND NOT {_DURING_INJECTION}"\n',
+                "        # MUTANT: 주입 구간도 답하라고 내민다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "open_injection_is_not_endless",
+        "닫히지 않은 주입을 무한 구간으로 읽지 않는다 (그 뒤 알림이 전부 사라진다)",
+        (
+            (
+                "argus/dashboard/data.py",
+                " AND COALESCE(f.ts_end, f.ts_start) >= i.ts_start)",
+                " AND COALESCE(f.ts_end, 1e18) >= i.ts_start)  -- MUTANT",
+            ),
+        ),
+    ),
+    Mutant(
         "answer_box_signal_is_click_not_toggle",
         "상자 상태를 비추는 것이 저장을 부르지 않는다 (훑기만 해도 labeled_at 이 갱신된다)",
         (

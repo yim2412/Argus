@@ -324,7 +324,11 @@ class IncidentPage(QtWidgets.QWidget):
         # **라벨이 없을 때 "피드백 없음"으로 두지 않는다.** 그 문구는 결과처럼 읽혀
         # 사용자가 할 일이 있다는 것을 전하지 못했다(08-09 ~ 08-14, 알림 50건에 라벨 0건).
         # 밀린 수를 세어 요구로 바꾼다.
-        pending = sum(1 for r in rows if r.get("notified") and not r.get("user_label"))
+        pending = sum(
+            1
+            for r in rows
+            if r.get("notified") and not r.get("user_label") and not r.get("during_injection")
+        )
         if labeled:
             rate = len(false_positives) / len(labeled) * 100
             detail = f"피드백 {len(labeled)}건 기준"
@@ -366,6 +370,10 @@ class IncidentPage(QtWidgets.QWidget):
             marks.append("사용자: 비정상")
         if incident.get("notify_skipped"):
             marks.append(f"알림 안 함: {incident['notify_skipped']}")
+        # **왜 안 물어보는지가 보여야 한다.** 답 대기에서 빼 놓고 이유를 안 적으면
+        # 사용자는 목록에서 사라진 것을 버그로 읽는다.
+        if incident.get("during_injection"):
+            marks.append("결함 주입 중 — 답하지 않아도 됩니다")
 
         colour = theme.STATUS.get(severity, theme.INK_MUTED)
         meta = (
@@ -448,13 +456,18 @@ def _answer_mark(incident: dict) -> str:
 
     **알림이 안 나간 사건은 빈칸으로 둔다.** 답을 안 준 것과 물은 적이 없는 것은
     다르고, 173건 전부에 물음표를 세우면 밀린 50건이 그 안에 묻힌다.
+
+    **결함 주입 구간은 "주입"으로 따로 세운다.** 답 대기에서 뺐으므로 물음표를
+    달면 거짓말이 되고, 빈칸으로 두면 왜 안 물어보는지가 보이지 않는다.
     """
     label = incident.get("user_label")
     if label == "normal":
         return "정상"
     if label == "real":
         return "비정상"
-    return "?" if incident.get("notified") else ""
+    if not incident.get("notified"):
+        return ""
+    return "주입" if incident.get("during_injection") else "?"
 
 
 def _contributor_row(contributor: dict) -> dict:
