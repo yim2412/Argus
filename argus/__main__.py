@@ -421,6 +421,7 @@ def run(args: argparse.Namespace) -> int:
                     FusionSettings(
                         bottleneck=settings.bottleneck,
                         incident=settings.incident,
+                        autolabel=settings.autolabel,
                         notify_enabled=settings.detection.notify,
                     ),
                     notifier=tray,

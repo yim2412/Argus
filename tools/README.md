@@ -11,6 +11,7 @@
 | `install_autostart.ps1` | 자동 시작 등록·해제 |
 | `backfill_rollup.py` | 워터마크보다 과거에 남은 원본을 소급 집계한다 |
 | `readiness.py` | 데이터 대기 중인 작업을 지금 시작해도 되는지 판정한다 |
+| `autolabel_backfill.py` | 이미 쌓인 알림에 자동 라벨(`auto_label`)을 매긴다 |
 
 ## 착수 조건 판정
 
@@ -25,6 +26,21 @@
 읽기 전용으로 열기 때문에 상주 인스턴스를 멈출 필요가 없다. 판정은 전부 **영구 보존되는
 계층**(`metrics_1m`·`process_5m`·`incidents`)만 본다 — 원본은 24시간 창이라 며칠을
 기다려도 늘지 않아 대기의 근거가 될 수 없다.
+
+## 자동 라벨 백필
+
+```powershell
+.venv\Scripts\python.exe tools\autolabel_backfill.py            # 미리보기
+.venv\Scripts\python.exe tools\autolabel_backfill.py --apply    # 저장
+```
+
+상주 경로는 앞으로 닫히는 사건만 판정한다. 이미 쌓인 것들은 이 도구가 채운다 —
+자동 라벨을 넣은 이유가 바로 그 밀린 알림들이다.
+
+**판정 로직을 복사하지 않고 `decide.autolabel.apply` 를 그대로 부른다.** 규칙이 두
+곳에 있으면 조용히 갈리고, 그때 "제품이 매긴 라벨"과 "백필이 매긴 라벨"이 같은 칸에
+섞여 구분할 방법이 없어진다. 사람이 답한 사건·안 나간 알림·결함 주입 구간은 건드리지
+않는다(그 판정도 `apply` 안에 한 번만 있다).
 
 ## 롤업 누락 점검·소급 집계
 

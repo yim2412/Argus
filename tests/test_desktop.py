@@ -1324,7 +1324,8 @@ def _label_db(tmp_path, rows, injections=()):
     with sqlite3.connect(database) as conn:
         conn.execute(
             "CREATE TABLE incidents (id INTEGER PRIMARY KEY, ts_start REAL, ts_end REAL,"
-            " severity TEXT, title TEXT, notified INTEGER, user_label TEXT, labeled_at REAL)"
+            " severity TEXT, title TEXT, notified INTEGER, user_label TEXT, labeled_at REAL,"
+            " auto_label TEXT)"
         )
         conn.execute(
             "CREATE TABLE fault_injections (id INTEGER PRIMARY KEY, scenario TEXT,"
@@ -1752,3 +1753,59 @@ def test_unknown_shows_in_the_list(qapp) -> None:
     base = {"ts_start": 1000.0, "ts_end": 1100.0, "severity": "warning", "title": "t"}
     assert _list_row({**base, "id": 1, "notified": 1, "user_label": "unknown"})["answer"] == "모름"
 
+
+
+def test_machine_answers_are_marked_apart_from_human_ones(qapp) -> None:
+    """**목록만 보고 누가 답했는지 알 수 있어야 한다.**
+
+    같은 글자로 적으면 "내가 언제 이걸 정상이라고 했지"가 된다. 사람 답이 있으면
+    그쪽이 이기고, 기계 답에는 점을 붙인다.
+    """
+    from argus.desktop.pages.incidents import _list_row
+
+    base = {"ts_start": 1000.0, "ts_end": 1100.0, "severity": "warning", "title": "t", "notified": 1}
+    assert _list_row({**base, "id": 1, "auto_label": "normal"})["answer"] == "·정상"
+    assert _list_row({**base, "id": 2, "auto_label": "real"})["answer"] == "·비정상"
+    assert (
+        _list_row({**base, "id": 3, "auto_label": "normal", "user_label": "real"})["answer"]
+        == "비정상"
+    ), "사람 답이 있는데 기계 답을 보이고 있다"
+
+
+def test_machine_answers_do_not_hide_that_they_are_machine(qapp) -> None:
+    """타일이 몇 건이 기계 것인지 말해야 한다. 섞어 놓고 한 숫자만 보이면
+    "오탐 33%"가 사람의 판단인지 내 규칙의 메아리인지 구분할 수 없다."""
+    page = _incident_page(qapp)
+    rows = _rows(1, 2, 3)
+    for row, human, auto in zip(rows, ("normal", None, None), (None, "normal", "real")):
+        row["notified"] = 1
+        row["user_label"] = human
+        row["auto_label"] = auto
+
+    page._update_summary(rows)
+    note = page._tiles["fp"].note
+    assert "사람 1건" in note and "자동 2건" in note, note
+    assert page._tiles["fp"].value == "67%", page._tiles["fp"].value
+
+
+def test_machine_answered_notifications_leave_the_pending_queue(qapp) -> None:
+    """자동 라벨을 넣은 이유가 밀린 답이다. 판정이 붙었는데도 계속 물으면
+    아무것도 줄지 않는다."""
+    page = _incident_page(qapp)
+    rows = _rows(1, 2)
+    for row, auto in zip(rows, ("normal", None)):
+        row["notified"] = 1
+        row["auto_label"] = auto
+
+    page._update_summary(rows)
+    assert "1건" in page._tiles["fp"].note, page._tiles["fp"].note
+
+
+def test_machine_answer_shows_its_reason(qapp) -> None:
+    """**근거 없는 판정은 뒤집을 수 없다.** 뒤집을 수 없으면 사람 답을 모으는 길이 막힌다."""
+    page = _incident_page(qapp)
+    row = _rows(1)[0]
+    row.update({"notified": 1, "auto_label": "normal", "auto_label_reason": "원인이 직접 띄운 앱이다"})
+    page._render_detail(row)
+    assert "자동: 정상" in page._detail_meta.text()
+    assert "원인이 직접 띄운 앱이다" in page._detail_meta.text()

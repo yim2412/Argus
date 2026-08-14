@@ -372,6 +372,20 @@ class DetectionSettings(BaseModel):
     load_min_samples: int = Field(default=60, ge=2)
 
 
+class AutoLabelSettings(BaseModel):
+    """자동 라벨의 판정 기준. **사람 답과 같은 칸을 쓰지 않는다** — `018` 마이그레이션 주석.
+
+    값의 근거는 실측 라벨 7건(2026-08-14)이다. 표본이 적다는 것을 알고 넣는 것이라,
+    바꿀 때는 코드가 아니라 여기를 고친다.
+    """
+
+    enabled: bool = True
+    hardware_limit_bottlenecks: list[str] = Field(default=["THERMAL"])
+    user_workload_bottlenecks: list[str] = Field(default=["CPU", "CONTENTION"])
+    min_top_share: float = Field(default=0.15, ge=0.0, le=1.0)
+    exclude: list[str] = Field(default=["python", "pythonw", "py", "claude", "code"])
+
+
 class FingerprintSettings(BaseModel):
     """프로세스 지문(Phase 6-B). "이 프로그램의 평소는 어디까지인가"를 학습한다.
 
@@ -534,6 +548,7 @@ class Settings(BaseModel):
     process_leak: ProcessLeakSettings = ProcessLeakSettings()
     severity: SeveritySettings = SeveritySettings()
     fingerprint: FingerprintSettings = FingerprintSettings()
+    autolabel: AutoLabelSettings = AutoLabelSettings()
     usage: UsageSettings = UsageSettings()
 
 

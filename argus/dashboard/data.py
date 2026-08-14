@@ -332,10 +332,15 @@ def unlabeled_notified(days: float = LABEL_WINDOW_DAYS) -> list[dict]:
 
     **결함 주입 구간은 뺀다.** 내가 만든 부하에 대한 알림을 "쓸모 있었나"로 물으면
     답할 수 없고, 답한다 해도 실사용 문턱을 고칠 근거가 아니다.
+
+    **기계가 판정한 것도 뺀다**(`auto_label`). 자동 라벨을 넣은 이유가 "판단 기준을
+    사람 머릿속에 두지 않는 것"이라, 판정이 붙은 뒤에도 계속 물으면 아무것도 줄지
+    않는다. 사람이 덮어쓰는 길은 열려 있다 — 목록에서 골라 상자를 누르면 그 답이 이긴다.
     """
     return query(
         "SELECT i.id, i.ts_start, i.severity, i.title FROM incidents i"
-        " WHERE i.notified = 1 AND i.user_label IS NULL AND i.ts_start > ?"
+        " WHERE i.notified = 1 AND i.user_label IS NULL AND i.auto_label IS NULL"
+        " AND i.ts_start > ?"
         f" AND NOT {_DURING_INJECTION}"
         " ORDER BY i.ts_start DESC",
         (time.time() - days * 86400,),

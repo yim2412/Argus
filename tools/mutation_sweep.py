@@ -1294,8 +1294,8 @@ MUTANTS: list[Mutant] = [
         (
             (
                 "argus/dashboard/data.py",
-                " WHERE notified = 1 AND user_label IS NULL AND ts_start > ?",
-                " WHERE user_label IS NULL AND ts_start > ?",  # MUTANT: 알림 여부 무시
+                " WHERE i.notified = 1 AND i.user_label IS NULL AND i.auto_label IS NULL",
+                " WHERE i.user_label IS NULL AND i.auto_label IS NULL",  # MUTANT: 알림 여부 무시
             ),
         ),
     ),
@@ -1427,6 +1427,64 @@ MUTANTS: list[Mutant] = [
                 "argus/desktop/pages/incidents.py",
                 '        self._normal_box.clicked.connect(lambda on: self._label("normal" if on else None))\n',
                 '        self._normal_box.toggled.connect(lambda on: self._label("normal" if on else None))  # MUTANT\n',
+            ),
+        ),
+    ),
+    # ---- 2026-08-14 자동 라벨. 사람 답과 **같은 칸에 섞이지 않는 것**이 요점이라,
+    #      판정 로직 둘과 오염 방지 셋을 잰다.
+    Mutant(
+        "autolabel_never_overwrites_human",
+        "기계 답이 사람 답을 덮지 않는다 (덮으면 기계가 매긴 것으로 기계를 고치게 된다)",
+        (
+            (
+                "argus/decide/autolabel.py",
+                '    if row["user_label"]:\n        return Verdict(None, "사람이 이미 답했다")\n',
+                "    # MUTANT: 사람 답을 덮는다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "autolabel_hardware_limit_is_real",
+        "열 스로틀은 비정상으로 간다 (실측 라벨 3/3 이 여기였다)",
+        (
+            (
+                "argus/decide/autolabel.py",
+                '        return Verdict(LABEL_REAL, f"하드웨어가 실제로 성능을 깎았다 ({bottleneck})")',
+                '        return Verdict(LABEL_NORMAL, "MUTANT")',
+            ),
+        ),
+    ),
+    Mutant(
+        "autolabel_needs_foreground_history",
+        "포어그라운드 이력이 없으면 정상으로 넘기지 않는다 (백그라운드는 내가 돌린 작업이 아니다)",
+        (
+            (
+                "argus/decide/autolabel.py",
+                "    if not foreground.get(name.lower()):\n"
+                '        return Verdict(None, f"{name} 을 직접 띄운 적이 있는지 모른다")\n',
+                "    # MUTANT: 아무 프로세스나 내가 띄운 앱으로 친다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "autolabel_skips_unnotified",
+        "안 나간 알림은 판정하지 않는다 (사건이 알림의 세 배라 타일이 기계 답으로 덮인다)",
+        (
+            (
+                "argus/decide/autolabel.py",
+                '        return Verdict(None, "알림이 나가지 않았다")\n',
+                "        pass  # MUTANT: 안 나간 알림도 판정한다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "autolabel_is_marked_as_machine_in_the_ui",
+        "화면이 기계 답을 사람 답과 구분해 보인다 (섞이면 오탐 비율이 누구 판단인지 모른다)",
+        (
+            (
+                "argus/desktop/pages/incidents.py",
+                '    if auto == "normal":\n        return "·정상"\n',
+                '    if auto == "normal":\n        return "정상"  # MUTANT\n',
             ),
         ),
     ),

@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..config.loader import BottleneckSettings, IncidentSettings
+from ..config.loader import AutoLabelSettings, BottleneckSettings, IncidentSettings
 from ..detection.baseline import BaselineSet
 from ..explain.attribution import attribute, lead_time
 from ..explain.bottleneck import classify
@@ -26,6 +26,7 @@ from ..explain.report import build_incident, render
 from ..logging_setup import get_logger
 from ..runtime.supervisor import Component
 from ..storage.hot import Database
+from . import autolabel
 from .budget import NotificationBudget
 from .suppression import apply_suppression
 
@@ -65,6 +66,7 @@ class FusionSettings:
 
     bottleneck: BottleneckSettings = field(default_factory=BottleneckSettings)
     incident: IncidentSettings = field(default_factory=IncidentSettings)
+    autolabel: AutoLabelSettings = field(default_factory=AutoLabelSettings)
 
     # 실제 발송 여부. **판정(`notified`)과는 별개다** — 판정은 항상 돌아야 대시보드와
     # 채점이 쓰고, 이 값은 사용자에게 실제로 띄울지만 정한다. 기본이 꺼짐인 이유는
@@ -629,6 +631,10 @@ class Fusion(Component):
             return
         decision = self.budget.decide(self.db, dict(rows[0]))
         self.budget.record(self.db, incident_id, decision)
+        # **자동 라벨은 예산 판정 다음이다.** 판정 대상은 실제로 발송된 알림뿐인데
+        # (`notified`), 그 값을 세우는 것이 바로 위 `record` 다. 앞에서 부르면
+        # 모든 사건이 "안 나간 알림"으로 보여 하나도 판정되지 않는다.
+        autolabel.apply(self.db, incident_id, self.settings.autolabel)
         if decision.notify:
             log.info("알림 대상", extra={"incident": incident_id})
             self._send(dict(rows[0]), incident_id)

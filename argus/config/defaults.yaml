@@ -307,6 +307,40 @@ severity:
   impact_warning_loss: 0.10
   impact_critical_loss: 0.25
 
+autolabel:
+  # 사건에 "쓸모 있었나"를 기계가 먼저 매긴다. 사람 답(`user_label`)은 덮지 않는다.
+  #
+  # **판정 축은 사실이 아니라 쓸모다.** "롤이 CPU 26% 를 썼나"는 매번 참이라 사실로
+  # 모으면 전부 real 이 되고 아무것도 못 거른다. 라벨의 유일한 쓰임이 "알림을 줄일지"를
+  # 정하는 것이므로 재는 축도 그것이어야 한다.
+  enabled: true
+
+  # ① 하드웨어가 실제로 성능을 깎은 것 → 비정상.
+  # 어떤 앱을 돌렸든 "내가 시켜서 그런 것"이 아니고 조치가 존재한다(청소·팬커브·프레임 제한).
+  # 실측 라벨 3/3 이 여기였다. **이 사건들의 기여 프로세스는 보지 않는다** — GPU 온도
+  # 사건에 CPU 기여도가 붙어 1위가 svchost·audiodg·wmiprvse 로 잡힌다(원인이 아니다).
+  hardware_limit_bottlenecks: [THERMAL]
+
+  # ② 원인이 내가 띄운 앱 → 정상. 그 앱을 쓰려고 PC 를 켠 것이므로 알릴 일이 아니다.
+  # 실측 라벨 4/4 (overwatch 2 · gunfire reborn · fczf) 가 전부 여기였다.
+  # 판정 재료는 `program_info.foreground_seen` — 창을 띄워 앞에 놓인 적이 있는가.
+  user_workload_bottlenecks: [CPU, CONTENTION]
+
+  # 1위 기여가 이보다 낮으면 판정하지 않는다. 원인 지목 자체가 약한 것이라
+  # "그 앱 때문"이라고 말할 근거가 없다. 실측 normal 4건은 0.25 · 0.48 · 0.25 · 0.25 였다.
+  min_top_share: 0.15
+
+  # 여기 있는 이름이 1위면 판정하지 않는다 — **Argus 자신과 개발 도구다.**
+  # 포어그라운드 이력은 있지만, 이것들이 CPU 를 먹은 것을 "정상"으로 덮으면
+  # 관측자가 병목이 된 상황(설계 규칙 1)을 자동 라벨이 가려 버린다.
+  # `usage.exclude` 와 뜻이 다르므로 값을 공유하지 않는다(저기는 사용시간 표의 필터다).
+  exclude:
+    - python
+    - pythonw
+    - py
+    - claude
+    - code
+
 fingerprint:
   # 프로세스 지문 — "이 프로그램의 평소는 어디까지인가". process_leak 의 오탐을 줄인다.
   # 실측: medal(게임 녹화)이 핸들 383 → 1,395 로 늘어 발화했는데, medal 의 평소

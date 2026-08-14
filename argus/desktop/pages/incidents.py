@@ -326,6 +326,18 @@ class IncidentPage(QtWidgets.QWidget):
         # 세면 오탐 비율이 실제보다 낮게 나온다 — 답을 모을수록 문제가 작아 보인다.
         labeled = [r for r in rows if r.get("user_label") in ("normal", "real")]
         false_positives = [r for r in rows if r.get("user_label") == "normal"]
+        # **기계 답은 따로 센다.** 자동 라벨은 사람 답이 없을 때만 쓰고, 몇 건이
+        # 기계 것인지를 타일 문구에 그대로 적는다 — 섞어 놓고 한 숫자만 보이면
+        # "오탐 12%"가 사람의 판단인지 내 규칙의 메아리인지 구분할 수 없다.
+        auto = [
+            r
+            for r in rows
+            if r.get("notified")
+            and not r.get("user_label")
+            and r.get("auto_label") in ("normal", "real")
+            and not r.get("during_injection")
+        ]
+        auto_fp = [r for r in auto if r.get("auto_label") == "normal"]
 
         self._tiles["total"].set(str(len(rows)))
         self._tiles["open"].set(str(open_now))
@@ -337,11 +349,20 @@ class IncidentPage(QtWidgets.QWidget):
         pending = sum(
             1
             for r in rows
-            if r.get("notified") and not r.get("user_label") and not r.get("during_injection")
+            if r.get("notified")
+            and not r.get("user_label")
+            and not r.get("auto_label")
+            and not r.get("during_injection")
         )
-        if labeled:
-            rate = len(false_positives) / len(labeled) * 100
-            detail = f"피드백 {len(labeled)}건 기준"
+        if labeled or auto:
+            total = len(labeled) + len(auto)
+            rate = (len(false_positives) + len(auto_fp)) / total * 100
+            parts = []
+            if labeled:
+                parts.append(f"사람 {len(labeled)}건")
+            if auto:
+                parts.append(f"자동 {len(auto)}건")
+            detail = " · ".join(parts) + " 기준"
             if pending:
                 detail += f" · {pending}건 답 대기"
             self._tiles["fp"].set(f"{rate:.0f}%", detail)
@@ -380,6 +401,12 @@ class IncidentPage(QtWidgets.QWidget):
             marks.append("사용자: 비정상")
         elif incident.get("user_label") == "unknown":
             marks.append("사용자: 모르겠음")
+        elif incident.get("auto_label") in ("normal", "real"):
+            # **근거를 함께 적는다.** 판정만 보이면 사용자는 그것을 뒤집을지 말지를
+            # 정할 수 없고, 뒤집을 수 없는 판정은 사람 답을 모으는 길을 막는다.
+            auto_ko = "정상" if incident["auto_label"] == "normal" else "비정상"
+            reason = incident.get("auto_label_reason") or ""
+            marks.append(f"자동: {auto_ko}" + (f" ({reason})" if reason else ""))
         if incident.get("notify_skipped"):
             marks.append(f"알림 안 함: {incident['notify_skipped']}")
         # **왜 안 물어보는지가 보여야 한다.** 답 대기에서 빼 놓고 이유를 안 적으면
@@ -472,6 +499,10 @@ def _answer_mark(incident: dict) -> str:
 
     **결함 주입 구간은 "주입"으로 따로 세운다.** 답 대기에서 뺐으므로 물음표를
     달면 거짓말이 되고, 빈칸으로 두면 왜 안 물어보는지가 보이지 않는다.
+
+    **기계가 매긴 답에는 `·` 를 붙인다** (`·정상`). 사람 답과 같은 글자로 적으면
+    목록만 보고는 누가 답한 것인지 알 수 없고, 그러면 "내가 언제 이걸 정상이라고
+    했지"가 된다.
     """
     label = incident.get("user_label")
     if label == "normal":
@@ -482,6 +513,11 @@ def _answer_mark(incident: dict) -> str:
         return "모름"
     if not incident.get("notified"):
         return ""
+    auto = incident.get("auto_label")
+    if auto == "normal":
+        return "·정상"
+    if auto == "real":
+        return "·비정상"
     return "주입" if incident.get("during_injection") else "?"
 
 

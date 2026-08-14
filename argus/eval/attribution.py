@@ -208,7 +208,9 @@ def score_fault_product(db, fault: dict, *, limit: int = 8) -> Verdict:
     # **채점도 제품과 같은 문턱을 쓴다.** 기본값으로 두면 사용자가 config 를 고쳤을 때
     # 채점 결과와 실제 사건이 갈린다 — 그러면 스코어보드가 제품을 재지 않는다.
     cfg = load_settings()
-    fusion_settings = FusionSettings(bottleneck=cfg.bottleneck, incident=cfg.incident)
+    fusion_settings = FusionSettings(
+        bottleneck=cfg.bottleneck, incident=cfg.incident, autolabel=cfg.autolabel
+    )
     analysis = analyze_incident(
         db,
         int(best["id"]),
