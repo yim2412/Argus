@@ -118,6 +118,29 @@ _RESOURCE_BY_KIND: dict[str, tuple[str, bool]] = {
 }
 
 
+def is_attributable(kind: str | None) -> bool:
+    """이 종류의 병목에서 **기여도 표가 원인을 말하는가.**
+
+    저장된 사건(`incidents.bottleneck` 은 종류 문자열뿐)을 나중에 읽는 쪽을 위한 것이다.
+    화면이 "원인 후보"라고 적을지 "참고 — CPU 사용 상위"라고 적을지가 여기서 갈린다.
+
+    **표를 여기 복사하지 않는다.** 위 `_RESOURCE_BY_KIND` 를 그대로 읽는다 — 2026-07-30
+    에 표만 고치고 다른 자리가 기본값을 쓰는 바람에 "병목 없음 — cpu_eater 100%" 가
+    계속 나왔다. 같은 사고가 조회 계층에서 다시 날 자리다.
+
+    **모르는 종류는 `False`.** 틀리는 방향을 겸손한 쪽으로 고정한다 — 원인이 아닌 것을
+    "참고"라 부르면 정보가 조금 약해질 뿐이지만, 반대는 엉뚱한 프로세스를 범인으로
+    발표한다. 이 프로젝트에서 실제로 세 번 그랬다.
+
+    **`fusion` 의 예외는 재현하지 못한다.** `NONE`·`CONTENTION` 은 탐지기가 자기 자원을
+    말했을 때 `attributable` 이 되살아나는데(`_CLAIM_WINS_OVER`), 그 사실은 사건에
+    저장되지 않는다. 그래서 이 함수는 그 둘을 항상 `False` 로 본다 — 위와 같은 이유로
+    안전한 쪽이고, 그때는 제목에 이미 탐지기 문장이 들어가 있어 원인이 드러난다.
+    """
+    entry = _RESOURCE_BY_KIND.get((kind or "").upper())
+    return bool(entry and entry[1])
+
+
 # 룰이 참조한 지표 → 그 지표가 지목하는 병목 종류.
 #
 # **룰 이름이 아니라 지표로 매핑한다.** 룰 이름은 사용자가 `%APPDATA%\Argus\rules.yaml`

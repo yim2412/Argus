@@ -26,6 +26,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Sequence
 
+from ..explain.bottleneck import is_attributable
 from ..paths import data_dir, db_path
 from ..storage import history
 
@@ -306,11 +307,22 @@ _DURING_INJECTION = (
 
 @ttl_cache(10.0)
 def incidents(days: float = 7.0, limit: int = 200) -> list[dict]:
-    return query(
+    """사건 목록. 상세 화면도 여기서 고른 행을 그대로 쓴다.
+
+    **`attributable` 을 파생 필드로 붙인다.** 기여도 표가 원인을 말하는지는 사건에
+    저장되지 않고 병목 종류에서 나온다. 이것 없이 표를 그리면 GPU 발열 사건에도
+    "원인 후보 — pythonw 22%" 가 뜬다 — 리포트 본문은 바로 위에서 "원인 프로세스는
+    특정할 수 없습니다"라고 적고 있는데 표가 그것을 뒤집는다(2026-08-15 실측,
+    `#58`·`#59`·`#118`). 하필 그 1위가 관측자 자신이라 더 나쁘다.
+    """
+    rows = query(
         f"SELECT i.*, {_DURING_INJECTION} AS during_injection FROM incidents i"
         " WHERE i.ts_start > ? ORDER BY i.ts_start DESC LIMIT ?",
         (time.time() - days * 86400, limit),
     )
+    for row in rows:
+        row["attributable"] = is_attributable(row.get("bottleneck"))
+    return rows
 
 
 # 답 대기로 세는 기간. 이보다 오래된 알림은 "그때 실제로 느렸나"를 사용자가 기억하지

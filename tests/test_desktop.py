@@ -1809,3 +1809,41 @@ def test_machine_answer_shows_its_reason(qapp) -> None:
     page._render_detail(row)
     assert "자동: 정상" in page._detail_meta.text()
     assert "원인이 직접 띄운 앱이다" in page._detail_meta.text()
+
+
+def test_thermal_detail_does_not_call_cpu_top_the_culprit(qapp) -> None:
+    """**표 제목이 리포트와 같은 말을 해야 한다.**
+
+    발열·GPU 는 프로세스별 사용량을 얻을 수 없어 CPU 상위로 대신 분해한다. 리포트
+    본문은 그것을 "참고"라고 적는데 표 제목은 "원인 후보"였다 — 둘이 붙어 있으면
+    표가 이긴다. 실측 `#59` 에서 GPU 90°C 사건의 1위가 `pythonw`(관측자 자신) 22%,
+    실제로 GPU 를 태운 롤 클라이언트가 2위였다.
+
+    막지 않았으면 무엇이 일어났을 것인가: **아래 CPU 사건이 같은 표를 "원인 후보"로
+    그린다.** 두 사건을 함께 재지 않으면 제목을 통째로 "참고"로 굳혀도 통과한다.
+    """
+    page = _incident_page(qapp)
+    contributors = '[{"name": "pythonw", "share": 0.22, "delta": 0.8, "pids": [8444]}]'
+    page._rows = [
+        {
+            "id": 59, "ts_start": 1000.0, "ts_end": 1004.0, "severity": "info",
+            "title": "발열 스로틀링 — GPU 90°C 열 스로틀링", "bottleneck": "THERMAL",
+            "attributable": False, "contributors": contributors, "detectors": '["GPU 열 스로틀링"]',
+        },
+        {
+            "id": 60, "ts_start": 2000.0, "ts_end": 2004.0, "severity": "warning",
+            "title": "CPU 병목 — chrome 52%", "bottleneck": "CPU",
+            "attributable": True, "contributors": contributors, "detectors": '["rules"]',
+        },
+    ]
+
+    page._render_detail(page._rows[0])
+    thermal_head = page._contributors_head.text()
+    assert "원인 후보" != thermal_head, "발열 사건의 CPU 상위를 원인 후보라고 불렀다"
+    assert "특정할 수 없" in thermal_head, thermal_head
+    assert page._contributors.model().rowCount() == 1, "표 자체는 참고로 계속 보여 준다"
+
+    page._render_detail(page._rows[1])
+    assert page._contributors_head.text() == "원인 후보", (
+        "CPU 병목까지 '참고'로 낮췄다 — 귀인이 성립하는 사건에서는 원인이 맞다"
+    )

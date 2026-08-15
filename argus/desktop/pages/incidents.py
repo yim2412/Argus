@@ -137,7 +137,10 @@ class IncidentPage(QtWidgets.QWidget):
         )
         box.addWidget(self._report, stretch=3)
 
-        box.addWidget(QtWidgets.QLabel("원인 후보"))
+        # 제목은 사건마다 바뀐다 — `_render_detail` 이 `attributable` 을 보고 고른다.
+        self._contributors_head = QtWidgets.QLabel(_CONTRIBUTORS_HEAD)
+        self._contributors_head.setWordWrap(True)
+        box.addWidget(self._contributors_head)
         self._contributors = DataTable(
             [
                 Column("name", "프로그램", width=150),
@@ -431,6 +434,14 @@ class IncidentPage(QtWidgets.QWidget):
                 "설명이 없습니다 — 그 구간의 원본이 이미 정리됐거나 수집이 멈춰 있었습니다."
             )
 
+        # **표 제목이 리포트와 같은 말을 해야 한다.** 발열·GPU 는 프로세스별 사용량을
+        # 얻을 수 없어 CPU 상위로 대신 분해하는데, 리포트 본문은 그것을 "참고"라고
+        # 적는 반면 표는 "원인 후보"라고 적고 있었다. **둘이 붙어 있으면 표가 이긴다** —
+        # 사용자는 순위가 매겨진 표를 답으로 읽는다. 실측 `#59` 에서 GPU 90°C 사건의
+        # 1위가 `pythonw`(관측자 자신) 22%, 실제로 GPU 를 태운 롤 클라이언트가 2위였다.
+        self._contributors_head.setText(
+            _CONTRIBUTORS_HEAD if incident.get("attributable") else _CONTRIBUTORS_HEAD_REFERENCE
+        )
         self._contributors.set_rows(
             [_contributor_row(c) for c in json.loads(incident.get("contributors") or "[]")]
         )
@@ -519,6 +530,15 @@ def _answer_mark(incident: dict) -> str:
     if auto == "real":
         return "·비정상"
     return "주입" if incident.get("during_injection") else "?"
+
+
+_CONTRIBUTORS_HEAD = "원인 후보"
+
+# **"참고"만으로는 약하다.** 순위가 매겨진 표 위에 붙은 말은 잘 안 읽히므로, 왜 원인이
+# 아닌지를 같은 줄에서 끝낸다 — 읽는 사람이 표를 보기 전에 알아야 하는 것이 그것이다.
+_CONTRIBUTORS_HEAD_REFERENCE = (
+    "참고 — CPU 사용 상위 (이 사건의 원인은 특정할 수 없습니다. 아래는 범인이 아닙니다)"
+)
 
 
 def _contributor_row(contributor: dict) -> dict:

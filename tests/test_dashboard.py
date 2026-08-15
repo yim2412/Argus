@@ -80,3 +80,64 @@ def test_missing_table_returns_empty(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(data_module, "db_path", lambda: db_file)
     assert data_module.query("SELECT * FROM table_that_does_not_exist") == []
+
+
+def test_incidents_carry_attributable(tmp_path: Path, monkeypatch) -> None:
+    """`attributable` 은 저장되지 않는다 — 병목 종류에서 파생시켜 화면에 넘긴다.
+
+    **배선 테스트다.** 화면이 이 필드를 못 받으면 `incident.get("attributable")` 이
+    조용히 `None` 이 되어 **모든 사건이 "참고"로** 보인다. 예외가 안 나므로 실행만
+    해서는 안 드러난다.
+
+    막지 않았으면 무엇이 일어났을 것인가: 발열 사건의 CPU 상위 표가 "원인 후보"로
+    발표된다(실측 `#59` — 1위가 관측자 자신인 `pythonw` 22%).
+    """
+    import time
+
+    from argus.storage.hot import Database
+
+    db_file = tmp_path / "t.db"
+    db = Database(db_file).open()
+    now = time.time()
+    db.insert_many(
+        "incidents",
+        ("ts_start", "ts_end", "severity", "title", "bottleneck", "notified"),
+        [
+            (now - 60, now - 50, "info", "발열 스로틀링 — GPU 90°C", "THERMAL", 0),
+            (now - 40, now - 30, "warning", "CPU 병목 — chrome 52%", "CPU", 1),
+        ],
+    )
+    db.close()
+
+    import argus.dashboard.data as data_module
+
+    monkeypatch.setattr(data_module, "db_path", lambda: db_file)
+    data_module.incidents.cache_clear()
+    rows = {r["bottleneck"]: r for r in data_module.incidents(days=1.0)}
+    data_module.incidents.cache_clear()
+
+    assert rows["THERMAL"]["attributable"] is False, "발열의 CPU 상위를 원인으로 넘겼다"
+    assert rows["CPU"]["attributable"] is True, "CPU 병목까지 참고로 낮췄다"
+
+
+def test_attributable_reads_the_single_table() -> None:
+    """판정은 `_RESOURCE_BY_KIND` 한 곳에서만 나온다.
+
+    표를 복사하면 조용히 갈린다 — 2026-07-30 에 표만 고치고 다른 자리가 dataclass
+    기본값을 쓰는 바람에 "병목 없음 — cpu_eater 100%" 가 계속 나왔다. **기본값이
+    아닌 값으로 잰다**: 표를 뒤집었을 때 함수도 따라 뒤집혀야 한다.
+    """
+    from argus.explain import bottleneck as bn
+
+    assert bn.is_attributable("THERMAL") is False
+    assert bn.is_attributable("CPU") is True
+    assert bn.is_attributable("cpu") is True, "종류 문자열의 대소문자에 걸리면 안 된다"
+    assert bn.is_attributable(None) is False
+    assert bn.is_attributable("WHAT_IS_THIS") is False, "모르는 종류는 겸손한 쪽으로"
+
+    original = bn._RESOURCE_BY_KIND["CPU"]
+    bn._RESOURCE_BY_KIND["CPU"] = ("cpu", False)
+    try:
+        assert bn.is_attributable("CPU") is False, "표를 안 읽고 자기 판단을 갖고 있다"
+    finally:
+        bn._RESOURCE_BY_KIND["CPU"] = original

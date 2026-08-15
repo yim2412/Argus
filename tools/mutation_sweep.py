@@ -439,6 +439,37 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "contributor_head_follows_attribution",
+        "귀인이 성립하지 않는 사건의 기여도 표를 '원인 후보'라 부르지 않는다",
+        (
+            (
+                "argus/desktop/pages/incidents.py",
+                "            _CONTRIBUTORS_HEAD if incident.get(\"attributable\")"
+                " else _CONTRIBUTORS_HEAD_REFERENCE\n",
+                "            _CONTRIBUTORS_HEAD  # MUTANT: 발열도 원인 후보라 부른다\n",
+            ),
+        ),
+        note=(
+            "리포트 본문은 '원인 프로세스는 특정할 수 없습니다'라고 적는데 표 제목이 "
+            "그것을 뒤집었다. 실측 #59 에서 GPU 90°C 사건의 1위가 관측자 자신(pythonw 22%)"
+        ),
+    ),
+    Mutant(
+        "incidents_carry_attributable",
+        "조회 계층이 attributable 을 화면에 넘긴다 (배선)",
+        (
+            (
+                "argus/dashboard/data.py",
+                '        row["attributable"] = is_attributable(row.get("bottleneck"))\n',
+                "        pass  # MUTANT: 파생 필드를 안 붙인다\n",
+            ),
+        ),
+        note=(
+            "안 붙이면 화면의 .get('attributable') 이 조용히 None 이 되어 모든 사건이 "
+            "'참고'로 보인다. 예외가 안 나므로 실행만 해서는 안 드러난다"
+        ),
+    ),
+    Mutant(
         "backfill_shares_judgement",
         "백필 미리보기가 저장과 같은 판정 경로를 지난다",
         (
