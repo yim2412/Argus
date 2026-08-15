@@ -240,11 +240,14 @@ def during_injection(db, incident_id: int) -> bool:
     return bool(rows)
 
 
-def apply(db, incident_id: int, settings: AutoLabelSettings) -> Verdict:
-    """사건 하나를 판정해 저장한다. **사람 답이 있으면 건드리지 않는다.**
+def _decide(db, incident_id: int, settings: AutoLabelSettings) -> tuple[Verdict, bool]:
+    """판정과 **그것을 저장해도 되는가**.
 
-    판정이 없어도(`label is None`) 근거는 남긴다 — 다음에 기준을 넓힐 때
-    "무엇이 왜 안 걸렸나"를 세어 볼 수 있어야 한다.
+    둘째 값이 필요한 이유는 "판정 없음"에 두 종류가 있기 때문이다. `judge` 가 기준을
+    못 세워 비운 것은 근거를 남겨야 다음에 기준을 넓힐 수 있지만, 애초에 대상이
+    아닌 것(사람이 답했다·알림이 안 나갔다·주입 구간)은 **칸을 건드리면 안 된다** —
+    특히 `user_label` 이 있는 사건에 "사람이 이미 답했다"를 써 넣으면 사람 답과
+    기계 답이 같은 화면에서 서로를 설명하게 된다.
     """
     rows = db.query(
         "SELECT id, bottleneck, contributors, user_label, notified, ts_start, ts_end"
@@ -252,19 +255,19 @@ def apply(db, incident_id: int, settings: AutoLabelSettings) -> Verdict:
         (incident_id,),
     )
     if not rows:
-        return Verdict(None, "사건이 없다")
+        return Verdict(None, "사건이 없다"), False
     row = rows[0]
     if row["user_label"]:
-        return Verdict(None, "사람이 이미 답했다")
+        return Verdict(None, "사람이 이미 답했다"), False
     if not row["notified"]:
         # **안 나간 알림은 판정하지 않는다.** 라벨의 쓰임이 "알림을 줄일지"인데,
         # 아무도 성가시게 하지 않은 사건에는 줄일 것이 없다. 사건 173건 대 알림
         # 49건이라, 여기를 열면 타일이 기계 답으로 뒤덮인다.
-        return Verdict(None, "알림이 나가지 않았다")
+        return Verdict(None, "알림이 나가지 않았다"), False
     if during_injection(db, incident_id):
         # 결함 주입 구간. 사람에게 안 묻는 것과 같은 이유로 기계도 판정하지 않는다 —
         # 내가 일부러 만든 부하에 대한 판단은 실사용 문턱을 고칠 근거가 아니다.
-        return Verdict(None, "결함 주입 구간이다")
+        return Verdict(None, "결함 주입 구간이다"), False
 
     verdict = judge(
         row,
@@ -272,6 +275,30 @@ def apply(db, incident_id: int, settings: AutoLabelSettings) -> Verdict:
         observer=observer_window(db, row["ts_start"], row["ts_end"]),
         settings=settings,
     )
+    return verdict, True
+
+
+def evaluate(db, incident_id: int, settings: AutoLabelSettings) -> Verdict:
+    """사건 하나를 판정한다. **저장하지 않는다.**
+
+    `apply` 와 갈라 둔 이유는 백필의 미리보기 때문이다. 예전에는 미리보기가 `judge` 를
+    직접 부르고 `--apply` 만 `apply` 를 불렀는데, **판정에 필요한 조회가 늘어날 때마다
+    미리보기 쪽만 조용히 뒤처졌다** — 2026-08-15 에 `observer` 를 필수 인자로 만들자
+    미리보기가 `TypeError` 로 죽었고, 그 도구에는 테스트가 없어 531개가 전부 통과했다.
+    미리보기가 "저장했으면 나왔을 답"을 보여주지 못하면 미리보기의 목적이 사라진다.
+    """
+    return _decide(db, incident_id, settings)[0]
+
+
+def apply(db, incident_id: int, settings: AutoLabelSettings) -> Verdict:
+    """사건 하나를 판정해 저장한다. **사람 답이 있으면 건드리지 않는다.**
+
+    판정이 없어도(`label is None`) 근거는 남긴다 — 다음에 기준을 넓힐 때
+    "무엇이 왜 안 걸렸나"를 세어 볼 수 있어야 한다.
+    """
+    verdict, storable = _decide(db, incident_id, settings)
+    if not storable:
+        return verdict
     with db._lock:  # noqa: SLF001
         db.conn.execute(
             "UPDATE incidents SET auto_label = ?, auto_label_reason = ?, auto_labeled_at = ?"

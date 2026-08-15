@@ -403,3 +403,68 @@ def test_observer_window_uses_drop_delta(db: Database) -> None:
 def test_observer_window_is_none_without_samples(db: Database) -> None:
     """표본이 없으면 `None`. 보존이 지난 사건을 "깨끗하다"로 읽으면 안 된다."""
     assert autolabel.observer_window(db, time.time() - 600, time.time() - 300) is None
+
+
+# ------------------------------------------------ 백필 도구 (미리보기 = 저장)
+
+
+def _backfill_module():
+    """`tools/autolabel_backfill.py` 를 모듈로 연다. 패키지가 아니라 경로로 로드한다."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parent.parent / "tools" / "autolabel_backfill.py"
+    spec = importlib.util.spec_from_file_location("autolabel_backfill", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_backfill_preview_matches_apply(db: Database, monkeypatch, capsys) -> None:
+    """**미리보기와 저장이 같은 답을 낸다.** 이 도구에는 테스트가 없어서, 08-15 에
+    `judge` 가 `observer` 를 필수로 받게 되자 미리보기만 `TypeError` 로 죽었는데도
+    전체 531개가 통과했다. 도구를 실제로 돌리지 않으면 이 유형은 안 잡힌다.
+
+    막지 않았으면 무엇이 일어났을 것인가: 미리보기가 판정 경로를 따로 갖고 있으면
+    **저장 결과와 다른 답을 화면에 찍는다** — 미리보기를 볼 이유가 사라진다.
+    """
+    module = _backfill_module()
+    incident_id = _store(db)
+    monkeypatch.setattr(module, "Database", lambda *a, **k: db)
+    monkeypatch.setattr(db, "open", lambda: db, raising=False)
+    monkeypatch.setattr(db, "close", lambda: None, raising=False)
+
+    assert module.main([]) == 0
+    preview = capsys.readouterr().out
+    assert "normal" in preview, f"미리보기가 판정을 못 냈다:\n{preview}"
+    assert db.query("SELECT auto_label FROM incidents WHERE id = ?", (incident_id,))[0][
+        "auto_label"
+    ] is None, "미리보기가 저장했다"
+
+    assert module.main(["--apply"]) == 0
+    stored = db.query("SELECT auto_label FROM incidents WHERE id = ?", (incident_id,))[0]
+    assert stored["auto_label"] == "normal"
+
+
+def test_evaluate_does_not_store(db: Database) -> None:
+    """`evaluate` 는 판정만 한다. `apply` 와 같은 답이어야 한다 — 갈리면 `_decide`
+    를 지나지 않는 경로가 생긴 것이다."""
+    incident_id = _store(db)
+    preview = autolabel.evaluate(db, incident_id, DEFAULTS)
+    assert preview.label == "normal"
+    assert db.query("SELECT auto_label FROM incidents WHERE id = ?", (incident_id,))[0][
+        "auto_label"
+    ] is None
+    assert autolabel.apply(db, incident_id, DEFAULTS).label == preview.label
+
+
+def test_apply_does_not_stamp_reason_on_human_answer(db: Database) -> None:
+    """게이트에 걸린 사건은 **칸을 건드리지 않는다.** 사람이 답한 사건에
+    "사람이 이미 답했다"를 써 넣으면, 사람 답과 기계 답이 같은 화면에서 서로를
+    설명하게 된다. `_decide` 의 둘째 반환값이 막는 것이 이것이다."""
+    incident_id = _store(db, user_label="real")
+    autolabel.apply(db, incident_id, DEFAULTS)
+    row = db.query(
+        "SELECT auto_label, auto_label_reason FROM incidents WHERE id = ?", (incident_id,)
+    )[0]
+    assert row["auto_label"] is None
+    assert row["auto_label_reason"] is None, f"사람 답 사건에 기계 근거가 찍혔다: {row['auto_label_reason']}"

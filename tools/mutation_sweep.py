@@ -439,6 +439,37 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "backfill_shares_judgement",
+        "백필 미리보기가 저장과 같은 판정 경로를 지난다",
+        (
+            (
+                "tools/autolabel_backfill.py",
+                '            verdict = autolabel.evaluate(db, int(row["id"]), cfg.autolabel)\n',
+                '            verdict = autolabel.Verdict(None, "")  # MUTANT: 미리보기 전용 경로\n',
+            ),
+        ),
+        note=(
+            "이 도구에는 테스트가 없어서, 08-15 에 judge 가 observer 를 필수로 받게 되자 "
+            "미리보기만 TypeError 로 죽었는데도 전체 531개가 통과했다. "
+            "미리보기가 저장 결과와 다른 답을 찍으면 미리보기를 볼 이유가 없다"
+        ),
+    ),
+    Mutant(
+        "autolabel_gate_does_not_stamp",
+        "판정 대상이 아닌 사건은 auto_label 칸을 건드리지 않는다",
+        (
+            (
+                "argus/decide/autolabel.py",
+                "    if not storable:\n        return verdict\n",
+                "    if False:  # MUTANT: 게이트 사유까지 칸에 찍는다\n        return verdict\n",
+            ),
+        ),
+        note=(
+            "사람이 답한 사건에 '사람이 이미 답했다'가 근거로 찍히면 "
+            "사람 답과 기계 답이 같은 화면에서 서로를 설명하게 된다"
+        ),
+    ),
+    Mutant(
         "warm_child_encoding",
         "자식 출력을 로캘이 아니라 UTF-8 로 디코딩한다",
         (
