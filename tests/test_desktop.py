@@ -1316,7 +1316,15 @@ def test_cli_passes_the_incident_through(monkeypatch) -> None:
 
 
 def _label_db(tmp_path, rows, injections=()):
-    """작은 DB. `rows` 는 (id, 며칠 전, notified, label), `injections` 는 (며칠 전, 며칠 전)."""
+    """작은 DB. `rows` 는 (id, 며칠 전, notified, label[, bottleneck]),
+    `injections` 는 (며칠 전, 며칠 전).
+
+    **`bottleneck` 컬럼이 있어야 한다.** 처음에는 이 헬퍼가 그 컬럼을 안 만들었는데,
+    답 대기 조회가 미탐을 종류로 고르게 되자(2026-08-15) `no such column` 이 나고
+    **조회 계층이 그것을 삼켜 답 대기가 통째로 빈 리스트**가 됐다. 화면 하나가 비는
+    데서 그치라고 만든 방어가 기능 하나를 조용히 끈 것이다. 기본값은 `None` 이라
+    종류를 안 주면 예전처럼 "미탐은 안 묻는다"가 된다.
+    """
     import sqlite3
 
     database = tmp_path / "labels.db"
@@ -1325,18 +1333,21 @@ def _label_db(tmp_path, rows, injections=()):
         conn.execute(
             "CREATE TABLE incidents (id INTEGER PRIMARY KEY, ts_start REAL, ts_end REAL,"
             " severity TEXT, title TEXT, notified INTEGER, user_label TEXT, labeled_at REAL,"
-            " auto_label TEXT)"
+            " auto_label TEXT, bottleneck TEXT)"
         )
         conn.execute(
             "CREATE TABLE fault_injections (id INTEGER PRIMARY KEY, scenario TEXT,"
             " ts_start REAL, ts_end REAL)"
         )
-        for incident_id, days_ago, notified, label in rows:
+        for row in rows:
+            incident_id, days_ago, notified, label = row[:4]
+            bottleneck = row[4] if len(row) > 4 else None
             start = now - days_ago * 86400
             conn.execute(
                 "INSERT INTO incidents (id, ts_start, ts_end, severity, title, notified,"
-                " user_label) VALUES (?, ?, ?, 'warning', ?, ?, ?)",
-                (incident_id, start, start + 60, f"사건 {incident_id}", notified, label),
+                " user_label, bottleneck) VALUES (?, ?, ?, 'warning', ?, ?, ?, ?)",
+                (incident_id, start, start + 60, f"사건 {incident_id}", notified, label,
+                 bottleneck),
             )
         for start_days, end_days in injections:
             conn.execute(
@@ -1529,7 +1540,9 @@ def test_answer_button_goes_to_the_newest_unanswered(qapp, monkeypatch) -> None:
     monkeypatch.setattr(page_mod.data, "unlabeled_notified", lambda *a, **k: [])
     page.focus_unlabeled()
     assert "없습니다" in page._detail_head.text(), "답할 것이 없다는 말을 하지 않았다"
-    assert data.LABEL_WINDOW_DAYS  # 기간을 화면 문구가 쓴다 — 상수가 사라지면 여기서 걸린다
+    # 기간을 화면 문구가 쓴다 — 접근자가 사라지면 여기서 걸린다. **config 에서 온다**
+    # (2026-08-15 에 `LABEL_WINDOW_DAYS = 14.0` 하드코딩을 `label.window_days` 로 옮겼다).
+    assert data.label_window_days() > 0
 
 
 
@@ -1846,4 +1859,68 @@ def test_thermal_detail_does_not_call_cpu_top_the_culprit(qapp) -> None:
     page._render_detail(page._rows[1])
     assert page._contributors_head.text() == "원인 후보", (
         "CPU 병목까지 '참고'로 낮췄다 — 귀인이 성립하는 사건에서는 원인이 맞다"
+    )
+
+
+def test_unnotified_thermal_is_asked_but_other_kinds_are_not(monkeypatch, tmp_path) -> None:
+    """**등급 역전의 증거는 미탐에만 있다** — 그래서 일부를 물어본다(2026-08-15).
+
+    답 대기가 `notified=1` 만 세던 동안, 사람 답 7건 중 발열 3건은 전부 사용자가
+    목록에서 직접 골라 답한 것이었다. 그 3건이 전부 `real`(알려줄 만했다)이라
+    등급 역전이 드러났는데, 화면은 그것을 물어본 적이 없다.
+
+    네 가지를 **함께** 잰다. 하나만 재면 나머지 규칙을 뜯어내도 통과한다.
+
+    - 미탐이라도 근거 있는 종류(THERMAL)는 묻는다
+    - **다른 종류는 안 묻는다** — 최근 14일 미탐 68건을 통째로 내밀면 아무도 답하지 않는다
+    - 미탐에는 **더 짧은 창**을 준다 (안 나간 사건은 기억 단서가 없다)
+    - 발송된 알림은 **긴 창**을 그대로 쓴다 (창 둘이 갈려 있다는 것 자체를 잰다)
+    """
+    from argus.dashboard import data
+
+    database = _label_db(
+        tmp_path,
+        [
+            (1, 0.5, 0, None, "THERMAL"),   # 미탐 발열, 오늘 → 묻는다
+            (2, 0.5, 0, None, "CPU"),       # 미탐 CPU → 근거가 없다, 안 묻는다
+            (3, 10.0, 0, None, "THERMAL"),  # 미탐 발열이지만 10일 전 → 짧은 창 밖
+            (4, 10.0, 1, None, "CPU"),      # 발송된 알림은 10일 전이어도 묻는다
+        ],
+    )
+    monkeypatch.setattr(data, "db_path", lambda: database)
+    data.unlabeled_notified.cache_clear()
+
+    pending = [row["id"] for row in data.unlabeled_notified()]
+    data.unlabeled_notified.cache_clear()
+
+    assert 1 in pending, f"근거 있는 미탐(THERMAL)을 안 물었다: {pending}"
+    assert 2 not in pending, f"근거 없는 종류의 미탐까지 물었다: {pending}"
+    assert 3 not in pending, f"미탐에 긴 창을 줬다 — 기억이 아니라 짐작이 된다: {pending}"
+    assert 4 in pending, f"발송된 알림이 미탐 창에 걸렸다: {pending}"
+
+
+def test_unnotified_incident_is_asked_a_different_question(qapp) -> None:
+    """**묻는 문장이 갈려야 한다.** 알림이 안 나간 사건에까지 "이 알림이 쓸모
+    있었나요"라고 물으면 사용자는 오지도 않은 알림을 떠올리려 한다.
+
+    막지 않았으면: 미탐을 답 대기에 넣은 순간 화면이 없는 알림을 물어본다.
+    **발송된 사건을 함께 재는 이유**는, 한쪽만 재면 질문을 통째로 미탐용 문장으로
+    바꿔도 통과하기 때문이다.
+    """
+    page = _incident_page(qapp)
+    page._rows = [
+        {"id": 1, "ts_start": 1000.0, "ts_end": 1060.0, "severity": "info",
+         "title": "발열 스로틀링 — GPU 90°C", "bottleneck": "THERMAL", "notified": 0},
+        {"id": 2, "ts_start": 2000.0, "ts_end": 2060.0, "severity": "warning",
+         "title": "CPU 병목 — chrome 52%", "bottleneck": "CPU", "notified": 1},
+    ]
+
+    page._render_detail(page._rows[0])
+    unnotified = page._question.text()
+    assert "알려줬어야" in unnotified, unnotified
+    assert "나가지 않았" in unnotified, "알림이 안 갔다는 사실을 말하지 않았다"
+
+    page._render_detail(page._rows[1])
+    assert page._question.text() == "이 알림이 쓸모 있었나요?", (
+        "발송된 알림까지 미탐용 문장으로 물었다"
     )

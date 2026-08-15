@@ -180,7 +180,11 @@ class IncidentPage(QtWidgets.QWidget):
         # 아무것도 못 거른다. 이 라벨의 유일한 쓰임이 "알림을 줄일지"를 정하는 것이므로
         # 재는 축도 그것이어야 한다. 08-06 에 점수 하한으로 가르려다 기각된 이유가
         # 여기 있다 — 하한을 걸면 op.gg 가 남고 GPU 발열이 걸러졌다.
-        row.addWidget(QtWidgets.QLabel("이 알림이 쓸모 있었나요?"))
+        # **묻는 문장은 사건마다 바뀐다** — `_render_detail` 이 `notified` 로 고른다.
+        # 알림이 안 나간 사건에까지 "이 알림이 쓸모 있었나요"라고 물으면 사용자는
+        # 오지도 않은 알림을 떠올리려 한다. 답은 같은 축(정상/비정상)이고 방향만 반대다.
+        self._question = QtWidgets.QLabel(_QUESTION_NOTIFIED)
+        row.addWidget(self._question)
         # 화면 문구는 "정상/비정상", 저장값은 normal/real 이다. **저장값을 바꾸지
         # 않는다** — 이미 쌓인 라벨과 평가 경로(`--incident`)가 그 값을 읽는다.
         self._normal_box = QtWidgets.QCheckBox("정상")
@@ -284,7 +288,7 @@ class IncidentPage(QtWidgets.QWidget):
         if not pending:
             self._detail_head.setText("답할 알림이 없습니다")
             self._detail_meta.setText(
-                f"최근 {int(data.LABEL_WINDOW_DAYS)}일 안에 발송된 알림에는 모두 답이 달려 있습니다."
+                f"최근 {int(data.label_window_days())}일 안에 발송된 알림에는 모두 답이 달려 있습니다."
             )
             return
         self.focus_incident(int(pending[0]["id"]))
@@ -442,6 +446,9 @@ class IncidentPage(QtWidgets.QWidget):
         self._contributors_head.setText(
             _CONTRIBUTORS_HEAD if incident.get("attributable") else _CONTRIBUTORS_HEAD_REFERENCE
         )
+        self._question.setText(
+            _QUESTION_NOTIFIED if incident.get("notified") else _QUESTION_UNNOTIFIED
+        )
         self._contributors.set_rows(
             [_contributor_row(c) for c in json.loads(incident.get("contributors") or "[]")]
         )
@@ -531,6 +538,15 @@ def _answer_mark(incident: dict) -> str:
         return "·비정상"
     return "주입" if incident.get("during_injection") else "?"
 
+
+# **"맞았나요"가 아니라 "쓸모 있었나요"다.** 앞의 물음은 사실 판정으로 읽힌다 —
+# "롤이 CPU 26% 를 썼나"는 매번 참이라 그렇게 모은 라벨은 전부 비정상이 되고 아무것도
+# 못 거른다. 이 라벨의 유일한 쓰임이 "알림을 줄일지"이므로 재는 축도 그것이어야 한다.
+_QUESTION_NOTIFIED = "이 알림이 쓸모 있었나요?"
+
+# 알림이 안 나간 사건. **같은 축을 반대 방향에서 묻는다** — 여기서 "비정상"은
+# "알려줬어야 했다"(미탐)가 된다. 저장값은 그대로 normal/real 이다.
+_QUESTION_UNNOTIFIED = "이 사건을 알려줬어야 했나요? (알림은 나가지 않았습니다)"
 
 _CONTRIBUTORS_HEAD = "원인 후보"
 

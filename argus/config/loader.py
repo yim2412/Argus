@@ -392,6 +392,23 @@ class AutoLabelSettings(BaseModel):
     observer_names: list[str] = Field(default=["pythonw", "python", "py"])
 
 
+class LabelSettings(BaseModel):
+    """**사람에게 무엇을 물을지.** `AutoLabelSettings` 는 기계가 매기는 쪽이다.
+
+    `ask_unnotified_bottlenecks` 의 근거는 실측 라벨이다 — 사람 답 7건 중 발열 3건이
+    전부 `notified=0` 인데 전부 `real` 이었다(서로 다른 날). **등급 역전은 "안 나간
+    것이 나갔어야 했다"는 실패라, 그 증거는 안 나간 사건에만 있다.** 답 대기가 나간
+    것만 세면 화면에 영영 안 올라온다.
+
+    미탐에 창을 따로 두는 이유는 기억 단서의 세기가 다르기 때문이다 — 발송된 알림은
+    그때 풍선이라도 떴지만 안 나간 사건은 아무 흔적이 없다.
+    """
+
+    window_days: float = Field(default=14.0, gt=0)
+    ask_unnotified_bottlenecks: list[str] = Field(default=["THERMAL"])
+    ask_unnotified_window_days: float = Field(default=7.0, ge=0)
+
+
 class FingerprintSettings(BaseModel):
     """프로세스 지문(Phase 6-B). "이 프로그램의 평소는 어디까지인가"를 학습한다.
 
@@ -555,6 +572,7 @@ class Settings(BaseModel):
     severity: SeveritySettings = SeveritySettings()
     fingerprint: FingerprintSettings = FingerprintSettings()
     autolabel: AutoLabelSettings = AutoLabelSettings()
+    label: LabelSettings = LabelSettings()
     usage: UsageSettings = UsageSettings()
 
 

@@ -325,19 +325,37 @@ def incidents(days: float = 7.0, limit: int = 200) -> list[dict]:
     return rows
 
 
-# 답 대기로 세는 기간. 이보다 오래된 알림은 "그때 실제로 느렸나"를 사용자가 기억하지
-# 못한다 — 기억이 아니라 짐작으로 붙인 라벨은 문턱을 고칠 근거가 되지 못하므로,
-# 모을 수 있는 양보다 답할 수 있는 양에 맞춘다.
-LABEL_WINDOW_DAYS = 14.0
+def _label_settings():
+    """`config` 의 `label` 절. **문턱을 여기서 다시 만들지 않는다**(설계 규칙 3)."""
+    from ..config.loader import load_settings
+
+    return load_settings().label
+
+
+# 화면 문구가 기간을 쓴다. **값은 config 가 갖고 있고 여기는 그것을 읽을 뿐이다** —
+# 예전에는 이 자리에 `14.0` 이 박혀 있어서 튜닝하려면 코드를 고쳐야 했다.
+def label_window_days() -> float:
+    return float(_label_settings().window_days)
 
 
 @ttl_cache(10.0)
-def unlabeled_notified(days: float = LABEL_WINDOW_DAYS) -> list[dict]:
-    """답을 안 준 알림. **알림이 나간 것만 센다.**
+def unlabeled_notified(days: float | None = None) -> list[dict]:
+    """답을 안 준 사건. **기본은 발송된 알림이고, 미탐 중 일부를 더한다.**
 
     사건 전체를 물으면 아무도 답하지 않는다(2026-08-14 기준 사건 173건 · 알림 50건 ·
     라벨 0건). 실제로 사용자를 방해한 것은 발송된 알림이고, 문턱과 억제를 고칠 근거도
-    거기서 나온다 — 알림이 안 나간 사건은 맞았든 틀렸든 아무도 성가시게 하지 않았다.
+    대부분 거기서 나온다.
+
+    **그런데 그 설계가 등급 역전을 구조적으로 가렸다.** 등급 역전은 "안 나간 것이
+    나갔어야 했다"는 실패라 증거가 미탐에만 있는데, 답 대기가 `notified=1` 만 세니
+    화면에 영영 안 올라온다. 실측(2026-08-15): 사람 답 7건 중 발열 3건이 전부
+    `notified=0` 이면서 전부 `real` 이었고, 사용자가 목록에서 직접 골라 답한 덕에
+    나왔다. 그래서 **실측 라벨이 한 방향으로 일관된 종류**만 골라 더한다
+    (`label.ask_unnotified_bottlenecks`, 지금은 THERMAL 3/3).
+
+    **미탐에는 더 짧은 창을 준다**(`ask_unnotified_window_days`). 발송된 알림은 그때
+    풍선이라도 떠서 기억에 걸리지만 안 나간 사건은 아무 흔적이 없다 — 같은 기간을 주면
+    짐작이 섞이고, 실제로 14일을 주면 9일 이상 지난 18건이 한꺼번에 밀려온다.
 
     최신순인 것은 화면이 "가장 최근 것부터 답하기"로 쓰기 때문이다. 기억이 남아 있는
     쪽부터 물어야 라벨이 실제 판단이 된다.
@@ -348,14 +366,36 @@ def unlabeled_notified(days: float = LABEL_WINDOW_DAYS) -> list[dict]:
     **기계가 판정한 것도 뺀다**(`auto_label`). 자동 라벨을 넣은 이유가 "판단 기준을
     사람 머릿속에 두지 않는 것"이라, 판정이 붙은 뒤에도 계속 물으면 아무것도 줄지
     않는다. 사람이 덮어쓰는 길은 열려 있다 — 목록에서 골라 상자를 누르면 그 답이 이긴다.
+
+    `notified` 를 함께 돌려준다 — **화면이 묻는 문장을 그것으로 가른다**("쓸모
+    있었나" ↔ "알려줬어야 했나").
     """
+    cfg = _label_settings()
+    now = time.time()
+    days = float(cfg.window_days) if days is None else days
+    kinds = [str(k).upper() for k in cfg.ask_unnotified_bottlenecks]
+
+    # 미탐을 물을 종류가 없으면 조건 자체를 만들지 않는다 — 빈 `IN ()` 은 SQL 오류다.
+    if kinds and cfg.ask_unnotified_window_days > 0:
+        placeholders = ",".join("?" * len(kinds))
+        scope = (
+            "(i.notified = 1 AND i.ts_start > ?"
+            f" OR i.notified = 0 AND UPPER(i.bottleneck) IN ({placeholders})"
+            " AND i.ts_start > ?)"
+        )
+        params: list = [now - days * 86400, *kinds,
+                        now - float(cfg.ask_unnotified_window_days) * 86400]
+    else:
+        scope = "i.notified = 1 AND i.ts_start > ?"
+        params = [now - days * 86400]
+
     return query(
-        "SELECT i.id, i.ts_start, i.severity, i.title FROM incidents i"
-        " WHERE i.notified = 1 AND i.user_label IS NULL AND i.auto_label IS NULL"
-        " AND i.ts_start > ?"
+        "SELECT i.id, i.ts_start, i.severity, i.title, i.notified FROM incidents i"
+        f" WHERE {scope}"
+        " AND i.user_label IS NULL AND i.auto_label IS NULL"
         f" AND NOT {_DURING_INJECTION}"
         " ORDER BY i.ts_start DESC",
-        (time.time() - days * 86400,),
+        tuple(params),
     )
 
 

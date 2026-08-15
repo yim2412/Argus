@@ -1432,21 +1432,54 @@ MUTANTS: list[Mutant] = [
     # ---- 2026-08-14 답 대기 알림(라벨 유입). 라벨 UI 는 08-09 에 있었는데 5일 뒤에도
     #      0건이었다 — 고친 것은 "무엇을 물을지"와 "어디서 물을지"라 둘 다 잰다.
     Mutant(
-        "pending_answers_only_notified",
-        "답 대기는 알림이 나간 것만 센다 (사건 전체를 물으면 밀린 것이 그 안에 묻힌다)",
+        "pending_answers_pick_unnotified_kinds",
+        "미탐은 실측 근거가 있는 종류만 묻는다 (전부 물으면 밀린 것이 그 안에 묻힌다)",
         (
             (
                 "argus/dashboard/data.py",
-                " WHERE i.notified = 1 AND i.user_label IS NULL AND i.auto_label IS NULL",
-                " WHERE i.user_label IS NULL AND i.auto_label IS NULL",  # MUTANT: 알림 여부 무시
+                "    kinds = [str(k).upper() for k in cfg.ask_unnotified_bottlenecks]\n",
+                '    kinds = ["THERMAL", "CPU", "MEMORY", "IO", "NONE", "CONTENTION"]'
+                "  # MUTANT: 종류를 안 가린다\n",
             ),
+        ),
+        note=(
+            "2026-08-15 에 답 대기를 미탐까지 넓혔다. 근거는 발열 3/3 real 이고, "
+            "종류를 안 가리면 최근 14일 미탐 68건이 통째로 밀려온다 — 08-14 에 확인된 "
+            "'전부 내밀면 아무도 답하지 않는다'로 되돌아간다"
+        ),
+    ),
+    Mutant(
+        "question_follows_notified",
+        "알림이 안 나간 사건에 '이 알림이 쓸모 있었나'를 묻지 않는다",
+        (
+            (
+                "argus/desktop/pages/incidents.py",
+                "            _QUESTION_NOTIFIED if incident.get(\"notified\")"
+                " else _QUESTION_UNNOTIFIED\n",
+                "            _QUESTION_NOTIFIED  # MUTANT: 미탐에도 같은 문장을 쓴다\n",
+            ),
+        ),
+        note="오지도 않은 알림을 떠올리라고 하면 답이 짐작이 된다",
+    ),
+    Mutant(
+        "pending_answers_unnotified_window",
+        "미탐에는 더 짧은 창을 준다 (안 나간 사건은 기억 단서가 없다)",
+        (
+            ("argus/config/defaults.yaml",
+             "  ask_unnotified_window_days: 7\n",
+             "  ask_unnotified_window_days: 14\n"),
+        ),
+        note=(
+            "발송된 알림은 그때 풍선이라도 떴지만 안 나간 사건은 흔적이 없다. "
+            "같은 14일을 주면 9일 이상 지난 발열 18건이 한꺼번에 밀려온다(2026-08-15 실측)"
         ),
     ),
     Mutant(
         "pending_answers_window",
         "답 대기 기간 상한 (기억하지 못하는 알림에 붙인 라벨은 근거가 못 된다)",
         (
-            ("argus/dashboard/data.py", "LABEL_WINDOW_DAYS = 14.0", "LABEL_WINDOW_DAYS = 3650.0"),
+            # 2026-08-15 에 값이 config 로 갔다 — 무력화도 거기서 한다.
+            ("argus/config/defaults.yaml", "  window_days: 14\n", "  window_days: 3650\n"),
         ),
     ),
     Mutant(
