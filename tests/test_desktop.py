@@ -1959,3 +1959,125 @@ def test_unnotified_incident_is_asked_a_different_question(qapp) -> None:
     assert page._question.text() == "이 알림이 쓸모 있었나요?", (
         "발송된 알림까지 미탐용 문장으로 물었다"
     )
+
+
+def test_chart_breaks_the_line_across_an_observation_gap() -> None:
+    """**없는 데이터를 선으로 이으면 그래프가 거짓말을 한다.**
+
+    2026-08-16 자기 상태 화면에서 `private` 이 190MB → 70MB 로 매끄럽게 내려가는
+    것처럼 보였는데, 그 5시간에 표본이 하나도 없었다(상주가 22:00 에 재시작했고 앞은
+    이전 인스턴스 데이터다). 읽는 사람은 "메모리가 서서히 줄었다"고 읽지만 일어난
+    일은 재시작이다.
+
+    **셋을 함께 잰다.** 공백만 재면 전부 끊어 버려도 통과하고, 그러면 정상 그래프가
+    점 무더기가 된다.
+    """
+    import math
+
+    from argus.desktop.widgets import break_gaps
+
+    def has_break(values) -> bool:
+        return any(isinstance(v, float) and math.isnan(v) for v in values)
+
+    # 5분 간격인데 가운데 5시간 공백 — 실제 화면과 같은 모양이다.
+    _, gapped = break_gaps([0, 300, 600, 18600, 18900, 19200], [190, 185, 180, 70, 71, 69])
+    assert has_break(gapped), f"공백을 안 끊었다: {gapped}"
+
+    _, steady = break_gaps([0, 300, 600, 900], [1, 2, 3, 4])
+    assert not has_break(steady), f"정상 데이터를 끊었다: {steady}"
+
+    # 수집이 한 틱 밀린 정도(2배)는 공백이 아니다 — 스로틀·지연에서 흔하다.
+    _, late = break_gaps([0, 300, 900, 1200, 1500], [1, 2, 3, 4, 5])
+    assert not has_break(late), f"수집 지연을 공백으로 봤다: {late}"
+
+
+def test_chart_gap_threshold_follows_the_sample_rate() -> None:
+    """**기준은 이 데이터 자신의 표본 간격이다.** 고정 초를 박으면 차트마다 주기가
+    달라(실시간 1초 · 롤업 5분) 한쪽에서는 정상 간격이 공백으로 읽힌다.
+
+    같은 모양의 공백을 주기만 바꿔 두 번 재서, 두 경우 다 같은 판정이 나오는지 본다 —
+    이것이 "간격을 데이터에서 얻는다"의 관측 가능한 결과다.
+    """
+    import math
+
+    from argus.desktop.widgets import break_gaps
+
+    def has_break(values) -> bool:
+        return any(isinstance(v, float) and math.isnan(v) for v in values)
+
+    # 1초 주기에서 10초 공백 → 끊는다
+    _, fast = break_gaps([0, 1, 2, 12, 13, 14], [1, 2, 3, 4, 5, 6])
+    assert has_break(fast), f"빠른 주기의 공백을 놓쳤다: {fast}"
+
+    # 1초 주기에서 2초 간격은 정상 — 위와 같은 절대 초(2초)가 느린 주기에서는
+    # 정상이었다는 점이 핵심이다.
+    _, fast_ok = break_gaps([0, 1, 2, 4, 5, 6], [1, 2, 3, 4, 5, 6])
+    assert not has_break(fast_ok), f"빠른 주기의 정상 간격을 끊었다: {fast_ok}"
+
+
+def test_chart_keeps_short_series_intact() -> None:
+    """표본이 셋 미만이면 간격을 셀 수 없다. **판단할 근거가 없을 때 끊는 쪽으로
+    기울면 데이터가 막 쌓이기 시작한 화면이 전부 점으로 보인다.**"""
+    from argus.desktop.widgets import break_gaps
+
+    assert break_gaps([], []) == ([], [])
+    assert break_gaps([5.0], [1.0]) == ([5.0], [1.0])
+    assert break_gaps([0.0, 99999.0], [1.0, 2.0]) == ([0.0, 99999.0], [1.0, 2.0])
+
+
+def test_history_chart_actually_uses_gap_breaking(qapp) -> None:
+    """**로직과 배선을 따로 잰다.** `break_gaps` 가 옳게 동작해도 차트가 그것을
+    부르지 않으면 화면은 그대로 거짓말을 한다 — 순수 함수 테스트만 있으면 그 상태가
+    전부 통과한다(08-03·08-04 에 같은 유형을 네 번 겪었다).
+
+    커브에 실제로 들어간 점을 읽어 확인한다. 창은 띄우지 않는다.
+    """
+    import math
+
+    from argus.desktop.widgets import HistoryChart
+
+    chart = HistoryChart("t", ["a"])
+    chart.set_data([0, 300, 600, 18600, 18900, 19200], {"a": [190, 185, 180, 70, 71, 69]})
+    xs, ys = chart._curves["a"].getData()
+
+    assert len(xs) == 7, f"공백 표시가 커브에 안 들어갔다 (점 {len(xs)}개)"
+    assert any(math.isnan(v) for v in ys), "커브에 끊는 점이 없다 — 차트가 break_gaps 를 안 쓴다"
+
+
+def test_realtime_chart_also_breaks_gaps(qapp) -> None:
+    """실시간 창에도 공백이 생긴다 — 절전 복귀, 그리고 **백필**(과거 600점을 한 번에
+    넣는다). 상대 시각("몇 초 전")이어도 단조 증가라 같은 규칙이 쓰인다.
+
+    긴 구간 차트만 고치면 실시간 쪽이 계속 없는 선을 그린다.
+    """
+    import math
+
+    from argus.desktop.widgets import TimeSeriesChart
+
+    chart = TimeSeriesChart("t", ["a"])
+    for ts in (0.0, 1.0, 2.0, 60.0, 61.0, 62.0):  # 가운데 58초 공백
+        chart.append(ts, {"a": 1.0})
+    _, ys = chart._curves["a"].getData()
+
+    assert any(math.isnan(v) for v in ys), "실시간 차트가 공백을 이어 그린다"
+
+
+def test_chart_gap_uses_median_not_mean(qapp) -> None:
+    """**공백 기준은 평균이 아니라 중앙값이어야 한다.**
+
+    평균은 공백 자신에게 끌려간다. 5분 주기에 20분 공백이면 평균 간격이 480초로
+    올라가 문턱이 1440초가 되고, **그 공백(1200초)이 정상으로 통과한다.** 중앙값은
+    300초에 머물러 문턱이 900초라 제대로 끊는다.
+
+    **큰 공백으로는 이 차이가 안 드러난다.** 처음엔 5시간 공백으로 쟀는데 평균으로도
+    끊겨서 무력화가 통과했다(2026-08-16 측정 1/2) — 평균이 실제로 무너지는 구간은
+    "표본 주기보다는 크지만 압도적이지는 않은" 공백이다.
+    """
+    import math
+
+    from argus.desktop.widgets import break_gaps
+
+    _, ys = break_gaps([0, 300, 600, 1800, 2100, 2400], [1, 2, 3, 4, 5, 6])
+    assert any(math.isnan(v) for v in ys), (
+        f"5분 주기의 20분 공백을 놓쳤다 — 평균으로 재고 있다: {ys}"
+    )

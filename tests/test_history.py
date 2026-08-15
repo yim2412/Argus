@@ -205,7 +205,16 @@ def test_process_index_sums_buckets_per_day(wired, db: Database) -> None:
     """
     from argus.storage.rollup import ProcessRollup
 
-    start = bucket_of(time.time() - 7200, 300)
+    # **날짜 경계를 밟지 않는 시각에서 시작한다.** 예전에는 `time.time() - 7200` 이었는데,
+    # 새벽 0~2시에 돌리면 그 2시간 전이 **어제**라 30분치가 이틀로 갈리고 마지막 단언이
+    # 깨졌다(2026-08-16 01:3x 실측: `{'08-15': 3, '08-16': 3}`). 테스트가 시계를 타면
+    # "어젯밤엔 됐는데"가 생기고, 그 시간에 작업하던 사람은 자기 변경을 의심하게 된다.
+    # 어제 정오는 항상 과거이고 30분을 더해도 같은 날이다.
+    noon_yesterday = (
+        datetime.fromtimestamp(time.time()).replace(hour=12, minute=0, second=0, microsecond=0)
+        - timedelta(days=1)
+    ).timestamp()
+    start = bucket_of(noon_yesterday, 300)
     rows = []
     for bucket in range(6):  # 30분
         for second in range(0, 300, 10):

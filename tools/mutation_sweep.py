@@ -1449,6 +1449,38 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "chart_breaks_observation_gaps",
+        "관측이 없던 구간을 선으로 잇지 않는다",
+        (
+            (
+                "argus/desktop/widgets.py",
+                "                xs, ys = break_gaps(timestamps, series)\n",
+                "                xs, ys = list(timestamps), list(series)"
+                "  # MUTANT: 공백을 안 끊는다\n",
+            ),
+        ),
+        note=(
+            "2026-08-16 자기 상태 화면에서 private 이 190→70MB 로 매끄럽게 내려가 보였는데 "
+            "그 5시간에 표본이 없었다(22:00 재시작). 읽는 사람은 '서서히 줄었다'고 읽는다"
+        ),
+    ),
+    Mutant(
+        "chart_gap_uses_median_interval",
+        "공백 기준을 표본 간격의 중앙값으로 잡는다 (평균은 공백에 끌려간다)",
+        (
+            (
+                "argus/desktop/widgets.py",
+                "    typical = deltas[len(deltas) // 2]\n",
+                "    typical = sum(deltas) / len(deltas)  # MUTANT: 평균\n",
+            ),
+        ),
+        note=(
+            "평균은 공백 자신에게 끌려간다 — 5분 주기에 20분 공백이면 평균 480초라 "
+            "문턱이 1440초가 되어 그 공백이 정상으로 통과한다. **큰 공백으로는 이 차이가 "
+            "안 드러난다**(5시간이면 평균으로도 끊긴다). 1차 측정에서 그래서 안 잡혔다"
+        ),
+    ),
+    Mutant(
         "answer_mark_follows_pending",
         "목록의 답 표시가 답 대기와 같은 규칙을 쓴다",
         (

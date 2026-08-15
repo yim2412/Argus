@@ -33,6 +33,18 @@ MAIN_PLOT_MAX = 330
 # 차트 아래 한 줄 설명의 높이. 고정이라야 레이아웃 계산이 흔들리지 않는다.
 NOTE_HEIGHT = 16
 
+# 표본 간격이 **평소의 이 배**를 넘으면 그 구간은 관측이 없었던 것으로 보고 선을 끊는다.
+#
+# **없는 데이터를 선으로 이으면 그래프가 거짓말을 한다.** 2026-08-16 자기 상태 화면에서
+# `private` 이 190MB → 70MB 로 매끄럽게 내려가는 것처럼 보였는데, 실제로는 그 5시간에
+# 표본이 하나도 없었다(상주가 22:00 에 재시작했고 앞은 이전 인스턴스 데이터다).
+# 읽는 사람은 "메모리가 서서히 줄었다"고 읽지만 일어난 일은 재시작이다.
+#
+# 배수로 재는 이유는 차트마다 표본 주기가 다르기 때문이다(실시간 1초 · 롤업 5분).
+# 고정 초를 박으면 한쪽에서는 정상 간격이 공백으로, 다른 쪽에서는 공백이 정상으로
+# 읽힌다. 3배는 한 틱 밀린 정도(수집 지연·스로틀)는 잇고 재시작·절전은 끊는 값이다.
+GAP_BREAK_FACTOR = 3.0
+
 
 def legend_chip(name: str, colour: str) -> QtWidgets.QWidget:
     """계열 이름표. **플롯 안이 아니라 제목 줄에 놓는다.**
@@ -270,7 +282,51 @@ class TimeSeriesChart(QtWidgets.QWidget):
         for name, curve in self._curves.items():
             values = self._series[name]
             if len(values) == len(xs):
-                curve.setData(xs, list(values))
+                # 실시간 창에도 공백이 생긴다 — 절전 복귀, 그리고 **백필**(과거 600점을
+                # 한 번에 넣는다)이 그렇다. 상대 시각이어도 단조 증가라 같은 함수가 쓰인다.
+                gx, gy = break_gaps(xs, list(values))
+                curve.setData(gx, gy, connect="finite")
+
+
+def break_gaps(
+    timestamps: Sequence[float], series: Sequence[float]
+) -> tuple[list[float], list[float]]:
+    """관측이 없던 구간에 `NaN` 을 끼워 선이 이어지지 않게 한다.
+
+    **기준은 이 데이터 자신의 표본 간격**(중앙값)이다. 고정 초를 쓰면 차트마다 주기가
+    달라(실시간 1초 · 롤업 5분) 한쪽에서는 정상 간격이 공백으로 읽힌다.
+
+    **평균이 아니라 중앙값인 이유**는 평균이 공백 자신에게 끌려가기 때문이다. 5분 주기에
+    20분 공백이면 평균 간격이 480초로 올라 문턱이 1440초가 되고, 그 공백(1200초)이
+    정상으로 통과한다. 중앙값은 300초에 머물러 제대로 끊는다. **아주 큰 공백에서는
+    둘이 같은 답을 낸다** — 차이가 나는 구간은 "주기보다는 크지만 압도적이지는 않은"
+    쪽이고, 재시작·절전이 정확히 그 크기다.
+
+    표본이 셋 미만이면 간격을 셀 수 없으므로 그대로 돌려준다. 판단할 근거가 없을 때
+    끊는 쪽으로 기울면, 데이터가 막 쌓이기 시작한 화면이 전부 점으로 보인다.
+    """
+    xs = list(timestamps)
+    ys = list(series)
+    if len(xs) < 3:
+        return xs, ys
+
+    deltas = sorted(b - a for a, b in zip(xs, xs[1:]))
+    typical = deltas[len(deltas) // 2]
+    if typical <= 0:
+        return xs, ys
+
+    limit = typical * GAP_BREAK_FACTOR
+    out_x: list[float] = []
+    out_y: list[float] = []
+    for index, (x, y) in enumerate(zip(xs, ys)):
+        if index and (x - xs[index - 1]) > limit:
+            # 공백의 시작 쪽에 끊는 점을 둔다. 마지막 실측 바로 뒤라, 선이 실측까지만
+            # 그려지고 거기서 멈춘다.
+            out_x.append(xs[index - 1] + typical)
+            out_y.append(float("nan"))
+        out_x.append(x)
+        out_y.append(y)
+    return out_x, out_y
 
 
 class HistoryChart(QtWidgets.QWidget):
@@ -350,7 +406,10 @@ class HistoryChart(QtWidgets.QWidget):
         for name, curve in self._curves.items():
             series = values.get(name) or []
             if len(series) == len(timestamps):
-                curve.setData(list(timestamps), list(series))
+                xs, ys = break_gaps(timestamps, series)
+                # `connect="finite"` 는 NaN 앞뒤를 잇지 않는다 — 공백이 **빈 자리**로
+                # 보이고, 없는 값을 지어낸 선분이 사라진다.
+                curve.setData(xs, ys, connect="finite")
 
     def set_overlays(self, bands: Sequence[dict], marks: Sequence[float]) -> None:
         """`bands` 는 `{lo, hi, strong}`, `marks` 는 시각 목록.
