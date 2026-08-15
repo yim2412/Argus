@@ -67,6 +67,25 @@ LOSS_AXIS_MIN_DAYS = 3
 # 비교에 쓸 수 없다 — 그래서 '부하 있는 날'이 아니라 '부하 + 클럭이 있는 날'을 센다.
 LOSS_AXIS_COLUMN = "gpu_clock_sm_mean"
 
+# `severity` 등급 역전: **전체 라벨 수가 아니라 등급 역전 축의 라벨 수를 센다.**
+#
+# 계획서는 "사람 답 20건"을 조건으로 적어 뒀는데, 그 수는 첫 라벨 7건을 보고 "7건은
+# 아직 적다"에서 나온 어림수였다(`PLAN.md` 2026-08-14). 2026-08-16 에 그 조건이
+# 재려는 대상과 어긋나 있다는 것이 실측으로 드러났다:
+#
+#     08-14  라벨 7건  = CPU·경합 4(전부 normal) + 발열 3(전부 real)
+#     08-16  라벨 11건 = CPU·경합 8(전부 normal) + 발열 3(전부 real)
+#
+# **늘어난 4건이 전부 CPU 계열이고 등급 역전에 대해 아무것도 말하지 않는다.** 등급
+# 역전은 "안 나간 것이 나갔어야 했다"는 실패라 증거가 미탐에만 있고, 이 PC 에서 그
+# 축은 발열뿐이다. 전체 라벨이 20건이 되어도 발열이 3건이면 착수 근거는 그대로 3건이다.
+#
+# 6건인 이유. 사용자 답이 등급과 무관하다면(귀무가설) 한 방향으로 몰릴 확률은 3건에서
+# 12.5% 로 우연히도 나오지만 6건이면 1.6% 다 — 그때 비로소 "일관되다"가 우연이 아니게
+# 된다. **방향이 갈려도 6건에서 판단이 선다**(갈렸다는 것 자체가 "등급이 뒤집힌 게
+# 아니라 사건마다 다르다"는 답이다). 그래서 조건은 방향이 아니라 건수다.
+SEVERITY_AXIS_MIN_LABELS = 6
+
 
 @dataclass
 class Check:
@@ -262,6 +281,73 @@ def check_loss_axis(days: dict[str, Day]) -> Readiness:
     return result
 
 
+def check_severity_inversion() -> Readiness:
+    """`severity` 등급 역전 — 발열 축 사람 라벨.
+
+    **여기만 롤업이 아니라 사건을 센다.** 이 조건의 표본은 관측 시간이 아니라 사람이
+    답한 라벨이고, 그것은 사건 테이블에만 있다.
+
+    **축을 여기서 다시 정하지 않는다.** 무엇을 미탐으로 물을지는 이미
+    `label.ask_unnotified_bottlenecks` 가 갖고 있고(지금은 `THERMAL`), 등급 역전
+    후보 축은 정확히 그것과 같은 개념이다 — 두 곳에 두면 config 를 고쳐도 이 판정만
+    옛 축을 세는 상태가 된다.
+
+    주입 구간을 빼는 판정도 `dashboard.data` 의 것을 그대로 쓴다. 답 대기에서 빼는
+    기준과 여기서 세는 기준이 갈리면, 물어보지도 않은 사건을 착수 조건에 세게 된다.
+    """
+    from argus.config.loader import load_settings
+    from argus.dashboard.data import _DURING_INJECTION, query
+
+    kinds = [str(k).upper() for k in load_settings().label.ask_unnotified_bottlenecks]
+    axis = "/".join(kinds) if kinds else "(없음)"
+
+    result = Readiness(
+        "severity 등급 역전",
+        f"미탐이 나갔어야 했나. 증거는 {axis} 축의 사람 라벨에만 있다.",
+    )
+    if not kinds:
+        result.checks.append(
+            Check(
+                "미탐을 물어볼 축이 설정돼 있을 것",
+                False,
+                "`label.ask_unnotified_bottlenecks` 가 비어 있다 — 답 대기에 미탐이 "
+                "올라오지 않으므로 이 조건은 영영 안 찬다",
+            )
+        )
+        return result
+
+    placeholders = ",".join("?" * len(kinds))
+    rows = query(
+        "SELECT COALESCE(i.user_label,'?') AS label, COUNT(*) AS n FROM incidents i"
+        f" WHERE i.user_label IS NOT NULL AND UPPER(COALESCE(i.bottleneck,'')) IN ({placeholders})"
+        f" AND NOT {_DURING_INJECTION} GROUP BY label",
+        tuple(kinds),
+    )
+    by_label = {r["label"]: r["n"] for r in rows}
+    total = sum(by_label.values())
+    breakdown = ", ".join(f"{k} {v}" for k, v in sorted(by_label.items())) or "없음"
+
+    # 전체 라벨도 함께 보여 준다 — 계획서의 옛 조건(20건)을 기억하는 사람이 두 수를
+    # 나란히 봐야 왜 조건이 바뀌었는지 알 수 있다.
+    everything = query(
+        "SELECT COUNT(*) AS n FROM incidents WHERE user_label IS NOT NULL"
+    )[0]["n"]
+
+    result.checks.append(
+        Check(
+            f"{axis} 축 사람 라벨 {SEVERITY_AXIS_MIN_LABELS}건 이상",
+            total >= SEVERITY_AXIS_MIN_LABELS,
+            f"현재 {total}건 ({breakdown}) · 전체 라벨은 {everything}건"
+            + (
+                ""
+                if total >= SEVERITY_AXIS_MIN_LABELS
+                else f" — {SEVERITY_AXIS_MIN_LABELS - total}건 부족"
+            ),
+        )
+    )
+    return result
+
+
 def main() -> int:
     days = _days()
     if not days:
@@ -274,6 +360,7 @@ def main() -> int:
         print("        사용 패턴 다양성은 사람이 판단할 것.\n")
 
     reports = [
+        check_severity_inversion(),
         check_loss_axis(days),
         check_fingerprint(days),
         closed_regime(),
