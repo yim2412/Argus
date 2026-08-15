@@ -439,6 +439,36 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "finished_batch_has_no_remaining",
+        "끝난 주입 배치에 남은 시간을 적지 않는다 (전역 규칙 1)",
+        (
+            (
+                "tools/inject_progress.py",
+                "    if pending:\n",
+                "    if True:  # MUTANT: 끝난 배치에도 남음을 적는다\n",
+            ),
+        ),
+        note=(
+            "진행을 재는 도구가 끝난 것을 두고 '남음 약 17분'이라 말하면 그것이 추측 "
+            "보고다. 2026-08-15 에 13일 전 배치가 실제로 그렇게 발표됐다"
+        ),
+    ),
+    Mutant(
+        "aborted_round_counts_as_planned",
+        "중단된 회차를 '덜 진행된 것'으로 세지 않는다",
+        (
+            (
+                "tools/inject_progress.py",
+                "        total_done += min(span, planned) if running else planned\n",
+                "        total_done += min(span, planned)  # MUTANT: 실측 길이로 센다\n",
+            ),
+        ),
+        note=(
+            "개별 줄은 전부 '완료 100%' 인데 전체만 85% 가 된다. 그 회차는 덜 돈 것이 "
+            "아니라 더 돌 계획이 없는 것이다"
+        ),
+    ),
+    Mutant(
         "contributor_head_follows_attribution",
         "귀인이 성립하지 않는 사건의 기여도 표를 '원인 후보'라 부르지 않는다",
         (

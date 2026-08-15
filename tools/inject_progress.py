@@ -162,7 +162,15 @@ def render(db: Database, *, batch_gap_s: float = 600.0,
 
 
 def _render_rows(db: Database, batch: list[dict], now: float) -> str:
-    lines = [f"주입 배치 — {len(batch)}회차 (마지막 갱신 {time.strftime('%H:%M:%S')})", "=" * 66]
+    # **배치가 언제 것인지 헤더에 적는다.** 처음에는 "마지막 갱신 <지금 시각>"만 있었는데,
+    # 이 도구는 마지막 배치를 보여주므로 **13일 전에 끝난 배치를 보면서 지금 시각을
+    # 읽게 된다**(2026-08-15 실측). 지금 도는 것이라고 오해할 자리다.
+    started = time.strftime("%m-%d %H:%M", time.localtime(float(batch[0]["ts_start"])))
+    lines = [
+        f"주입 배치 — {len(batch)}회차 · {started} 시작"
+        f" (조회 {time.strftime('%H:%M:%S')})",
+        "=" * 66,
+    ]
     total_planned = 0.0
     total_done = 0.0
 
@@ -176,7 +184,12 @@ def _render_rows(db: Database, batch: list[dict], now: float) -> str:
         # 흐른 시간을 계획으로 착각한다).
         planned = _planned_seconds(row) or span
         total_planned += planned
-        total_done += min(span, planned)
+        # **끝난 회차는 계획을 다 쓴 것으로 센다.** 실측 길이로 세면 중단되어 짧게 끝난
+        # 회차가 "덜 진행됨"으로 잡혀, 개별 줄이 전부 `완료 100%` 인데 전체만 85% 가
+        # 된다(2026-08-15 실측: 겹쳐서 강제 중단한 #51·#52 가 그랬다). 그 회차는 덜 돈
+        # 것이 아니라 **더 돌 계획이 없는 것**이다. 짧게 끝났다는 사실은 개별 줄의
+        # `3분 13초 / 12분 0초` 와 판정 ❌ 가 이미 말한다.
+        total_done += min(span, planned) if running else planned
 
         if running:
             state = f"진행 중 {_bar(span / planned)} {span / planned * 100:>3.0f}%"
@@ -191,13 +204,16 @@ def _render_rows(db: Database, batch: list[dict], now: float) -> str:
     remaining = max(0.0, total_planned - total_done)
     # 남은 회차 사이 대기(180초)는 계획에 없으므로 대략만 더한다.
     pending = sum(1 for r in batch if r["ts_end"] is None)
-    lines += [
-        "-" * 66,
-        f"전체 {_bar(total_done / total_planned if total_planned else 0)} "
-        f"{(total_done / total_planned * 100) if total_planned else 0:>3.0f}%   "
-        f"남음 약 {_hms(remaining)}"
-        + ("  (다음 회차 대기 시간은 제외)" if pending else ""),
-    ]
+    share = (total_done / total_planned) if total_planned else 0.0
+    # **끝난 배치에 "남음"을 적지 않는다.** 진행을 재는 도구가 끝난 것을 두고 "남음 약
+    # 17분"이라고 말하면 그건 추측 보고다(전역 규칙 1). 읽는 사람은 뭔가 더 돌 것이
+    # 있다고 읽는다 — 2026-08-15 에 실제로 그렇게 읽혔다.
+    if pending:
+        tail = f"남음 약 {_hms(remaining)}  (다음 회차 대기 시간은 제외)"
+    else:
+        last_end = max(float(r["ts_end"]) for r in batch)
+        tail = f"배치 종료 — 마지막 회차 {time.strftime('%m-%d %H:%M', time.localtime(last_end))}"
+    lines += ["-" * 66, f"전체 {_bar(share)} {share * 100:>3.0f}%   {tail}"]
     return "\n".join(lines)
 
 
