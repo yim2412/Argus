@@ -1517,6 +1517,30 @@ SELECT day, total_s/3600.0 AS 쓴시간, observed_s/3600.0 AS 관측 FROM daily_
 `pytest-of-준-old-20260813` 을 지우지 않고 남겼다 — 안의 reparse point 를 지울 수
 없어서다. 재부팅 뒤에 사라져 있으면 그걸로 끝이다.
 
+> **2026-08-16 — 이 폴더가 남긴 대가.** Claude Code 가 이 저장소에서만 Bash 명령마다
+> `Path traverses a Cygwin-emulated symlink (Git Bash follows it, Node does not) —
+> manual approval required` 승인 프롬프트를 띄웠다. **다른 프로젝트에서는 안 뜬다** —
+> pytest 를 이 형태로 돌리는 곳이 여기뿐이다.
+>
+> 범인은 `pytest-of-준-old-20260813\pytest-current` 다. `Directory, ReparsePoint`
+> 인데 `Target` 이 비어 있는 **깨진 링크**라, Git Bash 는 디렉터리로 따라가고 Node 는
+> 못 따라간다 — 경고 문구가 그 상태를 그대로 말한다. **확증은 못 했다**(지워서 프롬프트가
+> 사라지는지 봐야 하는데 지울 수가 없다). 유력한 후보까지다.
+>
+> 지우기: 소유자는 본인인데도 8개 파일이 `Access denied` 다(`takeown`·`icacls` 도
+> 실패). 아직 핸들이 살아 있다. **재부팅 뒤에 아래를 한 번 돌린다** — 110MB 도 같이
+> 회수된다.
+>
+> ```powershell
+> Remove-Item "$env:LOCALAPPDATA\Temp\pytest-of-준-old-20260813" -Recurse -Force
+> ```
+>
+> 그전까지는 `.claude/settings.local.json` 의 `defaultMode: bypassPermissions` 가
+> 프롬프트를 막는다(2026-08-16 추가, git 에는 안 올라간다).
+>
+> **그리고 `--basetemp` 를 쓰는 이유가 하나 더 늘었다.** pytest 기본 임시 폴더는
+> `pytest-current` 링크를 계속 새로 만든다.
+
 ### 다음 세션 착수점 (2026-08-12 기준)
 
 "알림이 안 뜬다"를 확인하다 나온 것들이다. **알림 0건의 답은 "알릴 이상이 없었다"가
