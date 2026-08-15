@@ -320,8 +320,13 @@ def incidents(days: float = 7.0, limit: int = 200) -> list[dict]:
         " WHERE i.ts_start > ? ORDER BY i.ts_start DESC LIMIT ?",
         (time.time() - days * 86400, limit),
     )
+    # **답 대기 여부는 `unlabeled_notified` 에게 물어본다.** 같은 규칙을 여기서 다시
+    # 쓰면 두 곳이 조용히 갈린다 — 목록은 "안 물어봄"이라고 적는데 답하기 버튼은 그
+    # 사건으로 데려가는 식이다. 2026-08-15 에 미탐을 답 대기에 넣자 실제로 그랬다.
+    pending = {row["id"] for row in unlabeled_notified()}
     for row in rows:
         row["attributable"] = is_attributable(row.get("bottleneck"))
+        row["pending_answer"] = row.get("id") in pending
     return rows
 
 

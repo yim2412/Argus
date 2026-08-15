@@ -89,9 +89,17 @@ class IncidentPage(QtWidgets.QWidget):
         split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self._table = DataTable(
             [
-                Column("when", "시각", width=130),
-                Column("severity_ko", "등급", width=60),
-                Column("span", "지속", align_right=True, width=70),
+                # **초를 빼서 폭을 줄였다.** 사건을 초 단위로 구분할 일은 없고,
+                # 그렇게 아낀 자리를 "알림" 열에 준다 — 목록이 좁으면 오른쪽 열부터
+                # 잘리는데, 잘려서 안 보이는 열은 없는 것과 같다.
+                Column("when", "시각", width=96),
+                Column("severity_ko", "등급", width=54),
+                # **등급과 알림 발송은 다르다.** `경고` 인데 안 나간 것이 있고
+                # (억제·상위 사건에 물림), `정보` 라 안 나간 것도 있다. 목록에 등급만
+                # 있으면 "어느 것이 나를 방해했나"를 알 수 없어 상세를 하나씩 열어
+                # 봐야 했다. 2026-08-15 에 사용자가 지적한 자리다.
+                Column("notified_mark", "알림", width=44),
+                Column("span", "지속", align_right=True, width=64),
                 # **답을 안 준 알림이 목록에서 보여야 한다.** 상세를 열기 전에는
                 # 어느 것이 남았는지 알 수 없었고, 그래서 하나씩 눌러 보는 수밖에
                 # 없었다 — 그 수고가 라벨 0건의 이유 중 하나다.
@@ -100,6 +108,11 @@ class IncidentPage(QtWidgets.QWidget):
             ]
         )
         self._table.row_selected.connect(self._on_row_selected)
+        # **제목 앞의 다섯 열은 항상 보여야 한다.** 96+54+44+64+54 = 312 이고,
+        # 여기에 여백을 더한 값이다. 이 바닥이 없으면 상세 쪽 문구가 길어질 때마다
+        # 목록이 밀려 `시각` 만 남는다 — 그러면 등급도 알림 여부도 답 대기도 상세를
+        # 열어야만 보이고, 목록의 쓸모가 사라진다(2026-08-15 실측).
+        self._table.setMinimumWidth(330)
         split.addWidget(self._table)
         split.addWidget(self._build_detail())
         split.setSizes([560, 640])
@@ -140,6 +153,7 @@ class IncidentPage(QtWidgets.QWidget):
         # 제목은 사건마다 바뀐다 — `_render_detail` 이 `attributable` 을 보고 고른다.
         self._contributors_head = QtWidgets.QLabel(_CONTRIBUTORS_HEAD)
         self._contributors_head.setWordWrap(True)
+        self._contributors_head.setMinimumWidth(1)  # 위 `_question` 과 같은 이유
         box.addWidget(self._contributors_head)
         self._contributors = DataTable(
             [
@@ -184,7 +198,16 @@ class IncidentPage(QtWidgets.QWidget):
         # 알림이 안 나간 사건에까지 "이 알림이 쓸모 있었나요"라고 물으면 사용자는
         # 오지도 않은 알림을 떠올리려 한다. 답은 같은 축(정상/비정상)이고 방향만 반대다.
         self._question = QtWidgets.QLabel(_QUESTION_NOTIFIED)
-        row.addWidget(self._question)
+        # **긴 문장이 상세 패널의 최소 폭을 정하게 두지 않는다.** 줄바꿈을 막아 두면
+        # QLabel 이 문장 전체 폭을 최소 크기로 요구하고, 스플리터가 그만큼을 상세에
+        # 떼어 주느라 **왼쪽 목록이 시각 열만 남는다.** 2026-08-15 에 이 문구를
+        # 길게 바꾸자 실제로 그렇게 됐다 — 문구 하나가 목록을 지운 것이다.
+        self._question.setWordWrap(True)
+        # **1 로 두면 라벨이 0폭으로 찌그러져 질문이 통째로 사라진다**(2026-08-15
+        # 실측 — 상자만 남았다). 무엇에 답하는지 안 보이는 것이 목록이 좁은 것보다
+        # 나쁘다. 두 줄로 접힐 수 있는 폭을 바닥으로 준다.
+        self._question.setMinimumWidth(190)
+        row.addWidget(self._question, stretch=1)
         # 화면 문구는 "정상/비정상", 저장값은 normal/real 이다. **저장값을 바꾸지
         # 않는다** — 이미 쌓인 라벨과 평가 경로(`--incident`)가 그 값을 읽는다.
         self._normal_box = QtWidgets.QCheckBox("정상")
@@ -501,8 +524,11 @@ def _list_row(incident: dict) -> dict:
         span = "진행 중"
     return {
         "id": incident.get("id"),
-        "when": datetime.fromtimestamp(start).strftime("%m-%d %H:%M:%S"),
+        "when": datetime.fromtimestamp(start).strftime("%m-%d %H:%M"),
         "severity_ko": _SEVERITY_LABEL.get(incident.get("severity"), incident.get("severity")),
+        # 발송된 것만 표시한다. 안 나간 쪽이 훨씬 많아(7일간 20건 중 5건) 그쪽에
+        # 기호를 달면 목록이 기호로 덮인다 — 드문 쪽을 표시해야 눈에 띈다.
+        "notified_mark": "●" if incident.get("notified") else "",
         "span": span,
         "answer": _answer_mark(incident),
         "title": incident.get("title") or "",
@@ -512,8 +538,13 @@ def _list_row(incident: dict) -> dict:
 def _answer_mark(incident: dict) -> str:
     """목록의 "답" 칸.
 
-    **알림이 안 나간 사건은 빈칸으로 둔다.** 답을 안 준 것과 물은 적이 없는 것은
-    다르고, 173건 전부에 물음표를 세우면 밀린 50건이 그 안에 묻힌다.
+    **묻지 않는 사건은 빈칸으로 둔다.** 답을 안 준 것과 물은 적이 없는 것은 다르고,
+    173건 전부에 물음표를 세우면 밀린 것이 그 안에 묻힌다.
+
+    **"묻는가"는 `pending_answer` 가 답한다** — 조회 계층이 답 대기와 같은 규칙으로
+    채워 준다. 예전에는 여기서 `notified` 만 봤는데, 2026-08-15 에 답 대기가 미탐
+    일부까지 묻게 되자 **목록은 "안 물어봄"이라 적고 답하기 버튼은 그 사건으로
+    데려가는** 상태가 됐다. 규칙을 화면이 따로 갖고 있으면 반드시 갈린다.
 
     **결함 주입 구간은 "주입"으로 따로 세운다.** 답 대기에서 뺐으므로 물음표를
     달면 거짓말이 되고, 빈칸으로 두면 왜 안 물어보는지가 보이지 않는다.
@@ -529,14 +560,14 @@ def _answer_mark(incident: dict) -> str:
         return "비정상"
     if label == "unknown":
         return "모름"
-    if not incident.get("notified"):
-        return ""
     auto = incident.get("auto_label")
     if auto == "normal":
         return "·정상"
     if auto == "real":
         return "·비정상"
-    return "주입" if incident.get("during_injection") else "?"
+    if incident.get("during_injection"):
+        return "주입"
+    return "?" if incident.get("pending_answer") else ""
 
 
 # **"맞았나요"가 아니라 "쓸모 있었나요"다.** 앞의 물음은 사실 판정으로 읽힌다 —

@@ -1491,16 +1491,50 @@ def test_incident_list_marks_unanswered_notifications() -> None:
     """**목록에서 답 안 준 것이 보여야 한다.**
 
     상세를 열기 전에는 어느 것이 남았는지 알 수 없어 하나씩 눌러 봐야 했다.
-    **알림이 안 나간 사건은 빈칸이다** — 답을 안 준 것과 물은 적이 없는 것은 다르고,
-    173건 전부에 물음표를 세우면 밀린 50건이 그 안에 묻힌다.
+    **묻지 않는 사건은 빈칸이다** — 답을 안 준 것과 물은 적이 없는 것은 다르고,
+    사건 전부에 물음표를 세우면 밀린 것이 그 안에 묻힌다.
+
+    **판정 근거는 `notified` 가 아니라 `pending_answer` 다**(조회 계층이 답 대기와
+    같은 규칙으로 채운다). 2026-08-15 에 답 대기가 미탐 일부까지 묻게 되자, 화면이
+    `notified` 만 보던 탓에 **목록은 "안 물어봄"이라 적고 답하기 버튼은 그 사건으로
+    데려가는** 상태가 됐다.
     """
     from argus.desktop.pages.incidents import _list_row
 
     base = {"ts_start": 1000.0, "ts_end": 1100.0, "severity": "warning", "title": "t"}
-    assert _list_row({**base, "id": 1, "notified": 1})["answer"] == "?"
-    assert _list_row({**base, "id": 2, "notified": 0})["answer"] == ""
+    assert _list_row({**base, "id": 1, "notified": 1, "pending_answer": True})["answer"] == "?"
+    assert _list_row({**base, "id": 2, "notified": 0, "pending_answer": False})["answer"] == ""
+    # **미탐이라도 묻는 대상이면 물음표다.** 이 줄이 없으면 화면이 `notified` 로
+    # 되돌아가도 통과한다 — 되돌아간 상태가 바로 오늘의 버그였다.
+    assert _list_row({**base, "id": 5, "notified": 0, "pending_answer": True})["answer"] == "?", (
+        "답 대기에 있는 미탐을 '안 물어봄'으로 그렸다"
+    )
+    # 답 대기가 아닌 발송 알림(창 밖으로 나간 것)은 빈칸이다.
+    assert _list_row({**base, "id": 6, "notified": 1, "pending_answer": False})["answer"] == ""
     assert _list_row({**base, "id": 3, "notified": 1, "user_label": "normal"})["answer"] == "정상"
     assert _list_row({**base, "id": 4, "notified": 1, "user_label": "real"})["answer"] == "비정상"
+
+
+def test_incident_list_shows_whether_a_notification_went_out() -> None:
+    """**등급과 알림 발송은 다르다.** 목록에 등급만 있으면 "어느 것이 나를 방해했나"를
+    알 수 없어 상세를 하나씩 열어 봐야 한다(2026-08-15 에 사용자가 지적한 자리).
+
+    `경고` 인데 안 나간 것이 있고(억제·상위 사건에 물림), `정보` 라 안 나간 것도 있다.
+    **두 경우를 함께 재야 한다** — 등급만으로 유도하면 이 열은 등급의 복사본이 된다.
+    """
+    from argus.desktop.pages.incidents import _list_row
+
+    base = {"ts_start": 1000.0, "ts_end": 1100.0, "title": "t"}
+    sent = _list_row({**base, "id": 1, "severity": "warning", "notified": 1})
+    suppressed = _list_row({**base, "id": 2, "severity": "warning", "notified": 0})
+    quiet = _list_row({**base, "id": 3, "severity": "info", "notified": 0})
+
+    assert sent["notified_mark"], "발송된 알림에 표시가 없다"
+    assert not suppressed["notified_mark"], "경고인데 안 나간 것을 발송으로 그렸다"
+    assert not quiet["notified_mark"]
+    assert suppressed["severity_ko"] == sent["severity_ko"] == "경고", (
+        "같은 등급 두 건으로 재야 이 열이 등급의 복사본이 아님을 알 수 있다"
+    )
 
 
 def test_incident_tile_asks_instead_of_reporting_nothing(qapp) -> None:
@@ -1683,7 +1717,8 @@ def test_incident_list_marks_injection_instead_of_asking(qapp) -> None:
     """
     from argus.desktop.pages.incidents import _list_row
 
-    base = {"ts_start": 1000.0, "ts_end": 1100.0, "severity": "warning", "title": "t"}
+    base = {"ts_start": 1000.0, "ts_end": 1100.0, "severity": "warning", "title": "t",
+            "pending_answer": True}
     assert _list_row({**base, "id": 1, "notified": 1, "during_injection": 1})["answer"] == "주입"
     assert _list_row({**base, "id": 2, "notified": 1, "during_injection": 0})["answer"] == "?"
 

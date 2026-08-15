@@ -1449,6 +1449,37 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "answer_mark_follows_pending",
+        "목록의 답 표시가 답 대기와 같은 규칙을 쓴다",
+        (
+            (
+                "argus/desktop/pages/incidents.py",
+                '    return "?" if incident.get("pending_answer") else ""\n',
+                '    return "?" if incident.get("notified") else ""'
+                "  # MUTANT: 화면이 규칙을 따로 갖는다\n",
+            ),
+        ),
+        note=(
+            "답 대기가 미탐 일부를 묻게 되자(2026-08-15) 목록은 '안 물어봄'이라 적고 "
+            "답하기 버튼은 그 사건으로 데려가는 상태가 됐다"
+        ),
+    ),
+    Mutant(
+        "list_shows_notification_sent",
+        "목록에서 알림 발송 여부가 보인다 (등급과 다르다)",
+        (
+            (
+                "argus/desktop/pages/incidents.py",
+                '        "notified_mark": "●" if incident.get("notified") else "",\n',
+                '        "notified_mark": "",  # MUTANT: 발송 여부를 안 보여준다\n',
+            ),
+        ),
+        note=(
+            "`경고` 인데 안 나간 것이 있고(억제·상위 사건에 물림) `정보` 라 안 나간 것도 "
+            "있다. 목록에 등급만 있으면 상세를 하나씩 열어 봐야 한다"
+        ),
+    ),
+    Mutant(
         "question_follows_notified",
         "알림이 안 나간 사건에 '이 알림이 쓸모 있었나'를 묻지 않는다",
         (
