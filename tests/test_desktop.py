@@ -2081,3 +2081,49 @@ def test_chart_gap_uses_median_not_mean(qapp) -> None:
     assert any(math.isnan(v) for v in ys), (
         f"5분 주기의 20분 공백을 놓쳤다 — 평균으로 재고 있다: {ys}"
     )
+
+
+def test_pollers_stop_without_waiting_for_the_next_tick(qapp, monkeypatch) -> None:
+    """**창을 닫을 때 남은 폴링 주기를 기다리지 않는다.**
+
+    `msleep` 은 통째로 잠들어 취소 플래그를 못 본다. 그래서 `stop()` 이 "다음 틱"
+    까지 걸리고, 상태 한 줄 폴러는 5초 주기라 최악 5초다 — 2026-08-16 실측에서
+    창 종료 3.99초 중 3.01초가 여기였다(나머지 0.98초가 실시간 폴러).
+
+    **주기를 길게(30초) 잡는 것이 이 테스트의 핵심이다.** 기본 주기로 재면 안 고친
+    코드도 1~5초 안에 끝나 문턱을 어디에 두든 애매해진다. 30초면 안 고친 코드는
+    `wait(3000)` 상한에 걸려 3초, 고친 코드는 즉시라 확실히 갈린다.
+
+    **둘을 함께 잰다** — 한쪽만 재면 다른 쪽을 `msleep` 으로 되돌려도 통과한다.
+    """
+    import time
+
+    from argus.desktop.app import _HealthPoller
+    from argus.desktop.pages import realtime as realtime_mod
+    from argus.desktop.pages.realtime import RealtimePoller
+
+    # DB 를 건드리지 않는다 — 재려는 것은 조회 속도가 아니라 **대기에서 깨는 속도**다.
+    monkeypatch.setattr("argus.desktop.app.data.health", lambda: {})
+    monkeypatch.setattr(realtime_mod.data, "recent_metrics", lambda **kw: [])
+    monkeypatch.setattr(realtime_mod.data, "recent_gpu", lambda **kw: [])
+    monkeypatch.setattr(realtime_mod.data, "latest_metrics", lambda: None)
+    monkeypatch.setattr(realtime_mod.data, "latest_gpu", lambda: [])
+
+    for name, poller in (("_HealthPoller", _HealthPoller(interval_s=30.0)),
+                         ("RealtimePoller", RealtimePoller(interval_s=30.0))):
+        poller.start()
+        # 첫 회차가 돌아 대기에 들어갈 때까지 준다.
+        deadline = time.perf_counter() + 3.0
+        while poller.isRunning() and time.perf_counter() < deadline:
+            qapp.processEvents()
+            time.sleep(0.02)
+
+        started = time.perf_counter()
+        poller.stop()
+        took = time.perf_counter() - started
+
+        assert not poller.isRunning(), f"{name} 이 멈추지 않았다"
+        assert took < 1.0, (
+            f"{name}.stop() 이 {took:.2f}초 걸렸다 — 남은 주기를 기다리고 있다"
+            " (msleep 은 취소 플래그를 못 본다)"
+        )

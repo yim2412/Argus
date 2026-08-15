@@ -80,10 +80,15 @@ def apply_theme(app: QtWidgets.QApplication) -> None:
     )
 
 
-# HD(1280x720). 사용자가 정한 기본 크기다 — **이 크기에 다 들어간다는 뜻이 아니다.**
-# 원래 값(1420x960)이 "자기 상태 페이지가 스크롤 없이 다 보이는 크기"였으므로 그 페이지는
-# 이제 아래쪽이 잘린다. 창은 자유롭게 키울 수 있으니(고정이 아니라 기본값) 잘리면 늘린다.
-_WANTED_W, _WANTED_H = 1280, 720
+# 사용자가 정한 기본 크기다(2026-08-16, 그전에는 1280x720) — **이 크기에 다 들어간다는
+# 뜻이 아니다.** 원래 값(1420x960)이 "자기 상태 페이지가 스크롤 없이 다 보이는 크기"
+# 였으므로 그 페이지는 아래쪽이 잘릴 수 있다. 창은 자유롭게 키울 수 있으니(고정이 아니라
+# 기본값) 잘리면 늘린다.
+#
+# **이 값은 저장된 크기가 없을 때만 쓰인다**(`_initial_size`). 이미 쓰던 PC 에서는
+# `%APPDATA%\Argus\window.json` 이 이기므로, 기본값을 바꿔도 그 파일을 지우기 전에는
+# 화면이 안 바뀐다.
+_WANTED_W, _WANTED_H = 1600, 900
 
 
 #: 이보다 작게 저장된 창은 무시한다. 최소화·복원 중에 잡힌 값이거나 파일이 깨진
@@ -202,6 +207,11 @@ class _HealthPoller(QtCore.QThread):
         super().__init__()
         self._interval_s = interval_s
         self._stop = False
+        # **`msleep` 이 아니라 깨울 수 있는 대기다.** `msleep` 은 통째로 잠들어 취소
+        # 플래그를 못 보므로, 창을 닫으면 남은 주기만큼 기다린 뒤에야 종료된다 —
+        # 5초 주기라 최악 5초다. 2026-08-16 실측에서 종료 3.99초 중 3.01초가 여기였다.
+        # 다른 페이지 폴러(`processes`·`usage`·`report`)는 이미 이 방식이고 0.00초다.
+        self._wake = QtCore.QSemaphore(0)
 
     def run(self) -> None:
         while not self._stop:
@@ -211,10 +221,11 @@ class _HealthPoller(QtCore.QThread):
                 # DB 가 아직 없거나 잠깐 잠겼을 뿐이다. 맨 윗줄 하나 때문에 창이
                 # 죽으면 안 된다 — 다음 주기에 다시 묻는다.
                 pass
-            self.msleep(int(self._interval_s * 1000))
+            self._wake.tryAcquire(1, int(self._interval_s * 1000))
 
     def stop(self) -> None:
         self._stop = True
+        self._wake.release()  # 남은 주기를 기다리지 않고 곧바로 깨운다
         self.wait(3000)
 
 

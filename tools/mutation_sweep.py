@@ -1449,6 +1449,35 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        "health_poller_wakes_on_stop",
+        "창을 닫을 때 상태 폴러가 남은 주기를 기다리지 않는다",
+        (
+            (
+                "argus/desktop/app.py",
+                "            self._wake.tryAcquire(1, int(self._interval_s * 1000))\n",
+                "            self.msleep(int(self._interval_s * 1000))"
+                "  # MUTANT: 못 깨우는 대기\n",
+            ),
+        ),
+        note=(
+            "2026-08-16 실측 — 창 종료 3.99초 중 3.01초가 이 폴러였다(5초 주기라 최악 5초). "
+            "msleep 은 통째로 잠들어 취소 플래그를 못 본다"
+        ),
+    ),
+    Mutant(
+        "realtime_poller_wakes_on_stop",
+        "창을 닫을 때 실시간 폴러가 남은 주기를 기다리지 않는다",
+        (
+            (
+                "argus/desktop/pages/realtime.py",
+                "            self._wake.tryAcquire(1, int(self.interval_s * 1000))\n",
+                "            self.msleep(int(self.interval_s * 1000))"
+                "  # MUTANT: 못 깨우는 대기\n",
+            ),
+        ),
+        note="같은 실측의 나머지 0.98초. 폴러 둘을 따로 재야 한쪽만 되돌린 것이 잡힌다",
+    ),
+    Mutant(
         "chart_breaks_observation_gaps",
         "관측이 없던 구간을 선으로 잇지 않는다",
         (

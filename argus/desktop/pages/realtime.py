@@ -55,6 +55,9 @@ class RealtimePoller(QtCore.QThread):
         super().__init__()
         self.interval_s = interval_s
         self._stop = False
+        # `msleep` 이 아닌 이유는 `app._HealthPoller` 와 같다 — 통째로 잠들면 취소
+        # 플래그를 못 봐서 창을 닫을 때 남은 주기만큼 기다린다(2026-08-16 실측 0.98초).
+        self._wake = QtCore.QSemaphore(0)
 
     def run(self) -> None:
         try:
@@ -75,10 +78,11 @@ class RealtimePoller(QtCore.QThread):
                 payload = {"metrics": None, "gpu": []}
             if payload["metrics"]:
                 self.sampled.emit(payload)
-            self.msleep(int(self.interval_s * 1000))
+            self._wake.tryAcquire(1, int(self.interval_s * 1000))
 
     def stop(self) -> None:
         self._stop = True
+        self._wake.release()  # 남은 주기를 기다리지 않고 곧바로 깨운다
         self.wait(3000)
 
 
