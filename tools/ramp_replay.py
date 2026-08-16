@@ -76,6 +76,21 @@ SAW_RISE_FRAC = 0.85
 SAW_DROP = 0.30          # 주기 끝에 되돌리는 양 (그 시점 램프값 대비)
 
 
+def _quadratic(frac: float) -> float:
+    """실제 주입기의 누적 모양. **선형이 아니다.**
+
+    `fault_injector` 의 `--ramp` 는 `intensity` 를 0→1 로 선형 증가시키고 시나리오는
+    `rate * intensity * dt` 만큼 붙잡는다. 그래서 **누적은 `t²` 에 비례**한다 —
+    초반은 훨씬 느리고 후반이 가파르다.
+
+    2026-08-16 실주입에서 이 차이가 드러났다. 선형을 가정한 리플레이는 근접도를
+    -1.85%p 로 예측했는데 실제는 +0.35%p 로 문턱을 스쳤다(발화는 `for: 90s` 가
+    막았다). 실측으로 모델을 맞췄다 — `t=735s` 에서 예측 602MB vs 실제 592MB,
+    오차 1.6%.
+    """
+    return frac * frac
+
+
 def _sawtooth(frac: float, elapsed_s: float) -> float:
     """우상향 램프에 톱니를 얹는다. 총량은 유지하고 **단조성만** 깨뜨린다."""
     phase = (elapsed_s % SAW_PERIOD_S) / SAW_PERIOD_S
@@ -162,7 +177,8 @@ def _gap_pp(engine, obs: Observation) -> float | None:
 
 def run_one(observations: list[Observation], minutes: float, delta_pp: float,
             warm_s: float, detector: str, *, with_process: bool = False,
-            spread: int = 1, sawtooth: bool = False) -> Outcome:
+            spread: int = 1, sawtooth: bool = False,
+            quadratic: bool = False) -> Outcome:
     """한 가지 램프 속도로 제품 탐지기를 돌린다.
 
     `per_program` 오버라이드는 호출자가 `ARGUS_DETECTION__PER_PROGRAM` 으로 건다.
@@ -195,6 +211,8 @@ def run_one(observations: list[Observation], minutes: float, delta_pp: float,
         else:
             elapsed = obs.ts - ramp_start
             frac = min(1.0, elapsed / (minutes * 60.0))
+            if quadratic:
+                frac = _quadratic(frac)
             if sawtooth:
                 frac = _sawtooth(frac, elapsed)
             fed = _apply_ramp(obs, frac, delta_pp,
@@ -284,6 +302,9 @@ def main() -> int:
     parser.add_argument("--spread", type=int, default=1, metavar="N",
                         help="같은 총량을 N개 프로세스로 나눈다. `procleak` 의 "
                              "min_delta(512MB)를 노린다 (기본: 1)")
+    parser.add_argument("--quadratic", action="store_true",
+                        help="누적을 t² 로 — **실제 주입기의 모양**이다. 예측을 "
+                             "실주입과 맞추려면 켠다 (2026-08-16 실측)")
     parser.add_argument("--sawtooth", action="store_true",
                         help="우상향하되 주기마다 되돌린다. `procleak` 의 "
                              "monotonic_ratio(0.9)를 노린다")
@@ -328,6 +349,8 @@ def main() -> int:
     print(f"관측 {len(observations)}개 · 실제 길이 {have / 60:.1f}분 "
           f"(워밍 {args.warm_minutes:.0f}분 + 램프 최대 {max(lengths):.0f}분)")
     shape = []
+    if args.quadratic:
+        shape.append("2차 누적 (실주입 모양)")
     if args.spread > 1:
         shape.append(f"{args.spread}개 프로세스로 분산 (각 "
                      f"{args.delta / args.spread:.2f}%p)")
@@ -356,7 +379,8 @@ def main() -> int:
 
         outcomes = [run_one(observations, m, args.delta, warm_s, args.detector,
                             with_process=args.with_process,
-                            spread=args.spread, sawtooth=args.sawtooth)
+                            spread=args.spread, sawtooth=args.sawtooth,
+                            quadratic=args.quadratic)
                     for m in sorted(lengths)]
 
         print(f"── {label}")
