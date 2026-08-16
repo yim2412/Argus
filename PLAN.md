@@ -1202,6 +1202,12 @@ done
   `SELECT COUNT(*) FROM fault_injections WHERE ts_end IS NULL` 이 0 이어야 한다.
   `Stop-Process` 는 Windows 에서 강제 종료라 `finally` 를 돌리지 않으므로 라벨을 닫지 못한다.
 
+  **PowerShell `Start-Job` 으로 주입을 띄우지 않는다** (2026-08-16 에 실제로 당했다).
+  Job 은 그 PowerShell 세션에 매여 있어 **세션이 끝나면 같이 죽고**, 그때도 `finally`
+  가 돌지 못해 라벨이 열린 채 남는다. 같은 이유로 `Wait-Job`/`Receive-Job` 도 다음
+  호출에서 "job not found" 가 된다 — 셸 상태는 호출 간 유지되지 않는다.
+  **주입기는 포그라운드로 부른다.** 위 배치 예시가 그렇게 돼 있는 이유가 이것이다.
+
 **75분을 태우기 전에 — 실패를 일찍 잡는 두 가지.** 07-30 오전에 5회 중 3회가 미탐이었는데
 그 사실을 75분이 지나서야 알았다. 실패는 1회차 2분 시점에 이미 관측 가능했다.
 

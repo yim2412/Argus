@@ -301,6 +301,125 @@ class MemoryLeak(Scenario):
         return "mem_percent", 3.0
 
 
+_LEAK_TICK_S = 0.2
+
+
+def _leak_worker(cap_mb: float, rate_mb_s: float, intensity: Any, stop: Any, held: Any) -> None:
+    """자식 하나. 자기 몫만큼만 메모리를 붙잡는다.
+
+    **모듈 최상위 함수여야 한다** — Windows 의 spawn 은 워커를 만들 때 이 모듈을
+    다시 import 하고 함수를 이름으로 찾는다(`_burn_worker` 와 같은 이유).
+
+    부모가 아니라 자식이 들고 있는 것이 요점이다. 부모 한 프로세스가 전부 들면
+    `procleak` 이 그 한 시계열을 보고 잡는다 — 이 시나리오는 **같은 총량을 여러
+    PID 로 흩어** 프로세스별 문턱(`min_delta=512MB`) 아래로 떨어뜨리는 것이 목적이다.
+    """
+    blocks: list[bytearray] = []
+    debt = 0.0
+    last = time.perf_counter()
+    while not stop.value:
+        now = time.perf_counter()
+        dt = now - last
+        last = now
+        if held.value < cap_mb:
+            debt += rate_mb_s * intensity.value * dt
+            chunk = int(min(debt, cap_mb - held.value))
+            if chunk > 0:
+                debt -= chunk
+                block = bytearray(chunk * 1024 * 1024)
+                # 페이지를 실제로 건드려야 RSS 가 오른다 (MemoryLeak 과 같은 이유).
+                for offset in range(0, len(block), 4096):
+                    block[offset] = 1
+                blocks.append(block)
+                held.value += chunk
+        time.sleep(_LEAK_TICK_S)
+    blocks.clear()
+
+
+class MemoryLeakSpread(Scenario):
+    """같은 총량을 **여러 프로세스로 나눠** 붙잡는다.
+
+    `MemoryLeak` 과 총량·속도가 같고 **PID 만 흩어진다.** 2026-08-16 리플레이에서
+    이 형태가 시스템 룰과 `procleak` **양쪽 모두를 통과**하는 것을 확인했다:
+    총 11.9~17GB 를 8개로 나누면 60분 동안 아무 신호도 나지 않는데, 같은 양을
+    한 프로세스로 넣으면 `procleak` 이 5~9분에 잡는다.
+
+    `procleak` 의 추적 키가 `(pid, name, metric)` 이라 PID 가 다르면 별개 시계열이
+    되고, 각자는 `min_delta=512MB` 를 못 넘는다. **총량은 그대로라 사용자는 똑같이
+    느낀다** — 그래서 이것이 Phase 5·7 의 "이길 상대"다.
+
+    크기를 기본값에서 바꾸지 않는 것이 좋다. `--ramp --duration 3600` 이 이 PC 에서
+    만드는 `+18.2%p` 가 사각지대 한가운데이고, `+30%p` 를 넘으면 시스템 룰이 잡는다.
+    """
+
+    name = "memory_leak_spread"
+    description = "같은 총량을 N개 프로세스로 나눠 누수 (프로세스별 문턱 회피)"
+
+    def __init__(self, limits: Limits, processes: int = 8) -> None:
+        super().__init__(limits)
+        self.processes = max(2, processes)      # 1개면 MemoryLeak 과 같아 의미가 없다
+        # 총 속도는 `MemoryLeak` 과 같게 잡고 자식 수로 나눈다. 그래야 "분산했다"는
+        # 것 말고는 아무것도 다르지 않은 대조가 된다.
+        self.rate_mb_s = limits.memory_mb / max(1.0, limits.duration_s * 0.8) * 2.0
+        self._procs: list[multiprocessing.Process] = []
+        self._held: list[Any] = []
+        self._intensity: Any = None
+        self._stop: Any = None
+
+    @property
+    def _cap_each_mb(self) -> float:
+        return self.limits.memory_mb / self.processes
+
+    def setup(self) -> None:
+        self._intensity = multiprocessing.Value("d", 0.0)
+        self._stop = multiprocessing.Value("b", 0)
+        for i in range(self.processes):
+            held = multiprocessing.Value("d", 0.0)
+            p = multiprocessing.Process(
+                target=_leak_worker,
+                args=(self._cap_each_mb, self.rate_mb_s / self.processes,
+                      self._intensity, self._stop, held),
+                name=f"leak-{i}", daemon=True,
+            )
+            p.start()
+            self._procs.append(p)
+            self._held.append(held)
+
+    def step(self, intensity: float, dt: float) -> None:
+        if self._intensity is not None:
+            self._intensity.value = intensity
+
+    def cleanup(self) -> None:
+        if self._stop is not None:
+            self._stop.value = 1
+        for p in self._procs:
+            p.join(timeout=3.0)
+            if p.is_alive():
+                # 상한을 넘겨 메모리를 든 프로세스를 남기면 안 된다. 실제 PC 다.
+                p.terminate()
+                p.join(timeout=2.0)
+        self._procs.clear()
+        self._held.clear()
+
+    def status(self) -> str:
+        total = sum(h.value for h in self._held)
+        alive = sum(1 for p in self._procs if p.is_alive())
+        return (f"{alive}/{len(self._procs)}프로세스 · 합계 {total:.0f}MB "
+                f"(각 {total / max(1, len(self._held)):.0f}MB / 상한 {self._cap_each_mb:.0f}MB)")
+
+    def params(self) -> dict[str, Any]:
+        return {
+            "processes": self.processes,
+            "cap_mb": self.limits.memory_mb,
+            "cap_each_mb": round(self._cap_each_mb, 1),
+            "rate_mb_s": round(self.rate_mb_s, 2),
+        }
+
+    def expected_effect(self) -> tuple[str, float]:
+        # 총량이 `MemoryLeak` 과 같으므로 시스템 지표에서 기대하는 변화도 같다.
+        return "mem_percent", 3.0
+
+
 _BURN_SLICE_S = 0.05
 
 
@@ -597,7 +716,8 @@ class ManualLabel(Scenario):
 
 
 SCENARIOS: dict[str, type[Scenario]] = {
-    s.name: s for s in (MemoryLeak, CpuSpin, DiskThrash, HandleLeak, ManualLabel)
+    s.name: s
+    for s in (MemoryLeak, MemoryLeakSpread, CpuSpin, DiskThrash, HandleLeak, ManualLabel)
 }
 
 
@@ -885,6 +1005,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--disk-load", type=float, default=1.2,
                         help="실측 순차쓰기 대비 목표 속도 배수 (기본 1.2 — 장치가 못 따라오게)")
     parser.add_argument("--handles", type=int, default=2000, help="핸들 시나리오 상한")
+    parser.add_argument("--spread-procs", type=int, default=8, metavar="N",
+                        help="memory_leak_spread 의 자식 수. 총량은 그대로 두고 "
+                             "N개로 나눈다 (기본: 8)")
     # 기본 20/s 는 상한까지 2분이면 닿아 뒤가 평평해진다. 그 모양은 실제 누수와 다르고
     # (진짜 누수는 시간 단위로 완만히 오른다), 평평한 구간이 길면 "앞 구간 대비 몇 배"로
     # 판정하는 쪽에서 배수가 오히려 낮아진다. 완만한 누수를 만들려면 이걸 낮춘다.
@@ -911,6 +1034,8 @@ def main(argv: list[str] | None = None) -> int:
         scenario = scenario_class(limits, label=args.label)
     elif scenario_class is HandleLeak:
         scenario = scenario_class(limits, rate_per_s=args.handle_rate)
+    elif scenario_class is MemoryLeakSpread:
+        scenario = scenario_class(limits, processes=args.spread_procs)
     else:
         scenario = scenario_class(limits)
     injector = Injector(
