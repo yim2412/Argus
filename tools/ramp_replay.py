@@ -68,6 +68,22 @@ RAMP_PROC_PID = 999_999
 # `mem_total_mb` 가 있으면 그쪽을 쓰고, 없을 때만 이 값으로 떨어진다.
 FALLBACK_TOTAL_MB = 65_536.0
 
+# 톱니 램프 — `procleak` 의 `monotonic_ratio=0.9`(줄지 않은 표본 비율)를 노린다.
+# 주기의 앞 85% 는 순증가, 뒤 15% 에서 되돌린다. 비감소 비율이 대략 0.85 로 떨어져
+# 문턱 바로 아래에 놓인다. 캐시가 자랐다 비워지며 우상향하는 형태를 흉내 낸 것이다.
+SAW_PERIOD_S = 300.0
+SAW_RISE_FRAC = 0.85
+SAW_DROP = 0.30          # 주기 끝에 되돌리는 양 (그 시점 램프값 대비)
+
+
+def _sawtooth(frac: float, elapsed_s: float) -> float:
+    """우상향 램프에 톱니를 얹는다. 총량은 유지하고 **단조성만** 깨뜨린다."""
+    phase = (elapsed_s % SAW_PERIOD_S) / SAW_PERIOD_S
+    if phase <= SAW_RISE_FRAC:
+        return frac
+    fallen = (phase - SAW_RISE_FRAC) / (1.0 - SAW_RISE_FRAC)
+    return max(0.0, frac * (1.0 - SAW_DROP * fallen))
+
 
 @dataclass
 class Outcome:
@@ -81,7 +97,7 @@ class Outcome:
 
 
 def _apply_ramp(obs: Observation, frac: float, delta_pp: float,
-                *, with_process: bool = False) -> Observation:
+                *, with_process: bool = False, spread: int = 1) -> Observation:
     """`mem_percent` 를 선형으로 끌어올린 사본. 원본은 건드리지 않는다.
 
     `with_process` 면 그 증가분을 **가진 프로세스**도 같이 넣는다. 실제 주입에서는
@@ -109,10 +125,18 @@ def _apply_ramp(obs: Observation, frac: float, delta_pp: float,
     if with_process:
         # 주입기는 별도 프로세스로 뜬다. 파이썬 인터프리터 자체가 20MB 남짓이라
         # 0 에서 시작하지 않는다 — `judge()` 의 배수(`last/first`)가 그 값에 민감하다.
-        leaker = ProcessView(pid=RAMP_PROC_PID, name=RAMP_PROC_NAME,
-                             cpu_percent=1.0, rss_mb=20.0 + added_mb, handles=200,
-                             threads=4, foreground=False)
-        processes = list(obs.processes) + [leaker]
+        #
+        # `spread > 1` 이면 같은 총량을 여러 프로세스로 나눈다. `procleak` 의 추적
+        # 키는 `(pid, name, metric)` 이라 **PID 가 다르면 별개 시계열**이고, 각자는
+        # `min_delta=512MB` 를 못 넘게 된다. 총량은 그대로다.
+        share = added_mb / max(1, spread)
+        leakers = [
+            ProcessView(pid=RAMP_PROC_PID + i, name=RAMP_PROC_NAME,
+                        cpu_percent=1.0, rss_mb=20.0 + share, handles=200,
+                        threads=4, foreground=False)
+            for i in range(max(1, spread))
+        ]
+        processes = list(obs.processes) + leakers
 
     return replace(obs, metrics=metrics, processes=processes)
 
@@ -137,7 +161,8 @@ def _gap_pp(engine, obs: Observation) -> float | None:
 
 
 def run_one(observations: list[Observation], minutes: float, delta_pp: float,
-            warm_s: float, detector: str, *, with_process: bool = False) -> Outcome:
+            warm_s: float, detector: str, *, with_process: bool = False,
+            spread: int = 1, sawtooth: bool = False) -> Outcome:
     """한 가지 램프 속도로 제품 탐지기를 돌린다.
 
     `per_program` 오버라이드는 호출자가 `ARGUS_DETECTION__PER_PROGRAM` 으로 건다.
@@ -168,8 +193,12 @@ def run_one(observations: list[Observation], minutes: float, delta_pp: float,
         if obs.ts < ramp_start:
             fed = obs                                   # 워밍 구간 — 원본 그대로
         else:
-            frac = min(1.0, (obs.ts - ramp_start) / (minutes * 60.0))
-            fed = _apply_ramp(obs, frac, delta_pp, with_process=with_process)
+            elapsed = obs.ts - ramp_start
+            frac = min(1.0, elapsed / (minutes * 60.0))
+            if sawtooth:
+                frac = _sawtooth(frac, elapsed)
+            fed = _apply_ramp(obs, frac, delta_pp,
+                              with_process=with_process, spread=spread)
             ramp_ticks += 1
 
         detections = []
@@ -252,6 +281,12 @@ def main() -> int:
                         help="램프를 시스템 지표뿐 아니라 **프로세스 RSS** 로도 넣는다. "
                              "`procleak` 을 함께 재려면 필요하다 "
                              "(`--detector rules,procleak`)")
+    parser.add_argument("--spread", type=int, default=1, metavar="N",
+                        help="같은 총량을 N개 프로세스로 나눈다. `procleak` 의 "
+                             "min_delta(512MB)를 노린다 (기본: 1)")
+    parser.add_argument("--sawtooth", action="store_true",
+                        help="우상향하되 주기마다 되돌린다. `procleak` 의 "
+                             "monotonic_ratio(0.9)를 노린다")
     parser.add_argument("--per-program", choices=("config", "on", "off", "both"),
                         default="both",
                         help="프로그램별 베이스라인. 이 PC 는 켜져 있고 배포 기본값은 "
@@ -292,7 +327,14 @@ def main() -> int:
     have = observations[-1].ts - observations[0].ts
     print(f"관측 {len(observations)}개 · 실제 길이 {have / 60:.1f}분 "
           f"(워밍 {args.warm_minutes:.0f}분 + 램프 최대 {max(lengths):.0f}분)")
-    print(f"램프 +{args.delta}%p · 탐지기 {args.detector!r} (설정 배선 그대로)")
+    shape = []
+    if args.spread > 1:
+        shape.append(f"{args.spread}개 프로세스로 분산 (각 "
+                     f"{args.delta / args.spread:.2f}%p)")
+    if args.sawtooth:
+        shape.append(f"톱니 (주기 {SAW_PERIOD_S:.0f}s · 되돌림 {SAW_DROP:.0%})")
+    print(f"램프 +{args.delta}%p · 탐지기 {args.detector!r} (설정 배선 그대로)"
+          + (f"\n모양: {' + '.join(shape)}" if shape else ""))
     print()
 
     modes: list[tuple[str, str | None]]
@@ -313,7 +355,8 @@ def main() -> int:
             os.environ["ARGUS_DETECTION__PER_PROGRAM"] = override
 
         outcomes = [run_one(observations, m, args.delta, warm_s, args.detector,
-                            with_process=args.with_process)
+                            with_process=args.with_process,
+                            spread=args.spread, sawtooth=args.sawtooth)
                     for m in sorted(lengths)]
 
         print(f"── {label}")
