@@ -34,7 +34,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from argus.detection.base import Observation  # noqa: E402
+from argus.detection.base import Observation, ProcessView  # noqa: E402
 from argus.detection.registry import build  # noqa: E402
 from argus.eval.replay import Replayer, Window  # noqa: E402
 from argus.storage.hot import Database  # noqa: E402
@@ -57,6 +57,17 @@ TARGET_METRIC = "mem_percent"
 # 성공으로 세면 이 도구는 **정확히 반대 결론**을 낸다.
 TARGET_RULE = "메모리 이상 증가"
 
+# 램프를 **프로세스로도** 넣을 때 쓰는 이름/PID. 상주는 `rules,procleak` 둘을 돌리는데
+# `procleak` 은 `rss_mb` 를 본다(`procleak.py:52`). 시스템 지표에만 램프를 얹고
+# "룰이 못 잡는다"고 결론 내면, 실제 주입에서 procleak 이 잡아 버려 **Phase 7 이
+# 필요로 하는 미탐 라벨이 안 생긴다.** 그 구멍을 여기서 먼저 막는다.
+RAMP_PROC_NAME = "python.exe"
+RAMP_PROC_PID = 999_999
+
+# 전체 메모리(MB). 램프 %p 를 프로세스 RSS(MB)로 바꾸는 데 쓴다. 관측에
+# `mem_total_mb` 가 있으면 그쪽을 쓰고, 없을 때만 이 값으로 떨어진다.
+FALLBACK_TOTAL_MB = 65_536.0
+
 
 @dataclass
 class Outcome:
@@ -69,8 +80,14 @@ class Outcome:
     ramp_ticks: int
 
 
-def _apply_ramp(obs: Observation, frac: float, delta_pp: float) -> Observation:
-    """`mem_percent` 를 선형으로 끌어올린 사본. 원본은 건드리지 않는다."""
+def _apply_ramp(obs: Observation, frac: float, delta_pp: float,
+                *, with_process: bool = False) -> Observation:
+    """`mem_percent` 를 선형으로 끌어올린 사본. 원본은 건드리지 않는다.
+
+    `with_process` 면 그 증가분을 **가진 프로세스**도 같이 넣는다. 실제 주입에서는
+    누군가가 그 메모리를 실제로 들고 있으므로, 넣지 않으면 `procleak` 에게는
+    아무 일도 일어나지 않은 것과 같다.
+    """
     metrics = dict(obs.metrics)
     base = metrics.get(TARGET_METRIC)
     if not isinstance(base, (int, float)):
@@ -80,12 +97,24 @@ def _apply_ramp(obs: Observation, frac: float, delta_pp: float) -> Observation:
 
     # 판정에 쓰이지는 않지만(explain 전용) 같이 움직여야 앞뒤가 맞는다. 사용률이
     # 올랐는데 여유 메모리가 그대로면 나중에 이 출력을 보는 사람이 헷갈린다.
-    avail = metrics.get("mem_avail_mb")
     total = metrics.get("mem_total_mb")
-    if isinstance(avail, (int, float)) and isinstance(total, (int, float)):
-        metrics["mem_avail_mb"] = max(0.0, float(avail) - float(total) * added / 100.0)
+    total_mb = float(total) if isinstance(total, (int, float)) else FALLBACK_TOTAL_MB
+    added_mb = total_mb * added / 100.0
 
-    return replace(obs, metrics=metrics)
+    avail = metrics.get("mem_avail_mb")
+    if isinstance(avail, (int, float)):
+        metrics["mem_avail_mb"] = max(0.0, float(avail) - added_mb)
+
+    processes = obs.processes
+    if with_process:
+        # 주입기는 별도 프로세스로 뜬다. 파이썬 인터프리터 자체가 20MB 남짓이라
+        # 0 에서 시작하지 않는다 — `judge()` 의 배수(`last/first`)가 그 값에 민감하다.
+        leaker = ProcessView(pid=RAMP_PROC_PID, name=RAMP_PROC_NAME,
+                             cpu_percent=1.0, rss_mb=20.0 + added_mb, handles=200,
+                             threads=4, foreground=False)
+        processes = list(obs.processes) + [leaker]
+
+    return replace(obs, metrics=metrics, processes=processes)
 
 
 def _gap_pp(engine, obs: Observation) -> float | None:
@@ -108,15 +137,22 @@ def _gap_pp(engine, obs: Observation) -> float | None:
 
 
 def run_one(observations: list[Observation], minutes: float, delta_pp: float,
-            warm_s: float, detector: str) -> Outcome:
+            warm_s: float, detector: str, *, with_process: bool = False) -> Outcome:
     """한 가지 램프 속도로 제품 탐지기를 돌린다.
 
     `per_program` 오버라이드는 호출자가 `ARGUS_DETECTION__PER_PROGRAM` 으로 건다.
     `build()` 를 흉내 내 `RuleEngine` 을 직접 조립하면 배선이 두 벌이 되고, 그게
     2026-08-04 에 `detection.*` 가 통째로 무시되던 버그를 만든 형태다.
     """
-    engine = build(detector)
-    engine.reset()
+    # 상주는 `rules,procleak` 처럼 쉼표로 여러 개를 돌린다(`live.py`). 하나만 세우고
+    # 결론을 내면 나머지 탐지기가 잡는 것을 못 본다.
+    engines = []
+    for name in [n.strip() for n in detector.split(",") if n.strip()]:
+        eng = build(name)
+        eng.reset()
+        engines.append(eng)
+    # 근접도 진단은 베이스라인을 가진 룰 엔진 기준이다.
+    engine = next((e for e in engines if hasattr(e, "baselines")), engines[0])
 
     start_ts = observations[0].ts
     ramp_start = start_ts + warm_s
@@ -133,10 +169,18 @@ def run_one(observations: list[Observation], minutes: float, delta_pp: float,
             fed = obs                                   # 워밍 구간 — 원본 그대로
         else:
             frac = min(1.0, (obs.ts - ramp_start) / (minutes * 60.0))
-            fed = _apply_ramp(obs, frac, delta_pp)
+            fed = _apply_ramp(obs, frac, delta_pp, with_process=with_process)
             ramp_ticks += 1
 
-        detection = engine.observe(fed)
+        detections = []
+        for eng in engines:
+            try:
+                got = eng.observe(fed)
+            except Exception as exc:
+                print(f"  [경고] {eng.name} 예외 — 건너뜀: {exc}")
+                continue
+            if got is not None:
+                detections.append(got)
 
         if obs.ts >= ramp_start:
             # 격차는 룰 엔진이 본 것과 같은 관측(`flatten_gpus` 후)이어야 하나,
@@ -146,7 +190,25 @@ def run_one(observations: list[Observation], minutes: float, delta_pp: float,
                 closest_pp = gap
                 closest_at_s = obs.ts - ramp_start
 
-        if detection is not None and obs.ts >= ramp_start:
+        for detection in detections if obs.ts >= ramp_start else []:
+            at = obs.ts - ramp_start
+            if detection.detector != "rules":
+                # 다른 탐지기(procleak 등)는 램프가 만든 것인지 이름으로 가린다.
+                # 그 판정 자체는 제품(`procleak.judge()`)이 이미 했다.
+                hit = detection.features.get("process")
+                metric = detection.features.get("metric")
+                label = f"{detection.detector}:{hit or '?'}({metric or '?'})"
+                if hit is None:
+                    # 이름을 못 읽으면 램프가 잡힌 건지 알 수 없다. **모르는 것을
+                    # '무관'으로 세면 정확히 반대 결론이 난다** — 키 이름이 바뀌면
+                    # 조용히 그렇게 되므로 여기서 시끄럽게 실패한다.
+                    raise RuntimeError(
+                        f"{detection.detector} 발화의 프로세스 이름을 못 읽었다 "
+                        f"(features 키: {sorted(detection.features)}) — 도구를 고칠 것"
+                    )
+                (fired if hit == RAMP_PROC_NAME else other).append((at, label))
+                continue
+
             # **`rule` 이 아니라 `rules` 를 본다.** 한 틱에 여러 룰이 발화하면
             # `rules.py:430` 이 심각도가 가장 높은 것 하나만 대표로 세운다.
             # 「메모리 이상 증가」는 `info` 라, 게임이 도는 구간에서는 「CPU 과부하」에
@@ -155,7 +217,6 @@ def run_one(observations: list[Observation], minutes: float, delta_pp: float,
             if not isinstance(names, (list, tuple)):
                 names = [detection.features.get("rule") or detection.detector]
             names = [str(n) for n in names]
-            at = obs.ts - ramp_start
             if TARGET_RULE in names:
                 fired.append((at, TARGET_RULE))
             for name in names:
@@ -187,6 +248,10 @@ def main() -> int:
                         help=f"램프 전 베이스라인 구간(분) (기본: {DEFAULT_WARM_MIN})")
     parser.add_argument("--detector", default="rules",
                         help="탐지기 이름 (기본: rules)")
+    parser.add_argument("--with-process", action="store_true",
+                        help="램프를 시스템 지표뿐 아니라 **프로세스 RSS** 로도 넣는다. "
+                             "`procleak` 을 함께 재려면 필요하다 "
+                             "(`--detector rules,procleak`)")
     parser.add_argument("--per-program", choices=("config", "on", "off", "both"),
                         default="both",
                         help="프로그램별 베이스라인. 이 PC 는 켜져 있고 배포 기본값은 "
@@ -247,7 +312,8 @@ def main() -> int:
         else:
             os.environ["ARGUS_DETECTION__PER_PROGRAM"] = override
 
-        outcomes = [run_one(observations, m, args.delta, warm_s, args.detector)
+        outcomes = [run_one(observations, m, args.delta, warm_s, args.detector,
+                            with_process=args.with_process)
                     for m in sorted(lengths)]
 
         print(f"── {label}")
