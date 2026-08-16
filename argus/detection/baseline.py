@@ -179,9 +179,14 @@ class BaselineSet:
     0.61 → 0.38 로 줄었다 — 같은 편차에 대해 z 가 약 1.6배가 된다는 뜻이다.
     (레짐을 리소스로 클러스터링해 나누는 방식은 오히려 나빴다. 근거는 `docs/DONE.md`)
 
-    **전역은 항상 함께 채운다.** 프로그램별 표본이 서지 않았거나 처음 보는
-    프로그램이면 전역으로 돌아간다 — **모르는 것을 막는 방향으로는 틀지 않는다**
-    (지문 억제와 같은 원칙).
+    **전역은 항상 함께 채운다.** 프로그램을 아예 모르면(포어그라운드 미상) 전역으로
+    돌아간다 — 조건부 판정 자체가 성립하지 않는 경우다.
+
+    **다만 "프로그램은 아는데 표본이 없는" 경우는 다르다.** 원래는 그때도 전역으로
+    물러났는데, 2026-08-17 실측에서 그 폴백이 오탐을 만들었다 — 게임이 막 떴을 때는
+    표본이 없고 **그 순간이 정확히 CPU 가 튀는 때**라, 유휴가 섞인 전역 문턱으로
+    판정됐다. `program_strict`(기본 켬)가 그 경우 판정을 보류한다. 아래
+    `stats_under_load` 가 같은 상황에서 이미 같은 결정을 하고 있다.
 
     조건부 축은 기본으로 꺼져 있다. 켜는 것은 탐지 동작을 바꾸는 일이라
     리플레이 before/after 로 채택을 판정한 뒤다.
@@ -194,6 +199,7 @@ class BaselineSet:
         min_samples: int = DEFAULT_MIN_SAMPLES,
         sigma_floors: Mapping[str, float] | None = None,
         per_program: bool = False,
+        program_strict: bool = True,
         program_metrics: Iterable[str] | None = None,
         program_window_s: float = 3600.0,
         program_min_interval_s: float = 5.0,
@@ -210,6 +216,8 @@ class BaselineSet:
         self._metrics: dict[str, MetricBaseline] = {}
 
         self.per_program = per_program
+        # 표본이 안 모인 프로그램에서 전역으로 물러나지 않는다(`stats` 주석 참조).
+        self.program_strict = program_strict
         # **룰이 상대 조건으로 쓰는 메트릭만** 나눈다. 전부 나누면 메모리가
         # 프로그램 수만큼 곱해지는데, 실측에서 그 대상은 6개뿐이었다(나머지는
         # 절대 조건이라 조건부화해도 쓰이지 않는다). 목록은 호출자가 룰에서 뽑아 준다.
@@ -313,15 +321,24 @@ class BaselineSet:
     def stats(self, metric: str, program: str | None = None) -> Stats | None:
         """프로그램별 기준이 섰으면 그것, 아니면 전역.
 
-        폴백을 조용히 하는 것이 의도다 — 처음 보는 프로그램에서 판정이 통째로
-        멈추면, 새 게임을 깔 때마다 몇 시간씩 탐지 공백이 생긴다.
+        **`program_strict` 면 표본이 안 모인 프로그램에서는 판정하지 않는다**(None).
+        폴백을 조용히 하는 것이 원래 의도였고 이유가 있었다 — 처음 보는 프로그램에서
+        판정이 멈추면 새 게임을 깔 때마다 탐지 공백이 생긴다. 그런데 그 폴백이 실제로
+        오탐을 만들었다: 게임이 막 떴을 때는 표본이 없는데 **그 순간이 정확히 CPU 가
+        튀는 때**라, 유휴가 섞인 전역 문턱으로 판정된다(`#188`, 2026-08-17).
+
+        바로 아래 `stats_under_load` 가 같은 상황에서 이미 같은 결정을 하고 있다.
+
+        **프로그램을 모를 때는 전역이 맞다.** 조건부 판정 자체가 성립하지 않는
+        경우와, 프로그램은 아는데 표본이 없는 경우는 다르다.
         """
-        if self.per_program and program:
+        if self.per_program and program and metric in self.program_metrics:
             bucket = self._by_program.get(program)
-            if bucket is not None:
-                baseline = bucket.get(metric)
-                if baseline is not None and baseline.ready:
-                    return baseline.stats()
+            baseline = bucket.get(metric) if bucket is not None else None
+            if baseline is not None and baseline.ready:
+                return baseline.stats()
+            if self.program_strict:
+                return None
         baseline = self._metrics.get(metric)
         return baseline.stats() if baseline is not None else None
 

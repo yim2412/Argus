@@ -256,6 +256,32 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        # 2026-08-17. 표본이 안 모인 프로그램에서 전역으로 물러나면 유휴가 섞인
+        # 낮은 문턱으로 판정된다 — `#188` 이 그렇게 +7.69%p 로 발화했다. 되돌리는
+        # 방향(폴백 부활)이 곧 그 오탐을 되살리는 것이라 그쪽으로 무력화한다.
+        "per_program_strict_logic",
+        "표본 없는 프로그램에서는 판정하지 않는다 — 판정 로직",
+        (
+            (
+                "argus/detection/baseline.py",
+                "            if self.program_strict:\n                return None\n",
+                "            if False:  # MUTANT: 전역 폴백 부활\n                return None\n",
+            ),
+        ),
+        note="되살아나는 것은 예외가 아니라 낮은 문턱이다 — 조용히 깨지는 쪽",
+    ),
+    Mutant(
+        "per_program_strict_wiring",
+        "표본 없는 프로그램에서는 판정하지 않는다 — config → 탐지기 배선",
+        (
+            (
+                "argus/detection/rules.py",
+                "            program_strict=cfg.per_program_strict,",
+                "            program_strict=True,  # MUTANT: 설정을 안 읽는다",
+            ),
+        ),
+    ),
+    Mutant(
         "procleak_drop_reset",
         "누수 급락 리셋 — 급락은 PID 재사용이거나 정상 해제다",
         (

@@ -323,6 +323,7 @@ def build() -> "RuleEngine":
             window_s=cfg.baseline_window_s,
             min_samples=cfg.min_samples,
             per_program=cfg.per_program,
+            program_strict=cfg.per_program_strict,
             program_window_s=cfg.program_window_s,
             program_min_interval_s=cfg.program_min_interval_s,
             program_min_samples=cfg.program_min_samples,
@@ -357,6 +358,7 @@ class RuleEngine(BaseDetector):
         min_samples: int = 60,
         warmup_s: float = 0.0,
         per_program: bool = False,
+        program_strict: bool = True,
         program_window_s: float = 3600.0,
         program_min_interval_s: float = 5.0,
         program_min_samples: int = 60,
@@ -372,6 +374,7 @@ class RuleEngine(BaseDetector):
             window_s=window_s,
             min_samples=min_samples,
             per_program=per_program,
+            program_strict=program_strict,
             # **목록을 코드에 박지 않고 룰에서 뽑는다**(규칙 3). 상대 조건을 쓰는
             # 메트릭만 조건부화하면 되고, 룰이 바뀌면 이 목록도 따라가야 한다.
             program_metrics=relative_metrics(self.rules),

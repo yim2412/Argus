@@ -56,29 +56,64 @@ def test_program_baseline_differs_from_global():
     assert overall.median != game.median or overall.median != chrome.median
 
 
-def test_falls_back_to_global_for_unknown_program():
-    """처음 보는 프로그램은 전역으로. **모르는 것을 막는 방향으로는 틀지 않는다.**
+def test_falls_back_to_global_when_foreground_is_unknown():
+    """**포어그라운드를 아예 모르면 전역이다.**
 
-    이게 없으면 새 게임을 깔 때마다 창(program_window_s) 만큼 탐지 공백이 생긴다.
+    이건 "프로그램은 아는데 표본이 없는" 경우와 다르다. 무엇을 보고 있는지 모르면
+    조건부 판정 자체가 성립하지 않으므로, 여기서 막으면 창이 없는 상태(전체화면
+    게임·잠금화면 등) 전체가 탐지 공백이 된다.
     """
     bs = _set()
     _feed(bs, "game.exe", 60.0, 30)
-    stats = bs.stats("cpu_total", "never-seen.exe")
-    assert stats is not None, "처음 보는 프로그램에서 판정이 통째로 멈췄다"
+    stats = bs.stats("cpu_total", None)
+    assert stats is not None, "포어그라운드 미상에서 판정이 통째로 멈췄다"
     assert stats.samples == 30, "전역이 아니라 다른 것을 봤다"
 
 
-def test_falls_back_until_program_samples_are_enough():
-    """표본이 모자란 동안은 전역. 표본 3개의 중앙값은 중앙값이 아니라 우연이다."""
+def test_strict_holds_judgement_until_program_samples_are_enough():
+    """**표본이 안 모인 프로그램에서는 판정하지 않는다** (2026-08-17 에 바뀐 결정).
+
+    옛 동작은 전역으로 폴백하는 것이었고 이유가 있었다 — 새 게임을 깔 때마다
+    창만큼 탐지 공백이 생긴다. 그런데 그 폴백이 오탐을 만들었다: 게임이 막 떴을
+    때는 표본이 없고 **그 순간이 정확히 CPU 가 튀는 때**라, 유휴가 섞인 전역
+    문턱으로 판정된다(`#188` 은 그렇게 전역 문턱을 +7.69%p 넘겨 발화했다).
+
+    **탐지 공백이라는 비용은 사라지지 않았다.** 오탐이 미탐보다 비싸다는 판단으로
+    맞바꾼 것이고, 되돌리기는 `per_program_strict: false` 한 줄이다.
+    """
     bs = _set(program_min_samples=20)
     ts = _feed(bs, "chrome.exe", 10.0, 50)
     _feed(bs, "game.exe", 60.0, 5, start=ts)  # 5개뿐 — 아직 못 믿는다
 
-    early = bs.stats("cpu_total", "game.exe")
-    assert early.median != 60.0, "표본 5개짜리 프로그램 기준을 그대로 썼다"
+    assert bs.stats("cpu_total", "game.exe") is None, \
+        "표본이 모자란 프로그램에서 전역으로 물러났다 — 그게 #188 오탐의 경로다"
 
     _feed(bs, "game.exe", 60.0, 20, start=ts + 100)
-    assert bs.stats("cpu_total", "game.exe").median == 60.0, "표본이 찼는데 전역에 머물렀다"
+    assert bs.stats("cpu_total", "game.exe").median == 60.0, "표본이 찼는데 판정하지 않았다"
+
+
+def test_non_strict_keeps_the_old_fallback():
+    """**되돌리기가 설정 한 줄이어야 한다.** 미탐이 늘면 여기로 되돌린다.
+
+    기본값(True)이 아닌 값으로 잰다 — 같은 값으로 재면 배선이 끊겨도 참이다.
+    """
+    bs = _set(program_min_samples=20, program_strict=False)
+    ts = _feed(bs, "chrome.exe", 10.0, 50)
+    _feed(bs, "game.exe", 60.0, 5, start=ts)
+
+    early = bs.stats("cpu_total", "game.exe")
+    assert early is not None, "폴백을 켰는데 판정을 멈췄다"
+    assert early.median != 60.0, "표본 5개짜리 프로그램 기준을 그대로 썼다"
+
+
+def test_strict_does_not_touch_metrics_that_are_not_split():
+    """**나누지 않는 메트릭은 막지 않는다.** 그쪽은 전역이 유일한 기준이다."""
+    bs = _set(program_min_samples=20)
+    for i in range(30):
+        bs.observe(i * 10.0, {"cpu_total": 10.0, "disk_queue": 1.0}, "chrome.exe")
+    # `disk_queue` 는 program_metrics 에 없다 — 전역이 나와야 한다.
+    assert bs.stats("disk_queue", "never-seen.exe") is not None, \
+        "프로그램별로 나누지도 않는 메트릭을 막았다"
 
 
 def test_disabled_by_default_keeps_old_behaviour():
@@ -216,3 +251,18 @@ def test_defaults_yaml_declares_per_program_keys():
                 "program_min_samples", "max_programs"):
         assert key in raw["detection"], f"defaults.yaml 의 detection 에 {key} 가 없다"
     assert raw["detection"]["per_program"] is False, "기본이 켜져 있다 — 평가 전에 켜면 안 된다"
+
+
+def test_per_program_strict_comes_from_config(monkeypatch):
+    """**설정 배선을 따로 잰다.** 위 테스트들은 판정 로직만 본다.
+
+    `defaults.yaml` 의 `detection.per_program_strict` 를 고쳤을 때 상주가 그 값을
+    실제로 쓰는지는 `build()` 를 지나야만 알 수 있다. 2026-08-04 에 `detection.*`
+    가 통째로 무시되던 버그가 이 자리에 테스트가 없어서 살아 있었다.
+
+    **기본값(True)이 아닌 값으로 잰다** — 같은 값으로 재면 배선이 끊겨도 참이다.
+    """
+    from argus.detection.rules import build
+
+    monkeypatch.setenv("ARGUS_DETECTION__PER_PROGRAM_STRICT", "false")
+    assert build().baselines.program_strict is False, "설정이 배선되지 않았다"
