@@ -91,13 +91,20 @@ def _quadratic(frac: float) -> float:
     return frac * frac
 
 
-def _sawtooth(frac: float, elapsed_s: float) -> float:
-    """우상향 램프에 톱니를 얹는다. 총량은 유지하고 **단조성만** 깨뜨린다."""
-    phase = (elapsed_s % SAW_PERIOD_S) / SAW_PERIOD_S
+def _sawtooth(frac: float, elapsed_s: float, *,
+              period_s: float = SAW_PERIOD_S, drop: float = SAW_DROP) -> float:
+    """우상향 램프에 톱니를 얹는다. 총량은 유지하고 **단조성만** 깨뜨린다.
+
+    주기·되돌림을 인자로 받는 이유: **한 점으로 사각지대를 선언하지 않기 위해서다.**
+    되돌림 30%·주기 300s 한 조합만 재고 "못 잡는다"고 결론 내면, 그 미탐이
+    `monotonic_ratio` 가 일부러 거른 것인지 진짜 구멍인지 구분할 수 없다.
+    여러 점을 훑어 미탐이 연속적으로 나타나는지를 봐야 한다 (2026-08-17).
+    """
+    phase = (elapsed_s % period_s) / period_s
     if phase <= SAW_RISE_FRAC:
         return frac
     fallen = (phase - SAW_RISE_FRAC) / (1.0 - SAW_RISE_FRAC)
-    return max(0.0, frac * (1.0 - SAW_DROP * fallen))
+    return max(0.0, frac * (1.0 - drop * fallen))
 
 
 @dataclass
@@ -178,7 +185,9 @@ def _gap_pp(engine, obs: Observation) -> float | None:
 def run_one(observations: list[Observation], minutes: float, delta_pp: float,
             warm_s: float, detector: str, *, with_process: bool = False,
             spread: int = 1, sawtooth: bool = False,
-            quadratic: bool = False) -> Outcome:
+            quadratic: bool = False,
+            saw_period_s: float = SAW_PERIOD_S,
+            saw_drop: float = SAW_DROP) -> Outcome:
     """한 가지 램프 속도로 제품 탐지기를 돌린다.
 
     `per_program` 오버라이드는 호출자가 `ARGUS_DETECTION__PER_PROGRAM` 으로 건다.
@@ -214,7 +223,7 @@ def run_one(observations: list[Observation], minutes: float, delta_pp: float,
             if quadratic:
                 frac = _quadratic(frac)
             if sawtooth:
-                frac = _sawtooth(frac, elapsed)
+                frac = _sawtooth(frac, elapsed, period_s=saw_period_s, drop=saw_drop)
             fed = _apply_ramp(obs, frac, delta_pp,
                               with_process=with_process, spread=spread)
             ramp_ticks += 1
@@ -308,6 +317,12 @@ def main() -> int:
     parser.add_argument("--sawtooth", action="store_true",
                         help="우상향하되 주기마다 되돌린다. `procleak` 의 "
                              "monotonic_ratio(0.9)를 노린다")
+    parser.add_argument("--saw-drop", type=float, default=SAW_DROP, metavar="R",
+                        help=f"톱니가 주기 끝에 되돌리는 비율 (기본: {SAW_DROP}). "
+                             "**한 점만 재고 사각지대라 부르지 않는다** — 여러 값을 "
+                             "훑어 미탐이 연속적인지 본다")
+    parser.add_argument("--saw-period", type=float, default=SAW_PERIOD_S, metavar="S",
+                        help=f"톱니 주기(초) (기본: {SAW_PERIOD_S:.0f})")
     parser.add_argument("--per-program", choices=("config", "on", "off", "both"),
                         default="both",
                         help="프로그램별 베이스라인. 이 PC 는 켜져 있고 배포 기본값은 "
@@ -355,7 +370,7 @@ def main() -> int:
         shape.append(f"{args.spread}개 프로세스로 분산 (각 "
                      f"{args.delta / args.spread:.2f}%p)")
     if args.sawtooth:
-        shape.append(f"톱니 (주기 {SAW_PERIOD_S:.0f}s · 되돌림 {SAW_DROP:.0%})")
+        shape.append(f"톱니 (주기 {args.saw_period:.0f}s · 되돌림 {args.saw_drop:.0%})")
     print(f"램프 +{args.delta}%p · 탐지기 {args.detector!r} (설정 배선 그대로)"
           + (f"\n모양: {' + '.join(shape)}" if shape else ""))
     print()
@@ -380,7 +395,8 @@ def main() -> int:
         outcomes = [run_one(observations, m, args.delta, warm_s, args.detector,
                             with_process=args.with_process,
                             spread=args.spread, sawtooth=args.sawtooth,
-                            quadratic=args.quadratic)
+                            quadratic=args.quadratic,
+                            saw_period_s=args.saw_period, saw_drop=args.saw_drop)
                     for m in sorted(lengths)]
 
         print(f"── {label}")
