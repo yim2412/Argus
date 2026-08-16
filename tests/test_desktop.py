@@ -642,6 +642,38 @@ def test_screen_placement_falls_back_quietly(monkeypatch, value, expected_fragme
     assert expected_fragment in result, result
 
 
+def test_screen_placement_names_index_and_ordinal(qapp, monkeypatch) -> None:
+    """**어느 모니터에 떴는지 출력만 보고 판정할 수 있어야 한다.**
+
+    `ARGUS_UI_SCREEN` 은 0-기반인데 결과를 "모니터 1" 로만 찍으면 첫 번째로 읽힌다.
+    「GUI 는 2번 모니터에만 띄워 테스트한다」(CLAUDE.md)를 지켰는지 말할 수 없어져,
+    2026-08-17 exe 검증에서 실제로 판정이 막혔다. 인덱스와 사람이 세는 순서를 **둘 다**
+    찍어야 한다.
+    """
+    pytest.importorskip("PySide6")
+    from PySide6 import QtCore
+
+    from argus.desktop.app import ENV_SCREEN, place_on_configured_screen
+
+    monkeypatch.setenv(ENV_SCREEN, "0")
+
+    class _FakeWindow:
+        moved = False
+
+        def rect(self):
+            return QtCore.QRect(0, 0, 100, 100)
+
+        def move(self, *_args):
+            self.moved = True
+
+    window = _FakeWindow()
+    result = place_on_configured_screen(window)
+
+    assert window.moved, f"0번 모니터는 존재하므로 옮겼어야 한다: {result}"
+    assert "index=0" in result, result
+    assert "1번째" in result, result
+
+
 # ---------------------------------------------------------------- 설정 페이지
 
 def _settings_page(qapp, tmp_path):

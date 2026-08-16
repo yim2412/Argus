@@ -52,11 +52,14 @@ def place_on_configured_screen(window: QtWidgets.QWidget) -> str:
 
     screens = QtWidgets.QApplication.screens()
     if not 0 <= index < len(screens):
-        return f"기본 위치 (모니터 {index} 없음, 총 {len(screens)}대)"
+        return f"기본 위치 (index={index} 없음, 총 {len(screens)}대)"
 
     geometry = screens[index].availableGeometry()
     window.move(geometry.center() - window.rect().center())
-    return f"모니터 {index} ({screens[index].name()})"
+    # **인덱스와 사람이 세는 순서를 함께 찍는다.** 값은 0-기반인데 "모니터 1" 로만
+    # 찍으면 첫 번째로 읽혀, 「GUI 는 2번 모니터에만 띄운다」(CLAUDE.md)를 지켰는지
+    # 출력만 보고는 판정할 수 없다. 2026-08-17 에 exe 검증에서 실제로 막혔다.
+    return f"index={index} · {index + 1}번째 모니터 ({screens[index].name()})"
 
 
 def apply_theme(app: QtWidgets.QApplication) -> None:
