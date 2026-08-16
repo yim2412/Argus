@@ -12,7 +12,15 @@
 | `backfill_rollup.py` | 워터마크보다 과거에 남은 원본을 소급 집계한다 |
 | `readiness.py` | 데이터 대기 중인 작업을 지금 시작해도 되는지 판정한다 |
 | `autolabel_backfill.py` | 이미 쌓인 알림에 자동 라벨(`auto_label`)을 매긴다 |
-| `ramp_replay.py` | 느린 누수(램프)를 실제 시계열에 얹어 **제품 탐지기**가 잡는지 본다. Phase 5·7 의 "이길 상대"를 60분 주입 전에 묻는다 |
+| `ramp_replay.py` | 느린 누수(램프)를 실제 시계열에 얹어 **제품 탐지기**가 잡는지 본다. 60분 주입을 태우기 전에 먼저 묻는다 |
+| `eval_snapshot.py` | 평가 입력을 고정해 둔다 (채점 재현용) |
+| `inject_progress.py` | 주입 진행·판정을 `procleak.judge()` **자체**로 본다 (`--watch`) |
+| `rescore_incidents.py` | 이미 닫힌 사건을 지금 코드로 다시 분석한다 |
+| `mutation_sweep.py` | 규칙을 무력화했다 되돌리며 테스트가 잡는지 잰다 |
+| `pyc_audit.py` | 소스와 `__pycache__` 의 모듈 상수가 어긋났는지 검사한다 |
+| `grade_probe.py` | 등급 판정을 입력별로 찔러 본다 |
+| `ui_snapshot.py` | 창을 띄우지 않고 `QWidget.grab()` 으로 화면을 뜬다 |
+| `make_icon.py` | 트레이 아이콘 생성 |
 
 ## 착수 조건 판정
 
@@ -107,8 +115,27 @@ python tools\fault_injector.py --list
 python tools\fault_injector.py cpu_spin --duration 120 --ramp
 python tools\fault_injector.py memory_leak --duration 300 --mem-load 0.3
 
+# 같은 총량을 여러 프로세스로 나눠 붙잡는다 (프로세스별 문턱을 피하는 누수)
+python tools\fault_injector.py memory_leak_spread --ramp --duration 3600
+
 # 부하를 만들지 않고 지금 하는 일에 라벨만 붙인다 (게임·빌드·인코딩)
 python tools\fault_injector.py manual --label GAME --duration 1800
+```
+
+**`memory_leak_spread` 는 크기와 길이를 기본값에서 바꾸지 않는다.** `--ramp
+--duration 3600` 이 만드는 `+18%p` 가 **사각지대 한가운데**다 — `+30%p` 를 넘으면
+시스템 룰이 잡고, 60분보다 짧으면(30분·20분) 램프가 빨라져 역시 시스템 룰이 잡는다.
+`--spread-procs` 를 늘려도 소용없다. 시스템 룰은 `mem_percent` **전체**를 보므로
+프로세스를 몇 개로 쪼개든 무관하기 때문이다. 2026-08-16 실측.
+
+**주입기를 `Start-Job`·`Stop-Process` 로 다루지 않는다.** 둘 다 `finally` 를 돌리지
+않아 라벨이 `ts_end` 없이 열린 채 남는다. 열린 라벨은 보존 정리가 그 구간을 계속
+붙들게 하고, PID 가 재사용되면 남의 데이터가 섞여 읽힌다. 포그라운드로 부르고,
+중단이 필요하면 종료 뒤 `ts_end` 를 손으로 닫으면서 **사후 기입이라는 사실과 효과
+검증이 돌지 않았다는 것을 `notes` 에 적는다.** 끝나면 늘 확인한다:
+
+```sql
+SELECT COUNT(*) FROM fault_injections WHERE ts_end IS NULL;   -- 0 이어야 한다
 ```
 
 **`--ramp` 는 30분 이상으로 걸어야 의미가 있다.** 계획서가 말하는 점진적 열화는
@@ -122,6 +149,46 @@ python tools\fault_injector.py manual --label GAME --duration 1800
 주입기는 끝나면 **효과를 검증한다.** 관측 가능한 열화가 없으면 `[FAIL]` 로 끝나고
 라벨을 `completed=0` 으로 남겨 스코어보드가 자동으로 제외한다. 라벨만 있고 열화가
 없는 구간을 채점에 쓰면 모든 탐지기가 오답으로 나오기 때문이다.
+
+## 램프 리플레이 — 주입 전에 제품에게 먼저 묻는다
+
+```powershell
+# 60분 램프를 제품 탐지기에 태운다 (기본: per_program on·off 둘 다)
+.venv\Scripts\python.exe tools\ramp_replay.py --minutes 60 --detector rules,procleak --with-process
+
+# 여러 속도를 한 번에 — 대조군 없이는 "룰이 죽은 것"과 구분되지 않는다
+.venv\Scripts\python.exe tools\ramp_replay.py --minutes 5,10,30,60
+
+# 분산 누수 / 실주입과 같은 곡선 / 창 고정
+.venv\Scripts\python.exe tools\ramp_replay.py --spread 8 --quadratic --end 1786846500
+```
+
+**60분을 태우기 전에 리플레이가 먼저 답한다.** 2026-08-16 에 이 도구가 실제 주입
+70분을 한 번 취소시켰고("`procleak` 이 8.9분에 잡는다"), 주입 시간 단축 실험 30분을
+6분으로 대체했다.
+
+**옵션은 전부 "제품과 같게 맞추기" 위한 것이다.**
+
+| 옵션 | 왜 필요한가 |
+|---|---|
+| `--detector rules,procleak` | 상주는 둘을 돌린다. `rules` 만 재고 "룰이 못 잡는다"고 결론 내면 틀린다 |
+| `--with-process` | `procleak` 은 `rss_mb` 를 본다. 시스템 지표에만 램프를 얹으면 그 탐지기에게는 **아무 일도 일어나지 않은 것과 같다** |
+| `--quadratic` | 주입기의 `--ramp` 는 `intensity` 가 선형이라 **누적이 `t²`** 다. 선형을 가정하면 15분 지점에서 3.6%p 어긋난다 |
+| `--spread N` | 같은 총량을 N개 프로세스로. `procleak` 의 프로세스별 문턱을 피하는 형태를 잰다 |
+| `--end` | 창을 고정한다. 기본값은 "최근 N분"이라 **게임이 켜지면 수치가 통째로 바뀌어 재현이 안 된다** |
+
+**결과를 읽을 때 세 가지를 조심한다. 셋 다 실제로 정반대 결론을 낼 뻔했다.**
+
+1. **`per_program on/off` 가 갈리면 "불확실"이다.** 프로그램별 베이스라인은 그
+   프로그램이 **포어그라운드일 때만** 학습하므로, 판정이 *그때 무엇을 쓰고 있었나*에
+   달린다. 리플레이 워밍 구간이 게임 중이면 chrome 베이스라인이 백지인 채로 램프를
+   맞아 실주입과 정반대 결과가 나온다. 그래서 기본값이 `--per-program both` 다.
+2. **발화한 룰의 이름까지 읽는다.** 입력이 실제 시계열이라 램프와 무관한 룰이
+   얼마든지 발화한다. 한 틱에 여러 룰이 걸리면 `rules.py` 가 **심각도가 가장 높은
+   하나만 대표로 세우므로**, 「메모리 이상 증가」(`info`)가 「CPU 과부하」에 가려
+   *발화했는데도 미탐으로 집계*될 수 있다.
+3. **대조군 없이 "미탐"을 결론으로 삼지 않는다.** 짧은 램프(`--minutes 5`)나
+   `--delta 0` 을 함께 돌려 탐지기가 살아 있음을 먼저 보인다.
 
 ## 장시간 실행은 반드시 작업 스케줄러로 띄운다
 
