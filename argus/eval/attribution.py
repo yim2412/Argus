@@ -55,9 +55,16 @@ class Verdict:
 
 
 # 시나리오별로 어떤 자원을 봐야 하는가. 주입기가 만드는 부하의 종류다.
+#
+# **여기 없는 시나리오는 채점하지 않는다**(예전에는 `cpu` 로 떨어졌다). 2026-08-16 에
+# `memory_leak_spread` 를 추가하면서 이 표를 안 고쳤는데, 기본값이 있으니 아무 경고
+# 없이 **메모리 누수를 CPU 기준으로 채점**할 뻔했다. 조용히 틀린 점수를 내느니
+# 채점을 건너뛰고 이유를 남기는 편이 낫다 — `tests/test_eval_attribution.py` 가
+# 주입기의 `SCENARIOS` 와 이 표를 대조해 누락을 기계적으로 잡는다.
 SCENARIO_RESOURCE = {
     "cpu_spin": "cpu",
     "memory_leak": "rss",
+    "memory_leak_spread": "rss",
     "disk_thrash": "io_write",
     "handle_leak": "handles",
 }
@@ -87,19 +94,23 @@ def score_fault(db, fault: dict, *, margin_s: float = 30.0, limit: int = 8) -> V
     자원을 쓰기 시작해서, 붙여 두면 그 상승이 '평소'에 섞여 델타가 줄어든다.
     """
     scenario = fault["scenario"]
-    resource = SCENARIO_RESOURCE.get(scenario, "cpu")
+    resource = SCENARIO_RESOURCE.get(scenario)
     ts_start, ts_end = float(fault["ts_start"]), float(fault["ts_end"] or 0)
 
     verdict = Verdict(
         fault_id=int(fault["id"]),
         scenario=scenario,
-        resource=resource,
+        resource=resource or "?",
         answer_pids=set(),
         ranked=[],
     )
 
     if scenario in NOT_ATTRIBUTABLE:
         verdict.skipped = "부하를 만들지 않는 라벨 (귀인 대상 아님)"
+        return verdict
+    if resource is None:
+        # 기본값으로 때우지 않는다 — 위 주석 참조.
+        verdict.skipped = f"채점할 자원을 모르는 시나리오 ({scenario}) — SCENARIO_RESOURCE 에 추가할 것"
         return verdict
     if not ts_end:
         verdict.skipped = "주입이 완료되지 않음"
