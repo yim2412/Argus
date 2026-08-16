@@ -1,4 +1,4 @@
-"""분산 누수를 잡는 그룹 축(`GROUP_RULES`) 검증.
+"""분산 누수를 잡는 그룹 축(`group_rules_from`) 검증.
 
 **왜 생겼는가.** `procleak` 은 `(pid, name, metric)` 로 추적하므로 누수가 여러
 프로세스에 흩어지면 각자는 문턱 아래가 된다. 2026-08-16 실주입에서 총 11.8GB 를
@@ -18,15 +18,38 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from argus.detection.base import Observation, ProcessView  # noqa: E402
-from argus.detection.procleak import GROUP_RULES, ProcessLeakDetector  # noqa: E402
+from argus.detection.procleak import (  # noqa: E402
+    MetricRule,
+    ProcessLeakDetector,
+    group_rules_from,
+)
 
 STEP = 30.0          # tier2 수집 간격
 TICKS = 40           # 20분 — min_duration_s(300s)·min_samples(20) 를 넘긴다
-GROUP_MIN_DELTA = GROUP_RULES[0].min_delta      # 1536MB
+
+# 테스트가 쓰는 PID별 문턱. **코드 기본값이 아닌 값으로 둔다** — 기본값과 같으면
+# 배선이 끊겨도 아래 유도 테스트가 참이 된다(2026-08-04 에 같은 유형에 당했다).
+PID_MIN_DELTA = 1250.0
+GROUP_MULTIPLE = 0.8
+GROUP_MIN_DELTA = PID_MIN_DELTA * GROUP_MULTIPLE     # 1000MB
 
 
 def detector() -> ProcessLeakDetector:
-    return ProcessLeakDetector(window_s=900.0, min_duration_s=300.0, min_samples=20)
+    """**config 를 읽지 않는다.** 여기서 재는 것은 판정 로직이고, 설정 배선은
+    `test_group_threshold_comes_from_config` 가 따로 잰다. 둘을 한 테스트에서
+    재면 어느 쪽이 깨졌는지 말할 수 없다.
+    """
+    rules = (
+        MetricRule("handles", "핸들", "개", growth_ratio=3.0, min_delta=500.0,
+                   monotonic_ratio=0.85),
+        MetricRule("rss_mb", "메모리", "MB", growth_ratio=3.0,
+                   min_delta=PID_MIN_DELTA, monotonic_ratio=0.9),
+    )
+    return ProcessLeakDetector(
+        rules=rules,
+        group_rules=group_rules_from(rules, multiple=GROUP_MULTIPLE),
+        window_s=900.0, min_duration_s=300.0, min_samples=20,
+    )
 
 
 def spread_stream(n_procs: int, total_growth_mb: float, *, name="python.exe",
@@ -54,7 +77,7 @@ def run(stream) -> list:
 def test_pid_axis_alone_misses_a_spread_leak():
     """**이 테스트가 그룹 축의 존재 이유다.**
 
-    같은 총량을 8개로 나누면 개별 프로세스의 증가량이 `min_delta`(512MB) 아래라
+    같은 총량을 8개로 나누면 개별 프로세스의 증가량이 PID별 `min_delta` 아래라
     PID별 축은 아무것도 못 잡는다. 그룹 축을 뜯어내면 이 상황이 그대로 미탐이 된다.
     """
     det = detector()
@@ -78,9 +101,74 @@ def test_group_axis_catches_what_pid_axis_misses():
 
 # ------------------------------------------------- 문턱
 
-def test_group_threshold_is_where_we_think_it_is():
-    """문턱 값 자체를 고정한다. 아래 두 테스트의 입력이 이 값을 전제로 한다."""
-    assert GROUP_RULES[0].min_delta == 1536.0
+def test_group_threshold_is_derived_from_the_pid_threshold():
+    """**그룹 문턱은 PID별 문턱의 배수여야 한다.**
+
+    이 테스트가 재는 것이 2026-08-17 의 버그다. 그룹 문턱을 절대값으로 따로 두면
+    `min_delta_ram_ratio` 가 PID별만 하드웨어에 맞춰 움직여 둘이 갈린다 — 실제로
+    PID별이 512 → 1,303.6MB 가 되는 동안 그룹은 1536 에 남아 배수가 3.0 이 아니라
+    1.17 이 됐고, 실주입 `#65`·`#66` 이 둘 다 미탐이었다.
+    """
+    pid_rules = (
+        MetricRule("rss_mb", "메모리", "MB", growth_ratio=3.0, min_delta=2000.0,
+                   monotonic_ratio=0.9),
+    )
+    got = group_rules_from(pid_rules, multiple=0.8)
+    assert len(got) == 1
+    assert got[0].min_delta == 1600.0, "PID별 문턱이 바뀌었는데 그룹이 따라오지 않았다"
+    # 하드웨어가 다르면 PID별이 움직인다. 그룹도 같이 움직여야 한다.
+    smaller = (MetricRule("rss_mb", "메모리", "MB", growth_ratio=3.0, min_delta=80.0,
+                          monotonic_ratio=0.9),)
+    assert group_rules_from(smaller, multiple=0.8)[0].min_delta == 64.0
+
+
+def test_handles_are_not_a_group_axis():
+    """핸들은 합계에 의미가 없다 — 프로세스마다 용도가 다르다."""
+    rules = (
+        MetricRule("handles", "핸들", "개", growth_ratio=3.0, min_delta=500.0,
+                   monotonic_ratio=0.85),
+    )
+    assert group_rules_from(rules, multiple=0.8) == ()
+
+
+def test_group_threshold_comes_from_config():
+    """**설정 배선을 따로 잰다.** 위 테스트는 유도 로직만 본다.
+
+    `defaults.yaml` 의 `process_leak.group.min_delta_multiple` 을 고쳤을 때 상주가
+    실제로 그 값을 쓰는지는 `build()` 를 지나야만 알 수 있다. 2026-08-04 에
+    `detection.*` 가 통째로 무시되던 버그가 이 자리에 테스트가 없어서 살아 있었다.
+
+    **기본값이 아닌 값으로 잰다.** `0.8` 로 재면 코드 기본값과 같아 배선이 끊겨도
+    참이 된다.
+    """
+    import os
+
+    from argus.detection.procleak import build
+
+    os.environ["ARGUS_PROCESS_LEAK__GROUP__MIN_DELTA_MULTIPLE"] = "0.25"
+    try:
+        det = build()
+        pid = next(r for r in det.rules if r.attr == "rss_mb")
+        assert det.group_rules, "그룹 축이 사라졌다"
+        assert det.group_rules[0].min_delta == pid.min_delta * 0.25, (
+            f"설정이 배선되지 않았다: 그룹 {det.group_rules[0].min_delta} vs "
+            f"PID별 {pid.min_delta} × 0.25"
+        )
+    finally:
+        os.environ.pop("ARGUS_PROCESS_LEAK__GROUP__MIN_DELTA_MULTIPLE", None)
+
+
+def test_group_can_be_disabled_from_config():
+    """끌 수 있어야 한다 — 채택이 뒤집히면 코드가 아니라 YAML 로 되돌린다."""
+    import os
+
+    from argus.detection.procleak import build
+
+    os.environ["ARGUS_PROCESS_LEAK__GROUP__ENABLED"] = "false"
+    try:
+        assert build().group_rules == ()
+    finally:
+        os.environ.pop("ARGUS_PROCESS_LEAK__GROUP__ENABLED", None)
 
 
 def test_group_below_threshold_does_not_fire():
@@ -88,11 +176,11 @@ def test_group_below_threshold_does_not_fire():
 
     **입력을 상수에서 유도하지 않는다.** 처음에는 `GROUP_MIN_DELTA * 0.6` 을 썼는데,
     그러면 문턱을 1MB 로 무력화해도 입력이 0.6MB 로 같이 줄어 **테스트가 따라 움직여
-    통과한다**(무력화 검증에서 실제로 놓쳤다). 900 은 1536 보다 작다는 사실만으로
-    성립하는 고정값이다.
+    통과한다**(무력화 검증에서 실제로 놓쳤다). 600 은 이 테스트가 쓰는 문턱
+    (1250×0.8 = 1000MB)보다 작다는 사실만으로 성립하는 고정값이다.
     """
-    fired = run(spread_stream(8, 900.0))
-    assert not fired, f"문턱 미달(900MB < 1536MB)인데 발화했다: {fired}"
+    fired = run(spread_stream(8, 600.0))
+    assert not fired, f"문턱 미달(600MB < {GROUP_MIN_DELTA:.0f}MB)인데 발화했다: {fired}"
 
 
 # ------------------------------------------------- 새 프로세스 계단

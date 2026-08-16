@@ -466,6 +466,28 @@ class LeakMetricSettings(BaseModel):
     min_delta_ram_ratio: float | None = Field(default=None, ge=0)
 
 
+class LeakGroupSettings(BaseModel):
+    """그룹 축의 판정 기준. **문턱을 PID별 문턱의 배수로 표현한다.**
+
+    두 값을 각자 절대값으로 두면 서로를 모른 채 유도된다 — 2026-08-17 의 버그가
+    정확히 그것이었다. `GROUP_RULES` 가 "PID별 512MB 의 3배"로 1536MB 를 잡았는데,
+    `min_delta_ram_ratio` 가 PID별을 1,303.6MB 로 덮어쓰고 있어 실제 배수는 1.17
+    이었다. 그러면 "개별로는 문턱 미달인 것을 합쳐 잡는다"는 이 축의 존재 이유가
+    성립하지 않고, 실주입 `#65`·`#66` 이 둘 다 미탐이었다.
+
+    배수로 두면 PID별 문턱이 하드웨어에 맞춰 움직일 때 그룹도 같이 움직인다 —
+    설계 규칙 2(하드웨어를 가정하지 않는다)를 한 곳에서만 지키면 된다.
+    """
+
+    enabled: bool = True
+    # PID별 같은 지표 문턱의 배수. 1 미만인 것이 의도다 — `members < 2` 억제가
+    # 있어 프로세스 하나짜리는 그룹으로 신고되지 않으므로 중복 신고가 나지 않고,
+    # 이 축이 더할 것은 "흩어져 있어 각자는 작은" 영역뿐이다.
+    min_delta_multiple: float = Field(default=0.8, gt=0)
+    # `monotonic_ratio` 는 여기 없다 — PID별 같은 지표의 값을 그대로 쓴다. 값을
+    # 두 곳에 두면 갈리고, 갈린 결과가 바로 위 문단의 사고다.
+
+
 class ProcessLeakSettings(BaseModel):
     """프로세스 누수 탐지(Phase 6-A). 시스템 룰로는 닿지 않는 프로세스별 지표를 본다."""
 
@@ -489,6 +511,7 @@ class ProcessLeakSettings(BaseModel):
     rss_mb: LeakMetricSettings = LeakMetricSettings(
         growth_ratio=3.0, min_delta=512.0, monotonic_ratio=0.9, min_delta_ram_ratio=0.02
     )
+    group: LeakGroupSettings = LeakGroupSettings()
 
 
 class UsageSettings(BaseModel):

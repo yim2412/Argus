@@ -67,11 +67,39 @@ DEFAULT_RULES = (
 # **배수(`growth_ratio`)를 보지 않는다.** 증가분 합은 0 에서 시작하므로 `last/first`
 # 가 누수 초기에 발산한다. 배수는 PID별 축이 이미 보고 있고, 그룹 축이 더할 것은
 # "흩어져 있어 각자는 작지만 합치면 크다"뿐이다. 그래서 **증가량만** 본다.
-GROUP_RULES = (
-    MetricRule("rss_mb", "메모리(합계)", "MB",
-               growth_ratio=1.0, min_delta=1536.0, monotonic_ratio=0.9),
-)
-_GROUP_ATTRS = frozenset(r.attr for r in GROUP_RULES)
+#
+# **문턱은 여기에 없다.** `group_rules_from()` 이 PID별 문턱의 배수로 만든다 —
+# 절대값을 여기 박아 두면 `min_delta_ram_ratio` 가 PID별만 하드웨어에 맞춰 움직여
+# 두 문턱이 갈린다. 2026-08-17 에 그래서 그룹 문턱이 PID별의 1.17배가 됐고,
+# 실주입 `#65`·`#66` 이 둘 다 미탐이었다.
+GROUP_ATTRS = ("rss_mb",)
+_GROUP_LABELS = {"rss_mb": ("메모리(합계)", "MB")}
+DEFAULT_GROUP_MULTIPLE = 0.8
+
+
+def group_rules_from(rules: Iterable[MetricRule], *,
+                     multiple: float) -> tuple[MetricRule, ...]:
+    """PID별 룰에서 그룹 룰을 만든다. **문턱은 언제나 PID별의 배수다.**
+
+    `monotonic_ratio` 도 PID별 것을 그대로 물려받는다 — 같은 값을 두 곳에 두면
+    한쪽만 고쳐져 갈린다.
+
+    `GROUP_ATTRS` 에 없는 지표는 그룹으로 보지 않는다 — 핸들은 프로세스마다 용도가
+    달라 합계에 의미가 없다.
+    """
+    out = []
+    for rule in rules:
+        if rule.attr not in GROUP_ATTRS:
+            continue
+        label, unit = _GROUP_LABELS[rule.attr]
+        out.append(MetricRule(
+            rule.attr, label, unit,
+            growth_ratio=1.0,                       # 그룹은 배수를 보지 않는다(위 주석)
+            min_delta=rule.min_delta * multiple,
+            monotonic_ratio=rule.monotonic_ratio,
+        ))
+    return tuple(out)
+
 
 DEFAULT_WINDOW_S = 900.0
 DEFAULT_MIN_DURATION_S = 300.0
@@ -210,10 +238,18 @@ class ProcessLeakDetector(BaseDetector):
         drop_reset_ratio: float = DEFAULT_DROP_RESET_RATIO,
         eval_interval_s: float = DEFAULT_EVAL_INTERVAL_S,
         severity: SeveritySettings | None = None,
+        group_rules: Iterable[MetricRule] | None = None,
     ) -> None:
         # 워밍업은 창 길이가 대신한다 — 지속 조건을 못 채우면 어차피 발화하지 않는다.
         super().__init__(warmup_s=0.0)
         self.rules = tuple(rules)
+        # 그룹 룰을 안 주면 PID별 룰에서 유도한다. 두 문턱이 갈리지 않게 하는 것이
+        # 이 축의 기본값이고, 끄려면 빈 튜플을 준다.
+        self.group_rules = (
+            tuple(group_rules) if group_rules is not None
+            else group_rules_from(self.rules, multiple=DEFAULT_GROUP_MULTIPLE)
+        )
+        self._group_attrs = frozenset(r.attr for r in self.group_rules)
         self.window_s = window_s
         self.min_duration_s = min_duration_s
         self.min_samples = min_samples
@@ -300,7 +336,7 @@ class ProcessLeakDetector(BaseDetector):
 
         totals: dict[tuple[str, str], float] = {}
         for (pid, name, attr), track in self._tracks.items():
-            if attr not in _GROUP_ATTRS or not track.samples:
+            if attr not in self._group_attrs or not track.samples:
                 continue
             grown = track.samples[-1][1] - track.samples[0][1]
             if grown <= 0:
@@ -508,7 +544,7 @@ class ProcessLeakDetector(BaseDetector):
         """그룹 축 판정. PID별 결과(`best`)와 견주어 더 높은 쪽을 돌려준다."""
         from ..explain.attribution import group_key
 
-        by_attr = {r.attr: r for r in GROUP_RULES}
+        by_attr = {r.attr: r for r in self.group_rules}
         for (gkey, attr), track in self._group_tracks.items():
             rule = by_attr.get(attr)
             if rule is None:
@@ -598,8 +634,14 @@ def build() -> ProcessLeakDetector:
 
     try:
         cfg = load_settings().process_leak
+        rules = rules_from_settings(cfg)
+        group = cfg.group
         return ProcessLeakDetector(
-            rules=rules_from_settings(cfg),
+            rules=rules,
+            group_rules=(
+                group_rules_from(rules, multiple=group.min_delta_multiple)
+                if group.enabled else ()
+            ),
             window_s=cfg.window_s,
             min_duration_s=cfg.min_duration_s,
             min_samples=cfg.min_samples,

@@ -213,6 +213,49 @@ MUTANTS: list[Mutant] = [
         ),
     ),
     Mutant(
+        # 2026-08-17. 이 축이 처음 들어왔을 때 문턱이 코드 상수(1536MB)였고, 바로 옆
+        # PID별 문턱은 `min_delta_ram_ratio` 로 1,303.6MB 가 되어 있었다. 배수가
+        # 3.0 이 아니라 1.17 이라 실주입 `#65`·`#66` 이 둘 다 미탐이었는데,
+        # **테스트 10개가 전부 통과했다** — 문턱을 상수에서 읽어 단언했기 때문이다.
+        "procleak_group_multiple",
+        "그룹 축 문턱 — PID별 문턱의 배수여야 한다 (따로 두면 갈린다)",
+        (
+            (
+                "argus/detection/procleak.py",
+                "            min_delta=rule.min_delta * multiple,",
+                "            min_delta=1536.0,  # MUTANT: 배수를 무시하고 절대값으로",
+            ),
+        ),
+        note="갈렸을 때 무엇이 미탐이 되는지는 `test_group_threshold_is_derived_from_the_pid_threshold`",
+    ),
+    Mutant(
+        "procleak_group_wiring",
+        "그룹 축 문턱 — config → 탐지기 배선",
+        (
+            # **config 값을 바꾸는 것은 배선을 끊는 것이 아니다.** 2026-08-17 에
+            # `min_delta_multiple` 을 0.8 → 99.0 으로 바꿔 봤다가 565개가 전부
+            # 통과했는데, 그건 배선이 멀쩡해서 탐지기 값도 같이 99.0 이 됐기
+            # 때문이다. 재야 할 것은 `build()` 가 **config 를 안 읽고 코드
+            # 기본값으로 도는 상황**이다 — 2026-08-04 의 레지스트리 구멍이 그 형태다.
+            (
+                "argus/detection/procleak.py",
+                "group_rules_from(rules, multiple=group.min_delta_multiple)",
+                "group_rules_from(rules, multiple=DEFAULT_GROUP_MULTIPLE)",
+            ),
+        ),
+    ),
+    Mutant(
+        "procleak_group_axis",
+        "그룹 축 자체 — 흩어진 누수는 PID별 축이 전부 놓친다",
+        (
+            (
+                "argus/detection/procleak.py",
+                "        best = self._evaluate_groups(obs, best)",
+                "        pass  # MUTANT: 그룹 축 판정 제거",
+            ),
+        ),
+    ),
+    Mutant(
         "procleak_drop_reset",
         "누수 급락 리셋 — 급락은 PID 재사용이거나 정상 해제다",
         (
