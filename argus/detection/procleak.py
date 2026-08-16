@@ -52,6 +52,27 @@ DEFAULT_RULES = (
     MetricRule("rss_mb", "메모리", "MB", growth_ratio=3.0, min_delta=512.0, monotonic_ratio=0.9),
 )
 
+# **그룹 축** — 같은 프로그램의 프로세스를 이름으로 묶어 합쳐 본다.
+#
+# 위 `DEFAULT_RULES` 는 `(pid, name, metric)` 로 추적하므로 **누수가 여러 프로세스에
+# 흩어지면 각자는 문턱 아래**가 된다. 2026-08-16 실주입에서 총 11.8GB 를 8개로 나눴더니
+# 60분 내내 아무 신호도 나지 않았다(라벨 `#65`·`#66`). 같은 양을 한 프로세스로 넣으면
+# 5~9분에 잡힌다 — 분산 하나만으로 무력화된다.
+#
+# **값은 "현재값의 합"이 아니라 "각 PID 증가분의 합"이다.** 합을 그대로 쓰면 새 PID 가
+# 들어올 때마다 그 프로세스의 기본 보유량이 계단으로 얹혀 배수 조건을 인위로 넘긴다
+# (크롬 탭 하나만 열어도). `explain/attribution._window_growth` 가 같은 문제를 겪고
+# **자기 첫 관측값을 기준으로 삼는 것**으로 풀었으므로 그 방식을 그대로 쓴다.
+#
+# **배수(`growth_ratio`)를 보지 않는다.** 증가분 합은 0 에서 시작하므로 `last/first`
+# 가 누수 초기에 발산한다. 배수는 PID별 축이 이미 보고 있고, 그룹 축이 더할 것은
+# "흩어져 있어 각자는 작지만 합치면 크다"뿐이다. 그래서 **증가량만** 본다.
+GROUP_RULES = (
+    MetricRule("rss_mb", "메모리(합계)", "MB",
+               growth_ratio=1.0, min_delta=1536.0, monotonic_ratio=0.9),
+)
+_GROUP_ATTRS = frozenset(r.attr for r in GROUP_RULES)
+
 DEFAULT_WINDOW_S = 900.0
 DEFAULT_MIN_DURATION_S = 300.0
 DEFAULT_MIN_SAMPLES = 20
@@ -205,6 +226,8 @@ class ProcessLeakDetector(BaseDetector):
         # 프로세스 지문(Phase 6-B). 비어 있으면 억제 없이 6-A 그대로 동작한다.
         self.fingerprints: dict[tuple[str, str], Any] = {}
         self._tracks: dict[tuple[int, str, str], _Track] = {}
+        # 그룹 축(`GROUP_RULES`). 키는 `(group_key, metric)` — PID 가 없다.
+        self._group_tracks: dict[tuple[str, str], _Track] = {}
         self._last_eval_ts: float | None = None
         self._last_maint_ts: float | None = None
         self.suppressed = 0
@@ -212,6 +235,7 @@ class ProcessLeakDetector(BaseDetector):
     def reset(self) -> None:
         super().reset()
         self._tracks.clear()
+        self._group_tracks.clear()
         self._last_eval_ts = None
         self._last_maint_ts = None
         self.suppressed = 0
@@ -262,6 +286,41 @@ class ProcessLeakDetector(BaseDetector):
                     window_s=self.window_s,
                     drop_ratio=self.drop_reset_ratio,
                 )
+
+        self._learn_groups(obs)
+
+    def _learn_groups(self, obs: Observation) -> None:
+        """그룹 축 갱신 — 같은 프로그램의 **증가분을 합친다**.
+
+        PID별 트랙이 이미 각자의 첫 관측값을 갖고 있으므로 `현재값 - 첫값` 을 더하면
+        된다. 새 PID 는 그 차가 0 이라 **합계에 계단을 만들지 않는다**(위 `GROUP_RULES`
+        주석 참조).
+        """
+        from ..explain.attribution import group_key
+
+        totals: dict[tuple[str, str], float] = {}
+        for (pid, name, attr), track in self._tracks.items():
+            if attr not in _GROUP_ATTRS or not track.samples:
+                continue
+            grown = track.samples[-1][1] - track.samples[0][1]
+            if grown <= 0:
+                continue        # 줄어든 프로세스가 남의 증가를 상쇄하면 안 된다
+            key = (group_key(name, pid), attr)
+            totals[key] = totals.get(key, 0.0) + grown
+
+        for key, value in totals.items():
+            track = self._group_tracks.get(key)
+            if track is None:
+                track = _Track()
+                self._group_tracks[key] = track
+            track.add(obs.ts, value, window_s=self.window_s,
+                      drop_ratio=self.drop_reset_ratio)
+
+        # PID별과 달리 그룹은 관측이 끊겨도 키가 사라지지 않으므로 직접 정리한다.
+        stale = [k for k, t in self._group_tracks.items()
+                 if not t.samples or t.samples[-1][0] < obs.ts - self.window_s]
+        for key in stale:
+            del self._group_tracks[key]
 
     def _evict(self, now: float) -> None:
         """창 밖으로 완전히 나간 트랙을 버린다. 죽은 프로세스가 메모리에 쌓이지 않게."""
@@ -390,19 +449,31 @@ class ProcessLeakDetector(BaseDetector):
             if best is None or score > best[0]:
                 best = (score, {"pid": pid, "name": name, "rule": rule, "verdict": verdict, "track": track})
 
+        best = self._evaluate_groups(obs, best)
+
         if best is None:
             return None
+
 
         score, hit = best
         rule: MetricRule = hit["rule"]
         v: LeakVerdict = hit["verdict"]
         hit["track"].last_fired_ts = obs.ts
 
-        explain = (
-            f"{hit['name']} (PID {hit['pid']}) {rule.label} "
-            f"{v.first:,.0f} → {v.last:,.0f}{rule.unit} "
-            f"({v.ratio:.1f}배, {v.duration_s / 60:.0f}분간 줄지 않음)"
-        )
+        if hit.get("group"):
+            # 그룹은 배수를 말하지 않는다(증가분 합이라 초기에 발산한다). 대신
+            # **몇 개로 흩어져 있는지**를 말한다 — 그게 이 축이 잡은 이유다.
+            explain = (
+                f"{hit['name']} {hit['count']}개 프로세스 합계 {rule.label} "
+                f"+{v.delta:,.0f}{rule.unit} "
+                f"({v.duration_s / 60:.0f}분간 줄지 않음, 개별로는 문턱 미달)"
+            )
+        else:
+            explain = (
+                f"{hit['name']} (PID {hit['pid']}) {rule.label} "
+                f"{v.first:,.0f} → {v.last:,.0f}{rule.unit} "
+                f"({v.ratio:.1f}배, {v.duration_s / 60:.0f}분간 줄지 않음)"
+            )
 
         # 등급은 **자기 p99 대비 위치**로 정한다. 지금까지는 warning 고정이라 누수
         # 규모와 무관했다 — 실측에서 평소 상한의 3.5배로 자라는 주입과, 평소의 절반도
@@ -432,6 +503,47 @@ class ProcessLeakDetector(BaseDetector):
             duration_s=round(v.duration_s, 1),
             explain=explain,
         )
+
+    def _evaluate_groups(self, obs: Observation, best):
+        """그룹 축 판정. PID별 결과(`best`)와 견주어 더 높은 쪽을 돌려준다."""
+        from ..explain.attribution import group_key
+
+        by_attr = {r.attr: r for r in GROUP_RULES}
+        for (gkey, attr), track in self._group_tracks.items():
+            rule = by_attr.get(attr)
+            if rule is None:
+                continue
+            if track.last_fired_ts is not None and obs.ts - track.last_fired_ts < self.cooldown_s:
+                continue
+            verdict = judge(
+                track, rule, min_duration_s=self.min_duration_s, min_samples=self.min_samples
+            )
+            if not verdict.leaking:
+                continue
+
+            # 이 그룹에 속한 PID 들과, 그중 가장 많이 자란 것(대표). 소비자가 `pid` 를
+            # 기대하므로 비워 두지 않는다.
+            members = [
+                (t.samples[-1][1] - t.samples[0][1], pid, name)
+                for (pid, name, a), t in self._tracks.items()
+                if a == attr and t.samples and group_key(name, pid) == gkey
+            ]
+            if len(members) < 2:
+                # 프로세스가 하나뿐이면 PID별 축이 이미 보고 있다. 같은 일을 두 번
+                # 신고하면 융합 단계가 사건을 둘로 만든다.
+                continue
+            members.sort(reverse=True)
+            _, top_pid, top_name = members[0]
+
+            # 점수는 배수가 아니라 증가량으로 낸다(그룹은 배수를 보지 않는다).
+            score = min(1.0, verdict.delta / (rule.min_delta * 2.0))
+            if best is None or score > best[0]:
+                best = (score, {
+                    "pid": top_pid, "name": top_name, "rule": rule,
+                    "verdict": verdict, "track": track,
+                    "group": True, "count": len(members),
+                })
+        return best
 
 
 # 지표별 표시 정보. 임계값은 config 에서 오고, 여기 있는 것은 이름표뿐이다.
