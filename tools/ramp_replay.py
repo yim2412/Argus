@@ -71,9 +71,23 @@ FALLBACK_TOTAL_MB = 65_536.0
 # 톱니 램프 — `procleak` 의 `monotonic_ratio=0.9`(줄지 않은 표본 비율)를 노린다.
 # 주기의 앞 85% 는 순증가, 뒤 15% 에서 되돌린다. 비감소 비율이 대략 0.85 로 떨어져
 # 문턱 바로 아래에 놓인다. 캐시가 자랐다 비워지며 우상향하는 형태를 흉내 낸 것이다.
+#
+# ⚠️ **이 도형으로 `monotonic_ratio` 문턱을 정하지 말 것 (2026-08-17).**
+# `SAW_RISE_FRAC` 이 비감소 비율을 **0.85 로 만들도록** 정해져 있으므로, 문턱을
+# 0.85 이하로 낮추면 잡히는 것이 자명하다. 자를 자로 재는 셈이다. 실측:
+#
+#     monotonic 0.85·0.8·0.7·0.6·0.5 → 다섯 값 전부 발화, **지점까지 +22.6분 동일**
+#
+# **`--saw-drop` 은 이 비율을 바꾸지 않는다.** 되돌리는 *양(진폭)* 을 바꿀 뿐이고
+# 비감소 비율을 정하는 것은 *시간 비율*(`SAW_RISE_FRAC`)이다. 2026-08-17 에 되돌림
+# 20·30·50% 를 훑고 "미탐이 연속적이니 문턱이 설계대로 거른다"고 읽었는데,
+# **셋의 비감소 비율이 같아서 한 점을 세 번 잰 것**이었다.
+#
+# 문턱이 실제로 무엇을 가르는지는 **실측 분포**로만 답할 수 있다. 경위와 수치는
+# `docs/exp-monotonic-ratio.md`.
 SAW_PERIOD_S = 300.0
 SAW_RISE_FRAC = 0.85
-SAW_DROP = 0.30          # 주기 끝에 되돌리는 양 (그 시점 램프값 대비)
+SAW_DROP = 0.30          # 주기 끝에 되돌리는 양 (그 시점 램프값 대비) — 비감소 비율과 무관
 
 
 def _quadratic(frac: float) -> float:
@@ -317,6 +331,11 @@ def main() -> int:
     parser.add_argument("--sawtooth", action="store_true",
                         help="우상향하되 주기마다 되돌린다. `procleak` 의 "
                              "monotonic_ratio(0.9)를 노린다")
+    parser.add_argument("--monotonic-ratio", type=float, default=None, metavar="R",
+                        help="procleak 의 rss_mb.monotonic_ratio 를 이 값으로 덮어쓴다 (기본: 설정값 0.9). "
+                             "낮출수록 등락하는 것도 누수로 본다 — **정상 구간 오탐을 함께 재지 않으면 "
+                             "의미가 없다.** 값을 코드에서 고쳐 가며 재면 한 점밖에 못 재고 "
+                             ".pyc 캐시 사고를 부른다")
     parser.add_argument("--saw-drop", type=float, default=SAW_DROP, metavar="R",
                         help=f"톱니가 주기 끝에 되돌리는 비율 (기본: {SAW_DROP}). "
                              "**한 점만 재고 사각지대라 부르지 않는다** — 여러 값을 "
@@ -384,6 +403,15 @@ def main() -> int:
     else:
         modes = [(f"per_program={args.per_program}", str(args.per_program == "on").lower())]
 
+    # `monotonic_ratio` 도 같은 통로로 건다. `build()` 가 설정을 읽어 엔진을 만드므로
+    # 여기서 환경변수만 세우면 **배선 그대로** 반영된다 — 상수를 직접 고치면 배선을
+    # 건너뛰어 "설정이 안 먹는데 실험은 통과"가 가능해진다(2026-08-03 procleak 사례).
+    ENV_MONO = "ARGUS_PROCESS_LEAK__RSS_MB__MONOTONIC_RATIO"
+    if args.monotonic_ratio is not None:
+        os.environ[ENV_MONO] = str(args.monotonic_ratio)
+        print(f"※ monotonic_ratio 를 {args.monotonic_ratio} 로 덮어썼다 (기본 0.9)")
+        print()
+
     verdicts: dict[str, tuple[bool, bool]] = {}     # 모드 → (느린 램프 발화, 빠른 램프 발화)
 
     for label, override in modes:
@@ -428,6 +456,7 @@ def main() -> int:
                            any(o.fired for o in fast) if fast else False)
 
     os.environ.pop("ARGUS_DETECTION__PER_PROGRAM", None)
+    os.environ.pop(ENV_MONO, None)
 
     for label, (slow_fired, fast_fired) in verdicts.items():
         if not slow_fired and fast_fired:

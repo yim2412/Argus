@@ -1867,6 +1867,21 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    # ---- 설정 배선 (2026-08-17)
+    #
+    # `monotonic_ratio` 를 실험에서 덮어쓰는 통로다. 이것이 조용히 끊기면 **실험은
+    # 계속 통과하고 값만 안 바뀐다** — 08-03 에 `procleak` 문턱이 정확히 그랬다.
+    Mutant(
+        "procleak_monotonic_ratio_is_wired_from_config",
+        "procleak 의 단조성 문턱이 config 에서 온다 (끊기면 실험이 코드 기본값을 잰다)",
+        (
+            (
+                "argus/detection/procleak.py",
+                "                monotonic_ratio=float(cfg.monotonic_ratio),",
+                "                monotonic_ratio=0.9,  # MUTANT: 설정을 무시한다",
+            ),
+        ),
+    ),
     Mutant(
         "snapshot_prune_keeps_newest",
         "오래된 스냅샷 정리가 최신 N개를 남긴다 (거꾸로면 방금 뽑은 것을 지운다)",
