@@ -102,7 +102,17 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,          # UPX 는 백신 오탐을 부른다. 배포용이라 켜지 않는다.
-    console=True,       # 1차 빌드는 콘솔을 남긴다 — 실패 원인을 봐야 한다.
+    # **콘솔을 남기지 않는다** (2026-08-17). 상주 프로그램이라 콘솔 창이 뜨면 그
+    # 창이 계속 떠 있고, 매일 도는 스냅샷 작업(`--export-findings`)은 하루 한 번
+    # 창을 번쩍인다. 첫 배포 대상이 **창모드 게임 + 마우스 매크로**를 24시간 돌리는
+    # 노트북이라, 그 번쩍임 하나가 매크로의 포커스를 흔든다.
+    #
+    # 잃는 것은 "실패 원인을 볼 콘솔"이다. 세 가지로 대신한다 —
+    #   ① `--out <파일>` 로 점검·스냅샷 결과를 파일에 남긴다
+    #   ② 오류는 `logs/` 에 그대로 쌓이고, 스냅샷을 회수할 때 같이 가져온다
+    #   ③ `_ensure_std_streams()` 가 `sys.stdout=None` 으로 죽는 것을 막는다
+    #      (windowed 빌드에는 스트림이 아예 없어 `print` 가 AttributeError 다)
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

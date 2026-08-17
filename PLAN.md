@@ -1439,6 +1439,61 @@ done
 | ~~1~~ | ~~CPU 병목 알림이 왜 전부 오탐인지 규명~~ | — | **끝났다 (08-17).** 원인이 둘이었고 A 는 고쳤다(`per_program_strict`), B 는 남았다 — Phase 9 절 참조 |
 | **1** | **B 유형이 실사용에서 몇 건인지 센다** | 0분 (저절로 쌓인다) | A 를 고쳤으므로 앞으로 나가는 CPU 알림은 B 유형뿐이다. **그 전 데이터와 섞지 않는다** |
 | 2 | 그룹 축 오탐을 실사용으로 지켜본다 | 0분 (저절로 쌓인다) | `incidents` 에서 제목에 `합계` 가 든 것을 센다. **리플레이 9시간보다 강한 근거다.** 단, 아래 오염원을 빼고 센다 |
+| **3** | **두 번째 기계(노트북)에 설치** | 현장 10분 | 준비는 08-17 에 끝났다 — 아래 절 |
+
+#### 두 번째 기계 — 배포 준비 완료, 설치만 남았다 (2026-08-17)
+
+**"근거가 이 PC 한 대뿐"이 여러 판정을 막고 있었다.** `per_program` 기본값,
+그룹 축 오탐, Phase 8 의 "하드웨어가 하나뿐이다"가 전부 같은 벽이다. 내장그래픽
+노트북(24시간 가동, 창모드 게임 하나 고정)을 붙이면 셋이 한 번에 열린다.
+
+만든 것과 검증은 `CHANGELOG.md` 2026-08-17 항목에 있다. 요지만:
+
+```
+argus.exe --export-findings <폴더>     판정용 표만 → 439MB→18MB, 0.45초
+console=False                          창모드 게임 + 매크로를 흔들지 않는다
+install_autostart.ps1 -SnapshotTo      exe 배포판 지원 + 일일 스냅샷 등록
+fetch_snapshots.ps1                    개발 PC 가 당겨온다
+settings.quiet-observer.yaml           notify: false 한 줄만
+```
+
+**현장에서 할 일 (노트북 앞 또는 화면공유 원격, 10분).** 게임 창을 건드리므로
+**매크로를 잠깐 꺼 두고 시작한다** — 설치 중에만 창이 뜬다.
+
+```powershell
+# 1. dist\argus 폴더를 복사한 뒤, 그 안에서
+copy packaging\settings.quiet-observer.yaml %APPDATA%\Argus\settings.yaml
+powershell -ExecutionPolicy Bypass -File tools\install_autostart.ps1 -Start -SnapshotTo D:\ArgusSnapshots
+New-SmbShare -Name "ArgusSnap" -Path "D:\ArgusSnapshots" -ReadAccess "Everyone"   # 관리자 필요
+ipconfig | findstr IPv4      # ← 이 값을 개발 PC 에 알려준다
+```
+
+**설치 직후 확인할 것.** `install_autostart.ps1` 이 기동 점검 결과를 화면에 그대로
+찍는다 — 거기서 **`nvml` 이 `[----]` 로 나오는지**가 첫 관문이다. 내장그래픽 경로는
+지금까지 실기에서 한 번도 안 돌아봤다. 조용히 죽지 않고 "없음"으로 표시되어야 한다
+(설계 규칙 4). `pdh` 가 `[OK]` 인지도 본다 — 로케일별 카운터명 문제가 여기서 처음
+검증된다(수집 규칙 5).
+
+**노트북 네트워크 프로필이 `Public` 이면 공유가 막힌다.** 제일 흔한 실패 원인이고,
+개발 PC 도 지금 `Public` 이다(가져오기만 하므로 이쪽은 상관없다).
+
+**개발 PC 에서.**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\fetch_snapshots.ps1 -From \\<IP>\ArgusSnap
+```
+
+> **두 DB 를 합치지 않는다.** 25개 테이블 어디에도 `machine_id` 가 없고, 합치면
+> 양쪽 베이스라인이 서로를 뭉갠다 — **기계마다 다르다는 것을 보려고 두 대를 쓰는데
+> 섞으면 그게 사라진다.** 회수한 파일은 `ARGUS_DATA_DIR` 로 따로 연다.
+
+**노트북에서 먼저 볼 것 세 가지** (전부 이 PC 에서는 관측이 불가능했던 것이다):
+
+| 무엇 | 왜 여기서만 보이나 |
+|---|---|
+| **예산 초과 → 자동 스로틀** | CPU 예산 2% 는 코어 수로 정규화된다(`budget.py:86`). 12스레드인 이 PC 에서 2% = 코어 하나의 24% 라 한 번도 안 걸렸다. 4코어면 8% 다 — **설계 규칙 1 이 처음 시험받는다** |
+| **NVML 부재 경로** | GPU 수집기를 아예 만들지 않는 분기. 단위 테스트로만 확인됐다 |
+| **`per_program` 오탐률** | 포어그라운드가 게임 하나로 고정이라 프로그램별 베이스라인이 깨끗하게 선다. 거의 실험실 조건이다 |
 
 > **⚠️ 상주를 재시작해야 새 동작이 켜진다** (`2844bfa`). 지금 도는 상주(PID 14804,
 > 06:51:35 기동)는 `per_program_strict` 를 모른다. **커밋 시각과 기동 시각을 실제로

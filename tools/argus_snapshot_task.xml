@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  판정용 스냅샷을 하루 한 번 뽑는 작업 (2026-08-17).
+
+  다른 기계에 배포한 Argus 의 데이터를 개발 PC 로 회수하기 위한 것이다. 상주가
+  도는 중에 별도 프로세스로 실행되며 원본에는 쓰지 않는다.
+
+  **주기가 하루인 데에는 두 가지 하드 제약이 있다.**
+    ① self_telemetry 보존이 7일이다 — 이보다 드물게 받으면 관측자 자신의 부하 기록이
+       영구 손실된다. 예산 초과와 자동 스로틀을 재는 유일한 근거가 그것이다.
+    ② 웜(Parquet)은 하루 지난 날짜만 생긴다(warm.export_after_days = 1) — 더 자주
+       받아도 새로 담길 것이 없다.
+
+  더 자주 뽑을 이유가 없고, 더 드물게 뽑으면 잃는다.
+
+  이중 중괄호로 감싼 자리는 tools\install_autostart.ps1 이 채운다.
+  주석에 자리표시자를 그대로 쓰지 않는다 — 미치환 검사가 주석까지 훑는다.
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Argus 판정용 스냅샷을 하루 한 번 뽑는다. 개발 PC 가 이 파일을 회수해 분석한다.</Description>
+    <URI>\ArgusSnapshot</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <Enabled>true</Enabled>
+      <StartBoundary>{{STARTAT}}</StartBoundary>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{{USERID}}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <!-- 노트북에 배포한다. 배터리로 돌 때도 뽑는다 — 0.5초짜리 작업이다. -->
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <!-- PC 가 꺼져 있어 시각을 놓쳤으면 켜진 뒤에 뽑는다. 스냅샷은 증분이 아니라
+         전체라, 늦게 뽑아도 그동안의 것이 전부 들어온다. -->
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <!-- 작업 스케줄러 목록에서 숨긴다. 창은 어차피 안 뜬다(windowed 빌드). -->
+    <Hidden>true</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <!-- 게임 중에도 뽑아야 하므로 유휴를 기다리지 않는다. 대신 우선순위를 낮게 둔다. -->
+    <WakeToRun>false</WakeToRun>
+    <!-- 0.5초면 끝나는 작업이다. 10분을 넘기면 무언가 잘못된 것이므로 끊는다. -->
+    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{{PYTHONW}}</Command>
+      <Arguments>{{SNAPARGS}}</Arguments>
+      <WorkingDirectory>{{WORKDIR}}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

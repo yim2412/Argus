@@ -15,6 +15,7 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
 
 from . import __version__
 from .branding import set_app_id
@@ -89,7 +90,48 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="중복 실행 차단을 끈다 (같은 DB 를 두 프로세스가 쓰게 되므로 진단용)",
     )
+    parser.add_argument(
+        "--export-findings",
+        metavar="PATH",
+        help="판정용 테이블만 스냅샷 파일로 뽑고 나간다 (다른 기계의 데이터를 회수할 때)",
+    )
+    parser.add_argument(
+        "--snapshot-keep",
+        type=int,
+        default=30,
+        metavar="N",
+        help="스냅샷을 뽑은 뒤 같은 폴더에 남길 개수 (기본 30, 0 이면 정리하지 않는다)",
+    )
+    parser.add_argument(
+        "--out",
+        metavar="PATH",
+        help="화면 대신 이 파일에 결과를 쓴다 (--check·--export-findings). "
+        "창 없는 빌드에는 stdout 이 없어 이것이 유일한 통로다",
+    )
     return parser.parse_args(argv)
+
+
+def _emit(lines: list[str], out: str | None) -> None:
+    """결과를 화면과 파일 양쪽으로 내보낸다.
+
+    **둘 다 실패해도 프로그램을 죽이지 않는다.** 결과를 보여 주는 일이 하려던
+    일 자체를 실패시키면 안 된다 — 특히 창 없는 빌드에서는 화면 쪽이 항상
+    조용히 아무 데도 가지 않는다.
+    """
+    text = "\n".join(lines)
+    try:
+        print(text)
+    except (OSError, ValueError, AttributeError):
+        # windowed 빌드의 stdout 은 없거나 닫혀 있다. 파일 쪽이 본체다.
+        pass
+    if not out:
+        return
+    try:
+        path = Path(out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text + "\n", encoding="utf-8")
+    except OSError as exc:
+        log.warning("결과 파일 쓰기 실패", extra={"path": out, "error": str(exc)})
 
 
 def _export_warm(settings) -> int:
@@ -107,25 +149,71 @@ def _export_warm(settings) -> int:
     return 0
 
 
-def _print_startup_report(settings, caps, profile, db: Database) -> None:
-    """기동 시 한 화면 요약. 남의 PC 에서 무엇이 켜지고 꺼졌는지 바로 보이게 한다."""
-    print(f"Argus {__version__}")
-    print(f"  데이터   : {data_dir()}")
-    print(f"  DB       : {db_path().name}  (스키마 v{db.schema_version()}, {db.size_bytes():,} bytes)")
-    print(f"  OS       : {caps.os['system']} {caps.os['release']}  Python {caps.os['python']}")
-    print("  계측 소스:")
-    for line in caps.summary():
-        print(f"  {line}")
-    print(
+def _export_findings(args) -> int:
+    """`--export-findings`. 판정용 스냅샷을 뽑고 바로 나간다.
+
+    **상주가 도는 중에 실행된다.** 다른 기계에서는 이것이 매일 스케줄로 돌고,
+    그 기계의 상주는 계속 수집 중이다. 그래서 원본에는 쓰지 않고, 인스턴스 락도
+    잡지 않는다(`--export-warm` 과 같은 이유로 락보다 앞에서 처리된다).
+
+    결과를 `--out` 파일로 남기는 것이 중요하다 — 창 없는 빌드에서 이 실행은
+    화면에 아무것도 남기지 않으므로, 실패했는지 성공했는지 볼 방법이 그것뿐이다.
+    """
+    from .storage.findings import export_findings, prune_snapshots, resolve_out_path
+
+    # 폴더를 주면 날짜가 든 이름을 짓는다. 스케줄 작업은 인자가 고정 문자열이라
+    # 날짜를 넣을 방법이 이것뿐이고, 파일명이 곧 그 기계의 생존 신호가 된다.
+    out_path = resolve_out_path(args.export_findings)
+    try:
+        result = export_findings(out_path)
+    except Exception as exc:  # noqa: BLE001 — 원인을 사람이 읽을 수 있게 남기고 나간다
+        log.exception("스냅샷 내보내기 실패")
+        _emit([f"[FAIL] 스냅샷 내보내기 실패: {exc}"], args.out)
+        return 1
+
+    removed = prune_snapshots(out_path.parent, args.snapshot_keep) if args.snapshot_keep else []
+
+    lines = [
+        "[OK] 스냅샷을 내보냈습니다",
+        f"  파일   : {result['path']}",
+        f"  크기   : {result['size_bytes']:,} bytes",
+        f"  행 수  : {result['rows_total']:,}",
+        f"  소요   : {result['elapsed_s']}s",
+    ]
+    if result["missing"]:
+        lines.append(f"  없던 표: {', '.join(result['missing'])}")
+    if removed:
+        lines.append(f"  정리   : 오래된 스냅샷 {len(removed)}개 삭제")
+    _emit(lines, args.out)
+    return 0
+
+
+def _startup_report_lines(settings, caps, profile, db: Database) -> list[str]:
+    """기동 시 한 화면 요약. 남의 PC 에서 무엇이 켜지고 꺼졌는지 바로 보이게 한다.
+
+    **화면에 찍지 않고 줄 목록을 돌려준다.** 창 없는 빌드(`console=False`)에는
+    stdout 이 없어 `print` 가 아무 데도 가지 않기 때문이다 — 남의 PC 에서 점검
+    결과를 볼 유일한 통로가 파일이라, 같은 내용을 파일로도 남길 수 있어야 한다.
+    """
+    lines = [
+        f"Argus {__version__}",
+        f"  데이터   : {data_dir()}",
+        f"  DB       : {db_path().name}  (스키마 v{db.schema_version()}, {db.size_bytes():,} bytes)",
+        f"  OS       : {caps.os['system']} {caps.os['release']}  Python {caps.os['python']}",
+        "  계측 소스:",
+    ]
+    lines.extend(f"  {line}" for line in caps.summary())
+    lines.append(
         f"  기준선   : CPU {profile.cpu.get('single_thread_mops')}Mops/s · "
         f"RAM {profile.memory.get('total_gb')}GB · "
         f"디스크 {profile.disk.get('media_type')} "
         f"{profile.disk.get('seq_write_mbps')}MB/s"
     )
-    print(
+    lines.append(
         f"  예산     : CPU {settings.budget.cpu_percent}% · "
         f"RSS {settings.budget.rss_mb}MB"
     )
+    return lines
 
 
 def _build_collectors(settings, queue: SampleQueue, caps) -> list:
@@ -222,7 +310,9 @@ def run(args: argparse.Namespace) -> int:
     # **자식은 "Argus 시작"을 남기지 않는다.** 웜 내보내기는 시간마다 도는데, 그때마다
     # 기동 로그가 쌓이면 로그로 세션 경계를 세는 일이 전부 틀어진다 — 08-12 에 RSS
     # 급증 원인을 찾다가 정확히 그 혼란을 겪었다(기동이 아닌 줄이 기동으로 보였다).
-    if not args.export_warm:
+    # 스냅샷 내보내기도 같은 이유로 제외한다 — 다른 기계에서 **매일** 도는 자식이라,
+    # 세면 하루 한 번씩 있지도 않은 기동이 생긴다.
+    if not (args.export_warm or args.export_findings):
         log.info("Argus 시작", extra={"version": __version__, "data_dir": str(data_dir())})
 
     # 트레이 창(`TrayIcon`)이 만들어지기 전에 정체를 밝혀 둔다. 창이 생긴 뒤에 부르면
@@ -251,6 +341,11 @@ def run(args: argparse.Namespace) -> int:
     if args.export_warm:
         return _export_warm(settings)
 
+    # 스냅샷 내보내기도 같은 자리다 — 상주가 락을 쥔 채 도는 중에 실행되므로
+    # 인스턴스 락보다 **앞**이어야 한다. 원본에는 쓰지 않는다.
+    if args.export_findings:
+        return _export_findings(args)
+
     # 같은 DB 를 두 프로세스가 쓰면 수집이 두 배로 들어가고 융합 워터마크·예산 가드가
     # 서로 덮어쓴다. `--check` 는 아무것도 쓰지 않으므로 상주 인스턴스와 함께 돌 수 있다.
     lock: InstanceLock | None = None
@@ -273,11 +368,13 @@ def run(args: argparse.Namespace) -> int:
 
     db = Database().open()
     try:
-        _print_startup_report(settings, caps, profile, db)
+        report = _startup_report_lines(settings, caps, profile, db)
 
         if args.check:
-            print("[OK] 기동 점검 통과")
+            report.append("[OK] 기동 점검 통과")
+            _emit(report, args.out)
             return 0
+        _emit(report, None)
 
         guard = BudgetGuard(settings.budget)
         queue = SampleQueue(maxsize=settings.storage.queue_max_rows)
@@ -538,7 +635,32 @@ def run(args: argparse.Namespace) -> int:
             lock.release()
 
 
+def _ensure_std_streams() -> None:
+    """창 없는 빌드(`console=False`)에서 `sys.stdout`/`stderr` 가 `None` 인 것을 막는다.
+
+    **PyInstaller 의 windowed 빌드에는 콘솔이 없어 두 스트림이 `None` 이다.**
+    그 상태로 `print()` 를 부르면 `AttributeError: 'NoneType' object has no
+    attribute 'write'` 로 죽는다 — 기능이 아니라 *결과를 보여 주려던 코드* 때문에
+    프로그램 전체가 내려가는 것이다.
+
+    2026-08-17 에 노트북(창모드 게임 + 마우스 매크로)에 배포하려고 콘솔을 껐다.
+    콘솔 창이 뜨면 게임 위에 검은 창이 겹치고, 매일 도는 스냅샷 작업이 하루 한 번씩
+    포커스를 흔든다. 창을 없애는 대신 이 방어가 필요해졌다.
+
+    `logging_setup` 이 `sys.stderr` 로 `StreamHandler` 를 만드는 자리도 같이 지킨다.
+    """
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name, None) is None:
+            try:
+                setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
+            except OSError:
+                # devnull 조차 못 여는 환경이라면 더 할 수 있는 것이 없다.
+                # 여기서 죽지는 않는다 — 아래 `_emit` 가 예외를 삼킨다.
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _ensure_std_streams()
     args = parse_args(argv)
     try:
         return run(args)

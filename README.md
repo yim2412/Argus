@@ -95,11 +95,20 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt
 
 ```powershell
 .venv\Scripts\pyinstaller.exe packaging\argus.spec --noconfirm      # 상주
-dist\argus\argus.exe --check
+dist\argus\argus.exe --check --out check.txt                        # 결과는 파일로
 
 .venv\Scripts\pyinstaller.exe packaging\argus_ui.spec --noconfirm   # 네이티브 창
 dist\argus-ui\argus-ui.exe --seconds 12
 ```
+
+> **상주 exe 는 창 없는 빌드입니다**(`console=False`, 2026-08-17). 상주라서 콘솔
+> 창이 뜨면 계속 떠 있고, 매일 도는 스냅샷 작업이 하루 한 번 창을 번쩍입니다 —
+> 첫 배포 대상이 **창모드 게임 + 마우스 매크로**를 24시간 돌리는 노트북이라 그
+> 번쩍임 하나가 매크로를 흔듭니다.
+>
+> 그래서 **`print` 가 아무 데도 가지 않습니다.** windowed 빌드에는 `sys.stdout` 이
+> 아예 없어서, 결과를 보려면 `--out <파일>` 을 줘야 합니다. `_ensure_std_streams()`
+> 가 `sys.stdout=None` 으로 `AttributeError` 가 나는 것을 막습니다.
 
 실측(2026-08-09): 상주 **198MB** · 창 **299MB**. 창 쪽이 큰 것은 Qt 런타임 때문이고,
 `argus_ui.spec` 의 `excludes` 가 WebEngine·3D·Multimedia 를 걷어내 설치본 643MB 에서
@@ -116,6 +125,25 @@ dist\argus-ui\argus-ui.exe --seconds 12
 **상주 exe 에는 창을 넣지 않습니다.** 별도 프로세스여야 창이 죽어도 수집이 계속되고,
 배포의 최소 단위는 "수집하고 탐지하는 상주"입니다. 트레이 메뉴가 `argus-ui.exe` 를 찾아
 띄웁니다. 트레이와 알림 발송은 켜져 있습니다.
+
+### 다른 기계에 배포하고 데이터를 회수하기
+
+두 번째 기계를 붙이면 `PLAN.md` 의 여러 판정("근거가 이 PC 한 대뿐"에 막혀 있던 것)이
+열립니다. 저쪽은 수집만 하고, 조회·분석·수정은 전부 개발 PC 에서 합니다.
+
+```powershell
+# 관측 기계에서 한 번만 (exe 폴더를 복사한 뒤)
+copy packaging\settings.quiet-observer.yaml %APPDATA%\Argus\settings.yaml
+powershell -ExecutionPolicy Bypass -File tools\install_autostart.ps1 -Start -SnapshotTo D:\ArgusSnapshots
+
+# 개발 PC 에서 켤 때마다
+powershell -ExecutionPolicy Bypass -File tools\fetch_snapshots.ps1 -From \\<IP>\ArgusSnap
+```
+
+`--export-findings` 가 판정용 표만 뽑습니다 — 실측 **439MB → 18MB, 0.45초**이고
+상주가 쓰는 중에도 일관된 스냅샷이 나옵니다(읽기 트랜잭션 하나로 복사). 네트워크
+목적지(`net_connections`)와 초 단위 원본은 담지 않습니다. 자세한 것은
+`tools/README.md` 의 "다른 기계에 배포하고 데이터를 회수한다".
 
 **아이콘은 두 경로로 들어갑니다.** `icon=` 은 exe 파일 자체의 아이콘(탐색기가 보는 것)
 이고, `datas` 의 `assets/argus.ico` 는 트레이가 런타임에 `LoadImage` 로 읽는 파일입니다.

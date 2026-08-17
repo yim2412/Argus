@@ -8,7 +8,9 @@
 | `soak_entry.py` | 창 없는 진입점. 스케줄러가 base pythonw 로 실행한다 (검증·상시 공용) |
 | `soak_task.xml` | 장시간 상주 **검증**용 등록 정의 (수동 트리거 전용) |
 | `argus_task.xml` | 로그온 **자동 시작**용 등록 정의. 경로는 아래 스크립트가 채운다 |
-| `install_autostart.ps1` | 자동 시작 등록·해제 |
+| `argus_snapshot_task.xml` | 판정용 스냅샷을 **하루 한 번** 뽑는 등록 정의 (다른 기계에 배포할 때) |
+| `install_autostart.ps1` | 자동 시작 등록·해제. `-SnapshotTo` 를 주면 스냅샷 작업도 함께 |
+| `fetch_snapshots.ps1` | 다른 기계가 뽑아 둔 스냅샷을 이 PC 로 가져온다 |
 | `backfill_rollup.py` | 워터마크보다 과거에 남은 원본을 소급 집계한다 |
 | `readiness.py` | 데이터 대기 중인 작업을 지금 시작해도 되는지 판정한다 |
 | `autolabel_backfill.py` | 이미 쌓인 알림에 자동 라벨(`auto_label`)을 매긴다 |
@@ -98,6 +100,42 @@ powershell -ExecutionPolicy Bypass -File tools\install_autostart.ps1 -Uninstall
 
 **작업 정의 XML 의 주석에 자리표시자를 예시로 적지 않는다.** 스크립트의 미치환 검사는
 주석까지 훑기 때문에, 설명하려고 적어 둔 `{{ }}` 가 등록을 막는다.
+
+## 다른 기계에 배포하고 데이터를 회수한다 (2026-08-17~)
+
+두 번째 기계를 붙이는 경로다. `PLAN.md` 의 여러 판정이 **"근거가 이 PC 한 대뿐"**
+에 막혀 있었고(`per_program` 기본값·그룹 축 오탐·Phase 8 의 하드웨어 다양성),
+그것을 여는 것이 목적이다.
+
+```powershell
+# 저쪽(관측 기계) — exe 폴더를 복사한 뒤 한 번만
+copy packaging\settings.quiet-observer.yaml %APPDATA%\Argus\settings.yaml
+powershell -ExecutionPolicy Bypass -File tools\install_autostart.ps1 -Start `
+    -SnapshotTo D:\ArgusSnapshots
+New-SmbShare -Name "ArgusSnap" -Path "D:\ArgusSnapshots" -ReadAccess "Everyone"   # 관리자
+
+# 이쪽(개발 PC) — 켤 때마다
+powershell -ExecutionPolicy Bypass -File tools\fetch_snapshots.ps1 -From \\<IP>\ArgusSnap
+```
+
+알아 둘 것:
+
+1. **DB 를 합치지 않는다.** 25개 테이블 어디에도 `machine_id` 가 없고, 합치면
+   양쪽 베이스라인(중앙값/MAD)이 서로를 뭉갠다 — **기계마다 다르다는 것을 보려고
+   두 대를 쓰는데 섞으면 그게 사라진다.** 회수한 파일은 `ARGUS_DATA_DIR` 로 따로 연다.
+2. **`.db` 파일만 복사하면 안 된다.** WAL 모드라 `-wal` 에 든 최신 커밋이 빠지고,
+   세 파일을 다 복사해도 그 사이 쓰기가 끼면 어긋난다. `--export-findings` 는 읽기
+   트랜잭션 하나 안에서 복사해 **상주가 쓰는 중에도 한 시점의 모습**을 뽑는다.
+3. **네트워크 경로에서 SQLite 를 직접 열지 않는다.** SMB 는 파일 잠금이 불안정하다.
+   `fetch_snapshots.ps1` 이 로컬로 복사하는 이유가 이것이다.
+4. **회수 주기가 하루인 데는 제약이 있다.** `self_telemetry` 보존이 7일이고(관측자
+   자신의 부하 — 예산 초과와 자동 스로틀을 재는 유일한 근거), 웜은 하루 지난 날짜만
+   생긴다. 더 자주 받을 이유가 없고 더 드물게 받으면 잃는다.
+5. **파일명이 곧 생존 신호다.** 별도 하트비트를 만들지 않았다 — 폴더의 마지막 파일이
+   며칠 전인지가 저쪽이 언제까지 살아 있었는지다. `fetch_snapshots.ps1` 이 2일을
+   넘으면 경고한다.
+6. **`robocopy` 의 종료 코드는 0 이 아니어도 성공이다** (0~7 정상, 1 = 복사함).
+   `-ne 0` 으로 판정하면 정상 복사가 매번 실패로 보인다.
 
 ## 중복 실행
 

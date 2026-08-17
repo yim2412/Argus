@@ -1825,6 +1825,59 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    # ---- 회수 스냅샷 (2026-08-17, 두 번째 기계를 붙이면서)
+    #
+    # 이 경로는 **남의 PC 에서 매일 자동으로 돌고 아무도 화면을 보지 않는다.**
+    # 조용히 틀리면 몇 주 뒤 "데이터가 이상한데 왜인지 모르겠다"로만 나타난다.
+    Mutant(
+        "snapshot_excludes_network_destinations",
+        "스냅샷에 네트워크 목적지를 담지 않는다 (기계 밖으로 나가는 유일한 물건이다)",
+        (
+            (
+                "argus/storage/findings.py",
+                '    "net_connections": "**네트워크 목적지가 들어 있다.** 설계 규칙 5 — 담지 않는 것이 익명화다",\n',
+                "",
+            ),
+            (
+                "argus/storage/findings.py",
+                '    "warm_exports",\n)',
+                '    "warm_exports",\n    "net_connections",  # MUTANT: 목적지를 담는다\n)',
+            ),
+        ),
+    ),
+    Mutant(
+        "snapshot_does_not_write_to_source",
+        "스냅샷을 뽑을 때 원본에 쓰지 않는다 (상주가 그 DB 를 쓰는 중이다)",
+        (
+            (
+                "argus/storage/findings.py",
+                '        conn.execute("BEGIN")',
+                '        conn.execute("BEGIN")\n        conn.execute("PRAGMA user_version=999")  # MUTANT',
+            ),
+        ),
+    ),
+    Mutant(
+        "snapshot_replaces_instead_of_appending",
+        "다시 뽑으면 지난 회차를 지운다 (이어붙이면 언제 것인지 모르는 스냅샷이 된다)",
+        (
+            (
+                "argus/storage/findings.py",
+                "        if stale.exists():\n            stale.unlink()",
+                "        if False:\n            stale.unlink()  # MUTANT",
+            ),
+        ),
+    ),
+    Mutant(
+        "snapshot_prune_keeps_newest",
+        "오래된 스냅샷 정리가 최신 N개를 남긴다 (거꾸로면 방금 뽑은 것을 지운다)",
+        (
+            (
+                "argus/storage/findings.py",
+                "        key=lambda p: p.stat().st_mtime,\n        reverse=True,",
+                "        key=lambda p: p.stat().st_mtime,\n        reverse=False,  # MUTANT",
+            ),
+        ),
+    ),
 ]
 
 
