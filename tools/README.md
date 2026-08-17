@@ -108,15 +108,27 @@ powershell -ExecutionPolicy Bypass -File tools\install_autostart.ps1 -Uninstall
 그것을 여는 것이 목적이다.
 
 ```powershell
-# 저쪽(관측 기계) — exe 폴더를 복사한 뒤 한 번만
-copy packaging\settings.quiet-observer.yaml %APPDATA%\Argus\settings.yaml
-powershell -ExecutionPolicy Bypass -File tools\install_autostart.ps1 -Start `
-    -SnapshotTo D:\ArgusSnapshots
-New-SmbShare -Name "ArgusSnap" -Path "D:\ArgusSnapshots" -ReadAccess "Everyone"   # 관리자
+# 이쪽(개발 PC) — 배포 폴더를 만든다
+.venv\Scripts\pyinstaller.exe packaging\argus.spec --noconfirm
+powershell -ExecutionPolicy Bypass -File packaging\make_deploy.ps1
+
+# 저쪽(관측 기계) — 그 폴더를 통째로 옮긴 뒤, 안에서 한 번만
+powershell -ExecutionPolicy Bypass -File 설치.ps1
 
 # 이쪽(개발 PC) — 켤 때마다
 powershell -ExecutionPolicy Bypass -File tools\fetch_snapshots.ps1 -From \\<IP>\ArgusSnap
 ```
+
+> **`dist\argus` 를 그대로 복사하면 안 된다.** 안에는 `argus.exe` 와 `_internal`
+> 뿐이라 설치 스크립트도 작업 정의 XML 도 설정 파일도 없다 — 현장에서 "그런 파일이
+> 없습니다" 를 만난다. `make_deploy.ps1` 이 필요한 것을 모아 폴더 하나로 만들고,
+> **빌드가 소스보다 오래됐으면 거기서 멈춘다**(고친 코드를 안 담은 폴더를 들고 가는
+> 것이 가장 알아채기 어려운 실수다).
+>
+> 그리고 **만든 스크립트를 파싱해 본다.** here-string 안에서 조립하므로 이스케이프
+> 하나가 어긋나도 만드는 쪽은 성공으로 끝난다 — 2026-08-17 에 줄 끝 백틱이 먹혀
+> `설치.ps1` 이 구문 오류인 채로 만들어졌고, 이 검사가 잡았다. 생성한 코드는
+> 만든 사람이 읽지 않는다.
 
 알아 둘 것:
 

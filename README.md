@@ -132,11 +132,13 @@ dist\argus-ui\argus-ui.exe --seconds 12
 열립니다. 저쪽은 수집만 하고, 조회·분석·수정은 전부 개발 PC 에서 합니다.
 
 ```powershell
-# 관측 기계에서 한 번만 (exe 폴더를 복사한 뒤)
-copy packaging\settings.quiet-observer.yaml %APPDATA%\Argus\settings.yaml
-powershell -ExecutionPolicy Bypass -File tools\install_autostart.ps1 -Start -SnapshotTo D:\ArgusSnapshots
+# 개발 PC — 배포 폴더를 만든다 (dist\argus 를 그대로 복사하면 안 됩니다)
+powershell -ExecutionPolicy Bypass -File packaging\make_deploy.ps1
 
-# 개발 PC 에서 켤 때마다
+# 관측 기계 — 그 폴더를 옮긴 뒤 안에서 한 번만
+powershell -ExecutionPolicy Bypass -File 설치.ps1
+
+# 개발 PC — 켤 때마다
 powershell -ExecutionPolicy Bypass -File tools\fetch_snapshots.ps1 -From \\<IP>\ArgusSnap
 ```
 
