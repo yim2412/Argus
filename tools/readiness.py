@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -86,6 +87,20 @@ LOSS_AXIS_COLUMN = "gpu_clock_sm_mean"
 # 아니라 사건마다 다르다"는 답이다). 그래서 조건은 방향이 아니라 건수다.
 SEVERITY_AXIS_MIN_LABELS = 6
 
+# **조건이 충족될 수 있는지도 같이 잰다.** 부족한 것(`[대기]`)과 더 오지 않는 것(`[막힘]`)은
+# 다른 상태인데, 건수만 세면 둘이 똑같이 보인다. 2026-07-29 Phase 6 과 2026-08-19
+# severity 가 같은 함정이었다 — 도달 불가능한 조건이 무기한 `[대기]` 로 남아 있었고,
+# 그동안 다음 세션은 "곧 찰 것"으로 읽었다.
+#
+# 7일인 이유. 이 PC 사용은 주 단위로 성격이 갈리므로(주중 업무 · 주말 게임) 한 주를
+# 온전히 덮어야 "그 축이 안 나오는 것"과 "이번 주에 마침 안 했다"가 갈린다. 실측:
+# THERMAL 사건은 08-10 이 마지막이고 그 뒤 9일간 0건인데, 그 사이 고부하 날이 8일
+# 있었다 — 부하가 없어서가 아니라 **문턱에 닿지 못해서**다.
+#
+# 관측이 멈춘 기간은 세지 않는다. PC 를 안 켠 날까지 "안 왔다"로 세면 여행 다녀온
+# 것이 조건 재설계 신호가 된다.
+SUPPLY_STALL_DAYS = 7
+
 
 @dataclass
 class Check:
@@ -94,6 +109,9 @@ class Check:
     label: str
     ok: bool
     detail: str
+    # 이 조건의 표본 공급이 멈췄다면 그 이유. 채워지면 `[대기]` 가 아니라 `[막힘]` 이다 —
+    # "더 모으면 된다"와 "모을 곳이 없다"를 눈으로 갈라야 계획이 그 자리에 머물지 않는다.
+    stalled: str | None = None
 
 
 @dataclass
@@ -115,6 +133,17 @@ class Readiness:
     @property
     def ok(self) -> bool:
         return self.done is None and all(c.ok for c in self.checks)
+
+    @property
+    def stalled(self) -> str | None:
+        """못 채운 조건 중 공급이 멈춘 것의 이유. 없으면 `None`.
+
+        **막힘은 완료·기각을 덮지 않는다.** 이미 결론이 난 항목에 "표본이 안 온다"를
+        띄우면 끝난 일을 다시 할 일처럼 보이게 한다.
+        """
+        if self.done is not None or self.ok:
+            return None
+        return next((c.stalled for c in self.checks if not c.ok and c.stalled), None)
 
 
 @dataclass
@@ -281,11 +310,14 @@ def check_loss_axis(days: dict[str, Day]) -> Readiness:
     return result
 
 
-def check_severity_inversion() -> Readiness:
+def check_severity_inversion(days: dict[str, Day]) -> Readiness:
     """`severity` 등급 역전 — 발열 축 사람 라벨.
 
     **여기만 롤업이 아니라 사건을 센다.** 이 조건의 표본은 관측 시간이 아니라 사람이
     답한 라벨이고, 그것은 사건 테이블에만 있다.
+
+    `days` 는 공급 정지를 재는 데만 쓴다 — "마지막 사건 이후 며칠을 관측했는가"를
+    달력이 아니라 관측일로 세기 위해서다.
 
     **축을 여기서 다시 정하지 않는다.** 무엇을 미탐으로 물을지는 이미
     `label.ask_unnotified_bottlenecks` 가 갖고 있고(지금은 `THERMAL`), 등급 역전
@@ -343,9 +375,46 @@ def check_severity_inversion() -> Readiness:
                 if total >= SEVERITY_AXIS_MIN_LABELS
                 else f" — {SEVERITY_AXIS_MIN_LABELS - total}건 부족"
             ),
+            stalled=_axis_supply_stall(kinds, axis, days),
         )
     )
     return result
+
+
+def _axis_supply_stall(kinds: list[str], axis: str, days: dict[str, Day]) -> str | None:
+    """그 축의 **사건**이 더 안 생기고 있으면 그 사실을 말한다.
+
+    라벨이 아니라 사건을 세는 이유: 라벨은 사람이 눌러야 생기므로 "안 눌렀다"와
+    "생기지 않았다"가 섞인다. 조건이 막혔는지를 가르는 것은 **물어볼 사건이 오는가**다.
+
+    이 판정은 원인을 말하지 않는다 — 문턱이 높아서인지, 하드웨어가 그런 것인지는
+    데이터가 답할 수 없다. 말할 수 있는 것은 "관측은 계속됐는데 안 왔다"까지고,
+    거기서부터는 사람이 본다.
+    """
+    from argus.dashboard.data import _DURING_INJECTION, query
+
+    placeholders = ",".join("?" * len(kinds))
+    rows = query(
+        "SELECT MAX(i.ts_start) AS last_ts FROM incidents i"
+        f" WHERE UPPER(COALESCE(i.bottleneck,'')) IN ({placeholders})"
+        f" AND NOT {_DURING_INJECTION}",
+        tuple(kinds),
+    )
+    last_ts = rows[0]["last_ts"] if rows else None
+    if last_ts is None:
+        # 사건이 한 번도 없었으면 "멈췄다"가 아니라 "시작한 적이 없다"다. 관측 기간이
+        # 짧을 뿐일 수 있어 여기서 단정하지 않는다.
+        return None
+
+    last_day = dt.datetime.fromtimestamp(last_ts).strftime("%Y-%m-%d")
+    since = [d for d in days if d > last_day]
+    if len(since) < SUPPLY_STALL_DAYS:
+        return None
+    return (
+        f"마지막 {axis} 사건이 {last_day[5:]} 이고 그 뒤 {len(since)}일을 관측했는데 "
+        f"0건이다. 라벨을 안 누른 것이 아니라 **물어볼 사건이 오지 않는다** — "
+        f"기다려서 채워질 조건이 아니므로 조건이나 축을 다시 봐야 한다."
+    )
 
 
 def main() -> int:
@@ -360,7 +429,7 @@ def main() -> int:
         print("        사용 패턴 다양성은 사람이 판단할 것.\n")
 
     reports = [
-        check_severity_inversion(),
+        check_severity_inversion(days),
         check_loss_axis(days),
         check_fingerprint(days),
         closed_regime(),
@@ -368,7 +437,12 @@ def main() -> int:
     ]
 
     for report in reports:
-        mark = report.mark if report.done else ("[OK]" if report.ok else "[대기]")
+        if report.done:
+            mark = report.mark
+        elif report.ok:
+            mark = "[OK]"
+        else:
+            mark = "[막힘]" if report.stalled else "[대기]"
         print(f"{mark} {report.name}")
         print(f"      {report.note}")
         if report.done:
@@ -376,10 +450,18 @@ def main() -> int:
         for check in report.checks:
             print(f"      {'v' if check.ok else 'x'} {check.label}")
             print(f"        └ {check.detail}")
+            if not check.ok and check.stalled:
+                print(f"        ! {check.stalled}")
         print()
 
     ready = [r.name for r in reports if r.ok]
     print("착수 가능:", ", ".join(ready) if ready else "없음 — 더 모을 것")
+
+    # **막힌 것은 따로 한 줄 더 말한다.** 위 목록 안에만 있으면 "아직 대기 중"으로
+    # 읽히고, 그 오독이 정확히 07-29·08-19 를 만들었다.
+    blocked = [r.name for r in reports if r.stalled]
+    if blocked:
+        print("막힌 조건:", ", ".join(blocked), "— 기다려도 안 찬다. 조건을 다시 볼 것")
     return 0
 
 
