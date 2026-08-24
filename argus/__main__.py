@@ -31,6 +31,7 @@ from .paths import ENV_DATA_DIR, data_dir, db_path
 from .runtime.budget import BudgetGuard
 from .runtime.gapmon import GapMonitor, gap_event_row
 from .runtime.livecfg import LiveConfig, LiveConfigWatcher
+from .runtime.heapcensus import HeapCensus
 from .runtime.selftel import BudgetMonitor, SelfTelemetry
 from .runtime.session import detect_unclean_shutdown
 from .runtime.stopfile import StopFileMonitor, clear_stale, request_stop
@@ -279,6 +280,7 @@ def _print_shutdown_report(db: Database, started: float) -> None:
         "net_connections",
         "system_events",
         "self_telemetry",
+        "heap_census",
     )
     print(f"  종료 — 가동 {uptime:.1f}초")
     for table in tables:
@@ -421,6 +423,17 @@ def run(args: argparse.Namespace) -> int:
                     guard,
                     interval_s=settings.self_telemetry.interval_s,
                     active_fn=sup.active_components,
+                )
+            )
+
+        # 힙 센서스는 자기 계측 바로 옆에 둔다 — 같은 질문("Argus 자신은 어떤가")의
+        # 다른 층이다. `self_telemetry` 가 OS 가 보는 값이라면 이쪽은 파이썬 힙 안이다.
+        if settings.heap_census.enabled:
+            sup.add(
+                HeapCensus(
+                    db,
+                    interval_s=settings.heap_census.interval_s,
+                    top_n=settings.heap_census.top_n,
                 )
             )
 

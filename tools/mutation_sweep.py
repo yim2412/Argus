@@ -1882,6 +1882,81 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    # ---- 예산 가드의 RSS 완화 (2026-08-25)
+    #
+    # 완화는 **덜 하는 쪽**의 변경이라 무력화하면 원래 동작(항상 스로틀)으로 돌아간다.
+    # 그래서 "보호를 뜯어냈는데 결과가 같다"가 아니라 반대로 **완화를 뜯어냈는데
+    # 결과가 같으면** 완화가 검증된 적이 없다는 뜻이다.
+    Mutant(
+        "budget_rss_needs_pressure",
+        "RSS 경고선은 압박이 동반될 때만 스로틀한다 (끊기면 옛 동작으로 조용히 돌아간다)",
+        (
+            (
+                "argus/runtime/budget.py",
+                "        over_soft = rss_mb > s.rss_mb and pressure",
+                "        over_soft = rss_mb > s.rss_mb  # MUTANT: 압박 조건을 뺀다",
+            ),
+        ),
+    ),
+    Mutant(
+        "budget_drop_count_is_a_delta",
+        "drop_count 를 델타로 본다 (누적값으로 보면 한 번 유실에 남은 수명 내내 스로틀)",
+        (
+            (
+                "argus/runtime/budget.py",
+                "        dropped = snap.drop_count > self._last_drop_count",
+                "        dropped = snap.drop_count > 0  # MUTANT: 누적값을 그대로 본다",
+            ),
+        ),
+    ),
+    Mutant(
+        "budget_unknown_capacity_is_not_pressure",
+        "큐 상한을 모르면 압박이 아니다 (거꾸로면 등록이 끊긴 순간 상시 스로틀)",
+        (
+            (
+                "argus/runtime/stats.py",
+                "            return 0.0",
+                "            return 1.0  # MUTANT: 모르는 상한을 100% 로 읽는다",
+            ),
+        ),
+    ),
+    Mutant(
+        "budget_hard_limit_ignores_pressure",
+        "안전망은 압박과 무관하게 건다 (끊기면 08-12 형 폭주를 못 잡는다)",
+        (
+            (
+                "argus/runtime/budget.py",
+                "        over_hard = rss_mb > s.rss_hard_mb",
+                "        over_hard = rss_mb > s.rss_hard_mb and pressure  # MUTANT",
+            ),
+        ),
+    ),
+    # ---- 힙 센서스 (2026-08-25)
+    #
+    # 개수만 세면 `str`·`bytes` 로 자라는 것을 통째로 놓친다. 그 결함은 예외가 아니라
+    # **조용한 0** 으로 나타난다 — 계측은 계속 돌고 값만 안 움직인다.
+    Mutant(
+        "heap_census_counts_items_not_just_objects",
+        "힙 센서스가 컨테이너 원소 수를 센다 (개수만 세면 untracked 로 자라는 것을 못 본다)",
+        (
+            (
+                "argus/runtime/heapcensus.py",
+                "            total_items += n",
+                "            total_items += 0  # MUTANT: 원소를 세지 않는다",
+            ),
+        ),
+    ),
+    Mutant(
+        "heap_census_ranks_by_items",
+        "상위 타입을 원소 수로 고른다 (개수로 고르면 늘 function/tuple 이라 아무 말도 안 한다)",
+        (
+            (
+                "argus/runtime/heapcensus.py",
+                "    ranked = sorted(counts, key=lambda k: (items[k], counts[k]), reverse=True)[:top_n]",
+                "    ranked = [k for k, _ in counts.most_common(top_n)]  # MUTANT: 개수 기준",
+            ),
+        ),
+    ),
     Mutant(
         "snapshot_prune_keeps_newest",
         "오래된 스냅샷 정리가 최신 N개를 남긴다 (거꾸로면 방금 뽑은 것을 지운다)",

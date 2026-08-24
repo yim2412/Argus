@@ -16,7 +16,7 @@ import shutil
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from ..paths import resource_path, user_config_path
 
@@ -53,12 +53,24 @@ class StorageSettings(BaseModel):
 
 class BudgetSettings(BaseModel):
     cpu_percent: float = Field(default=2.0, gt=0)
-    rss_mb: int = Field(default=300, gt=0)
+    rss_mb: int = Field(default=300, gt=0)          # 경고선 — 단독으로는 스로틀하지 않는다
+    rss_hard_mb: int = Field(default=600, gt=0)     # 안전망 — 압박과 무관하게 스로틀
+    pressure_queue_ratio: float = Field(default=0.5, gt=0, le=1.0)
     check_interval_s: float = Field(default=5.0, gt=0)
     breach_streak_to_throttle: int = Field(default=3, ge=1)
     calm_streak_to_relax: int = Field(default=12, ge=1)
     throttle_multipliers: list[float] = Field(default=[1.0, 2.0, 4.0, 10.0])
     wake_granularity_s: float = Field(default=5.0, gt=0)
+
+    @model_validator(mode="after")
+    def _hard_above_soft(self) -> "BudgetSettings":
+        # hard 가 경고선 이하면 경고선이 영원히 도달 불가가 되어 완화가 통째로 죽는다.
+        # 조용히 죽는 대신 기동 시점에 터뜨린다.
+        if self.rss_hard_mb <= self.rss_mb:
+            raise ValueError(
+                f"rss_hard_mb({self.rss_hard_mb}) 는 rss_mb({self.rss_mb}) 보다 커야 합니다"
+            )
+        return self
 
     @field_validator("throttle_multipliers")
     @classmethod
@@ -75,6 +87,12 @@ class BudgetSettings(BaseModel):
 class SelfTelemetrySettings(BaseModel):
     enabled: bool = True
     interval_s: float = Field(default=5.0, gt=0)
+
+
+class HeapCensusSettings(BaseModel):
+    enabled: bool = True
+    interval_s: float = Field(default=300.0, gt=0)
+    top_n: int = Field(default=20, gt=0)
 
 
 class GapMonitorSettings(BaseModel):
@@ -595,6 +613,7 @@ class Settings(BaseModel):
     storage: StorageSettings = StorageSettings()
     budget: BudgetSettings = BudgetSettings()
     self_telemetry: SelfTelemetrySettings = SelfTelemetrySettings()
+    heap_census: HeapCensusSettings = HeapCensusSettings()
     gap_monitor: GapMonitorSettings = GapMonitorSettings()
     calibration: CalibrationSettings = CalibrationSettings()
     collector: CollectorSettings = CollectorSettings()
