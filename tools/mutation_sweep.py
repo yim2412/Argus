@@ -1957,6 +1957,22 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    # ---- 착수 조건 판정 (2026-08-25)
+    #
+    # `tools/` 는 테스트 밖이라 이 자리는 원래 무력화가 못 잡던 곳이다. 08-25 에
+    # `tests/test_readiness_severity.py` 를 붙여 잡히게 만들었고, 그것이 실제로
+    # 잡는지를 여기서 잰다.
+    Mutant(
+        "readiness_counts_only_unnotified_labels",
+        "등급 역전 조건은 미탐 라벨만 센다 (발송된 것까지 세면 없는 근거로 착수한다)",
+        (
+            (
+                "tools/readiness.py",
+                '    unnotified = f" AND COALESCE(i.notified,0)=0"',
+                '    unnotified = ""  # MUTANT: 발송된 라벨까지 센다',
+            ),
+        ),
+    ),
     Mutant(
         "snapshot_prune_keeps_newest",
         "오래된 스냅샷 정리가 최신 N개를 남긴다 (거꾸로면 방금 뽑은 것을 지운다)",

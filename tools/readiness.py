@@ -349,15 +349,39 @@ def check_severity_inversion(days: dict[str, Day]) -> Readiness:
         return result
 
     placeholders = ",".join("?" * len(kinds))
+
+    # **알림이 나간 사건은 세지 않는다 (2026-08-25).**
+    #
+    # 등급 역전은 *안 나간 것이 나갔어야 했다* 는 실패다. 그러니 증거는 미탐에만 있고,
+    # 발송된 사건에 붙은 라벨은 이 질문에 **아무 말도 하지 않는다.** 위 71~87행 주석이
+    # 처음부터 그렇게 적혀 있었는데 쿼리에는 그 조건이 없었다.
+    #
+    # **왜 여태 안 보였나.** 08-24 까지 THERMAL 라벨 3건이 전부 `notified=0` 이라
+    # 필터가 있든 없든 결과가 같았다. 08-23 에 처음으로 알림이 나간 THERMAL 사건
+    # (#200·#202)이 생기면서 비로소 갈렸다 — 두 값이 우연히 같아 배선이 끊겨도
+    # 참이던 경우와 정확히 같은 구조다.
+    #
+    # 고치지 않았으면 그 2건에 답하는 순간 6건이 차서 `[착수 가능]` 이 떴을 것이고,
+    # **착수했을 때 손에 쥔 근거는 4건**이었을 것이다. 08-16 에 "전체 20건"을
+    # "발열 축 6건"으로 바꾼 것과 같은 유형의 오류다(재는 대상이 조건과 어긋남).
+    unnotified = f" AND COALESCE(i.notified,0)=0"
     rows = query(
         "SELECT COALESCE(i.user_label,'?') AS label, COUNT(*) AS n FROM incidents i"
         f" WHERE i.user_label IS NOT NULL AND UPPER(COALESCE(i.bottleneck,'')) IN ({placeholders})"
-        f" AND NOT {_DURING_INJECTION} GROUP BY label",
+        f"{unnotified} AND NOT {_DURING_INJECTION} GROUP BY label",
         tuple(kinds),
     )
     by_label = {r["label"]: r["n"] for r in rows}
     total = sum(by_label.values())
     breakdown = ", ".join(f"{k} {v}" for k, v in sorted(by_label.items())) or "없음"
+
+    # 세지 않은 것을 **숫자로 보여 준다.** 조용히 빼면 "왜 답했는데 안 늘지"가 된다.
+    notified_labeled = query(
+        "SELECT COUNT(*) AS n FROM incidents i"
+        f" WHERE i.user_label IS NOT NULL AND UPPER(COALESCE(i.bottleneck,'')) IN ({placeholders})"
+        f" AND COALESCE(i.notified,0)=1 AND NOT {_DURING_INJECTION}",
+        tuple(kinds),
+    )[0]["n"]
 
     # 전체 라벨도 함께 보여 준다 — 계획서의 옛 조건(20건)을 기억하는 사람이 두 수를
     # 나란히 봐야 왜 조건이 바뀌었는지 알 수 있다.
@@ -367,9 +391,15 @@ def check_severity_inversion(days: dict[str, Day]) -> Readiness:
 
     result.checks.append(
         Check(
-            f"{axis} 축 사람 라벨 {SEVERITY_AXIS_MIN_LABELS}건 이상",
+            f"{axis} 축 **미탐** 사람 라벨 {SEVERITY_AXIS_MIN_LABELS}건 이상",
             total >= SEVERITY_AXIS_MIN_LABELS,
             f"현재 {total}건 ({breakdown}) · 전체 라벨은 {everything}건"
+            + (
+                f" · 같은 축에서 알림이 나간 라벨 {notified_labeled}건은 세지 않았다"
+                " (등급 역전은 미탐에만 답이 있다)"
+                if notified_labeled
+                else ""
+            )
             + (
                 ""
                 if total >= SEVERITY_AXIS_MIN_LABELS
