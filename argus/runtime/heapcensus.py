@@ -49,7 +49,10 @@ _SIZED = (dict, list, set, frozenset, tuple, bytearray)
 
 
 def census(top_n: int) -> tuple[int, int, float, dict[str, dict[str, int]]]:
-    """(전체 객체 수, 컨테이너 원소 총합, 소요 ms, 타입별 {n, items} 상위 N).
+    """(전체 객체 수, 컨테이너 원소 총합, 소요 ms, 타입별 {n, items}).
+
+    담기는 타입은 **원소 수 상위 N 과 개수 상위 N 의 합집합**이라 최대 2N 종이다.
+    한쪽 기준만 쓰면 시계열 비교가 어긋나는 이유는 아래 주석에 있다.
 
     `gc.get_objects()` 는 스냅샷을 리스트로 만들어 돌려주므로 그 자체가 큰 리스트다.
     지역 변수로만 잡고 바로 버려 세대에 남기지 않는다.
@@ -75,9 +78,20 @@ def census(top_n: int) -> tuple[int, int, float, dict[str, dict[str, int]]]:
             total_items += n
     del objects  # 다음 줄로 넘어가기 전에 놓는다 — 이 리스트가 곧 수십 MB 다
 
-    # 상위 선정은 **원소 수 기준**이다. 개수 상위는 늘 function/tuple 로 고정돼 있어
-    # 무엇이 자라는지 말해 주지 않는다 — 자라는 쪽은 대개 큰 컨테이너다.
-    ranked = sorted(counts, key=lambda k: (items[k], counts[k]), reverse=True)[:top_n]
+    # **두 기준의 합집합을 담는다.**
+    #
+    # 원소 수 기준만 쓰면 원소가 0인 타입(`function`·`type` 등)이 표본마다 상위에
+    # 들락날락해서 **시계열 비교가 어긋난다.** 실제로 첫 30분 데이터에서 `type` 이
+    # "0 -> 1,252" 로 보였는데, 늘어난 것이 아니라 첫 표본의 상위 목록에 없었을
+    # 뿐이었다(2026-08-25 실측). 그 상태로는 클래스가 실제로 누적되는 경우와
+    # 구분할 방법이 없다.
+    #
+    # 개수 기준만 쓰면 반대 문제가 생긴다 — 늘 `function`·`wrapper_descriptor` 로
+    # 고정돼 무엇이 자라는지 말해 주지 않는다. 그래서 둘 다 담는다.
+    # 원소 기준을 앞에 두어 JSON 을 눈으로 읽을 때 자라는 쪽이 먼저 오게 한다.
+    by_items = sorted(counts, key=lambda k: (items[k], counts[k]), reverse=True)[:top_n]
+    by_count = sorted(counts, key=lambda k: (counts[k], items[k]), reverse=True)[:top_n]
+    ranked = list(dict.fromkeys(by_items + by_count))
     top = {k: {"n": counts[k], "items": items[k]} for k in ranked}
     return total, total_items, (time.perf_counter() - t0) * 1000.0, top
 

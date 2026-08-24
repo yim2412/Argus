@@ -107,3 +107,29 @@ def test_census_survives_a_hostile_len():
     total, items, ms, top = census(top_n=5)
     del bomb
     assert total > 0 and items >= 0 and ms > 0.0
+
+
+def test_zero_item_types_are_kept_for_time_series_comparison():
+    """원소가 0인 타입도 담긴다 — 없으면 시계열 비교가 어긋난다.
+
+    원소 수로만 상위를 고르면 `function`·`type` 처럼 원소가 0인 타입이 표본마다
+    들락날락한다. 실제로 첫 30분 데이터에서 `type` 이 "0 -> 1,252" 로 보였는데
+    늘어난 것이 아니라 앞 표본의 목록에 없었을 뿐이었다(2026-08-25). 그 상태로는
+    **클래스가 실제로 누적되는 경우와 구분할 방법이 없다.**
+    """
+    _, _, _, top = census(top_n=20)
+    zero_item = [k for k, v in top.items() if v["items"] == 0]
+    assert zero_item, "원소 0인 타입이 하나도 안 담기면 개수 축이 통째로 안 보인다"
+    # function 은 어느 파이썬 프로세스에서도 개수 최상위권이다.
+    assert "function" in top
+
+
+def test_ranking_is_stable_across_samples():
+    """연속한 두 표본의 상위 목록이 크게 흔들리지 않는다.
+
+    흔들리면 "늘었다"가 *실제 증가* 인지 *목록에 새로 들어온 것* 인지 가릴 수 없다.
+    """
+    _, _, _, a = census(top_n=20)
+    _, _, _, b = census(top_n=20)
+    common = set(a) & set(b)
+    assert len(common) >= len(a) * 0.9

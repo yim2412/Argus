@@ -1952,8 +1952,8 @@ MUTANTS: list[Mutant] = [
         (
             (
                 "argus/runtime/heapcensus.py",
-                "    ranked = sorted(counts, key=lambda k: (items[k], counts[k]), reverse=True)[:top_n]",
-                "    ranked = [k for k, _ in counts.most_common(top_n)]  # MUTANT: 개수 기준",
+                "    ranked = list(dict.fromkeys(by_items + by_count))",
+                "    ranked = list(dict.fromkeys(by_count))  # MUTANT: 개수 기준만",
             ),
         ),
     ),
@@ -1962,6 +1962,17 @@ MUTANTS: list[Mutant] = [
     # `tools/` 는 테스트 밖이라 이 자리는 원래 무력화가 못 잡던 곳이다. 08-25 에
     # `tests/test_readiness_severity.py` 를 붙여 잡히게 만들었고, 그것이 실제로
     # 잡는지를 여기서 잰다.
+    Mutant(
+        "heap_census_keeps_zero_item_types",
+        "원소 0인 타입도 담는다 (원소 기준만 쓰면 표본마다 목록이 흔들려 시계열이 어긋난다)",
+        (
+            (
+                "argus/runtime/heapcensus.py",
+                "    ranked = list(dict.fromkeys(by_items + by_count))",
+                "    ranked = list(dict.fromkeys(by_items))  # MUTANT: 원소 기준만",
+            ),
+        ),
+    ),
     Mutant(
         "readiness_counts_only_unnotified_labels",
         "등급 역전 조건은 미탐 라벨만 센다 (발송된 것까지 세면 없는 근거로 착수한다)",
