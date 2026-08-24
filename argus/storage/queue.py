@@ -35,6 +35,9 @@ class SampleQueue:
         self._maxsize = maxsize
         self._lock = threading.Lock()
         self._dropped = 0
+        # 예산 가드가 "큐가 몇 % 찼나"를 물으려면 상한을 알아야 한다. 상한은 여기에만
+        # 있으므로(설정은 `storage.queue_max_rows`) 큐 자신이 등록한다.
+        STATS.set_queue_capacity(maxsize)
 
     def put(self, sample: Sample) -> None:
         with self._lock:

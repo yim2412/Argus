@@ -10,6 +10,16 @@
   논리 코어 수로 나눠 정규화한다.
 - **히스테리시스**: 올릴 때는 빠르게(3회 연속 초과), 내릴 때는 느리게(12회 연속 여유).
   경계값 근처에서 스로틀이 진동하면 수집 주기가 널뛰어 데이터가 지저분해진다.
+
+**RSS 는 단독으로 스로틀을 걸지 않는다 (2026-08-25).** 두 기계 186,840 표본에서 스로틀이
+막아낸 사고가 0건이었다 — 스로틀이 걸리지 않은 `lv0` 구간이 곧 "막지 않았으면 무엇이
+일어났나"의 대조군인데, 거기서도 `drop_count` 0 이고 큐 최대가 12.0%/4.8% 였다.
+반대로 스로틀 3 은 수집 주기를 x10 으로 늘려 관측 해상도를 1/10 로 떨어뜨린다.
+
+원인은 RSS 가 Argus 의 행동이 아니라 **OS 의 워킹셋 트림**을 재기 때문이다. 그래서
+경고선은 **실제 압박(큐 적체·표본 유실)이 동반될 때만** 스로틀하고, 압박과 무관한
+폭주는 별도의 안전망(`rss_hard_mb`)이 잡는다. 값을 올리는 것이 답이 아닌 이유는
+`config/defaults.yaml` 의 `budget` 절에 있다.
 """
 
 from __future__ import annotations
@@ -22,6 +32,7 @@ import psutil
 
 from ..config.loader import BudgetSettings
 from ..logging_setup import get_logger
+from .stats import STATS
 
 log = get_logger(__name__)
 
@@ -57,6 +68,10 @@ class BudgetGuard:
         self._last_cpu = 0.0
         self._last_rss_mb = 0.0
         self._last_memory = MemorySample(0.0, None, None, None)
+        # `drop_count` 는 **누적값**이라 그대로 보면 한 번 버린 뒤로 영원히 압박 상태가
+        # 된다. 직전 값과의 차이를 봐야 "지금 버리고 있는가"에 답한다.
+        self._last_drop_count = STATS.snapshot().drop_count
+        self._last_pressure = False
         # 첫 호출은 항상 0.0 을 돌려주므로(직전 호출과의 델타로 계산) 미리 한 번 버린다.
         self._proc.cpu_percent(interval=None)
 
@@ -91,11 +106,31 @@ class BudgetGuard:
             self._last_memory = memory
         return cpu, memory.rss_mb
 
+    def _pressure(self) -> bool:
+        """저장이 수집을 못 따라가고 있는가 — **실제 손해가 나는 중인지**를 묻는다.
+
+        둘 중 하나면 압박이다:
+        - 직전 주기 사이에 표본을 버렸다 (`drop_count` 증가) — 이미 손해가 났다
+        - 큐가 `pressure_queue_ratio` 이상 차 있다 — 버리기 직전이다
+
+        큐 상한을 모르면(`queue_capacity` 0) 비율은 0.0 이다. **모르는 것을 압박으로
+        읽지 않는다** — 그러면 상한 등록이 끊긴 순간 상시 스로틀이 된다.
+        """
+        snap = STATS.snapshot()
+        dropped = snap.drop_count > self._last_drop_count
+        self._last_drop_count = snap.drop_count
+        return dropped or snap.queue_ratio >= self.settings.pressure_queue_ratio
+
     def update(self) -> int:
         """한 주기 평가하고 현재 스로틀 레벨을 돌려준다."""
         cpu, rss_mb = self.measure()
         s = self.settings
-        over = cpu > s.cpu_percent or rss_mb > s.rss_mb
+        pressure = self._pressure()
+        self._last_pressure = pressure
+        over_cpu = cpu > s.cpu_percent
+        over_hard = rss_mb > s.rss_hard_mb
+        over_soft = rss_mb > s.rss_mb and pressure
+        over = over_cpu or over_hard or over_soft
 
         with self._lock:
             max_level = len(s.throttle_multipliers) - 1
@@ -110,10 +145,19 @@ class BudgetGuard:
                         extra={
                             # `level` 이라고 쓰면 JSON 로그의 로그레벨 자리와 부딪힌다.
                             "throttle_level": self._level,
+                            # 어느 조건이 걸었는지 없으면 로그만 보고는 완화가 도는지
+                            # 알 수 없다. RSS 경고선은 압박이 동반돼야 걸린다.
+                            "reason": (
+                                "cpu" if over_cpu
+                                else "rss_hard" if over_hard
+                                else "rss_soft+pressure"
+                            ),
                             "cpu_percent": round(cpu, 2),
                             "rss_mb": round(rss_mb, 1),
+                            "queue_ratio": round(STATS.snapshot().queue_ratio, 4),
                             "limit_cpu": s.cpu_percent,
                             "limit_rss_mb": s.rss_mb,
+                            "limit_rss_hard_mb": s.rss_hard_mb,
                         },
                     )
             else:
@@ -165,4 +209,30 @@ if __name__ == "__main__":  # 스모크: python -m argus.runtime.budget
         cpu, rss = guard.measure()
         level = guard.update()
         print(f"  [{i}] cpu={cpu:5.2f}%  rss={rss:6.1f}MB  level={level}  x{guard.multiplier}")
+
+    # 완화 경로를 실제로 밟아 본다. 위 4회는 RSS 가 32MB 라 어느 조건에도 안 걸려
+    # **아무것도 검증하지 않는다** — 통과는 증거가 아니다.
+    from ..storage.queue import Sample, SampleQueue
+
+    # 경고선만 넘고 안전망에는 안 닿는 설정. `BudgetSettings` 는 pydantic 모델이다.
+    tiny = guard.settings.model_copy(update={"rss_mb": 1, "rss_hard_mb": 10_000})
+    soft = BudgetGuard(tiny)
+    for _ in range(tiny.breach_streak_to_throttle + 1):
+        soft.update()
+    quiet = soft.level
+
+    # 같은 조건에 압박만 더한다 — "막지 않았으면 무엇이 일어났을 것인가"의 반대 짝.
+    q = SampleQueue(maxsize=10)
+    for i in range(10):
+        q.put(Sample("t", ("a",), (i,)))  # 큐 100% -> 압박
+    loud = BudgetGuard(tiny)
+    for _ in range(tiny.breach_streak_to_throttle + 1):
+        loud.update()
+    pressed = loud.level
+
+    print(f"  경고선 초과 · 압박 없음 -> level={quiet} (0 이어야 한다)")
+    print(f"  경고선 초과 · 압박 있음 -> level={pressed} (1 이상이어야 한다)")
+    if quiet != 0 or pressed < 1:
+        print("[FAIL] RSS 경고선 완화가 동작하지 않는다")
+        raise SystemExit(1)
     print("[OK] runtime.budget")
