@@ -27,7 +27,7 @@ UI 는 시스템 트레이 + 네이티브 창(PySide6).
 | `decide/` | 신호 → 사건, 무엇을 알릴지 | `fusion` 이 신호를 사건 하나로 접고, `budget`·`suppression` 이 알림 양을 막는다. `severity` 가 등급을 두 축(현재 손실·위험)으로 매긴다 |
 | `explain/` | "왜 느렸는지" | `bottleneck`(무엇에 막혔나) → `attribution`(누가 가져갔나) → `report`(문장). `changepoint` 가 시작 시각을 찾는다 |
 | `eval/` | 리플레이 + 채점 | `python -m argus.eval`. 탐지기를 건드렸으면 여기를 돌린다 |
-| `runtime/` | 스레드·자기예산·자기계측 | `budget` 이 예산 초과 시 스스로 샘플링을 낮춘다 |
+| `runtime/` | 스레드·자기예산·자기계측 | `budget` 이 예산 초과 시 스스로 샘플링을 낮춘다 — **RSS 는 큐 적체·표본 유실이 동반될 때만** 건다(2026-08-25). `heapcensus` 가 파이썬 힙에 무엇이 쌓이는지 5분마다 센다 |
 | `machine/` | 이 PC 의 능력·성능 기준 | 절대 임계값 대신 여기 값을 기준으로 상대화한다 |
 | `ui/` | 트레이 아이콘 + 풍선 알림 | `Shell_NotifyIcon` 직접(의존성 0). 알림 전달자 규약은 `notify(title, message, severity, incident_id=None) -> bool` 하나뿐. `incident_id` 는 풍선을 눌렀을 때 열 사건이다 |
 | `desktop/` | 네이티브 창 (PySide6) | `python -m argus.desktop.app`. **상주와 별도 프로세스** — 창이 죽어도 수집은 계속된다. 검증은 `--seconds N` 이 그린 표본 수로 |
@@ -221,6 +221,7 @@ UI 는 시스템 트레이 + 네이티브 창(PySide6).
 
 | 항목 | 도입 시점 |
 |------|-----------|
+| `tracemalloc` 진단 모드 | `heap_census` 의 `total_objects`·`container_items` 가 둘 다 평평한데 `private_mb` 는 계속 자랄 때. 그때는 gc 밖에서 자라는 것이라 개수·원소로는 영영 안 잡힌다. 그 전에는 넣지 않는다 — 상시 후킹이 설계 규칙 1 과 정면 충돌한다 |
 | 자동 업데이트 채널 | 실제 배포판이 나가고 두 번째 릴리스가 필요해질 때 |
 | 익명 텔레메트리 수집(동의 기반) | 사용자가 여럿 생겨 크래시 로그를 수동으로 못 받을 때 |
 | Windows 서비스 모드 | 관리자 권한 ETW 수집이 실제로 채택될 때 (Phase 12 통과 후) |
