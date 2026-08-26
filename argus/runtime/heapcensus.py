@@ -32,8 +32,12 @@ from __future__ import annotations
 
 import gc
 import json
+import os
+import sys
+import threading
 import time
 from collections import Counter
+from types import FrameType, ModuleType
 
 from ..logging_setup import get_logger
 from ..storage.hot import Database
@@ -96,6 +100,104 @@ def census(top_n: int) -> tuple[int, int, float, dict[str, dict[str, int]]]:
     return total, total_items, (time.perf_counter() - t0) * 1000.0, top
 
 
+def _frame_holders(target: object) -> list[str]:
+    """`target` 을 **지역 변수로** 들고 있는 스레드·함수.
+
+    **`gc.get_referrers()` 로는 이걸 못 본다 — 2026-08-26 실측.** CPython 3.12
+    에서 함수 지역 변수를 담은 리스트의 참조자를 물으면 **0건**이 돌아온다(프레임의
+    지역 슬롯이 gc 순회 대상이 아니다). 그런데 한 틱만에 나타났다 사라지는
+    스파이크는 바로 그 모양 — 어떤 스레드가 지금 무언가를 모으는 중 — 일 가능성이
+    가장 높다. 참조자 경로만 두면 정작 찾으려던 것을 영영 못 본다.
+
+    그래서 살아 있는 프레임을 직접 훑는다. **값 자체는 남기지 않는다**(설계 규칙 5).
+    """
+    names = {t.ident: t.name for t in threading.enumerate()}
+    me = threading.get_ident()
+    out: list[str] = []
+    for tid, frame in sys._current_frames().items():
+        if tid == me:  # 프로브 자신의 스택은 볼 필요가 없다
+            continue
+        f: object = frame
+        depth = 0
+        while isinstance(f, FrameType) and depth < 30:
+            try:
+                found = any(v is target for v in f.f_locals.values())
+            except Exception:  # noqa: BLE001 - 계측이 남의 프레임 때문에 죽으면 안 된다
+                found = False
+            if found:
+                code = f.f_code
+                thread = names.get(tid, str(tid))
+                out.append(f"[{thread}] {code.co_name}() {os.path.basename(code.co_filename)}:{f.f_lineno}")
+                break
+            f = f.f_back
+            depth += 1
+    return out
+
+
+def _describe_holder(r: object) -> str:
+    """참조자 하나를 사람이 읽는 한 줄로. **내용은 남기지 않는다.**
+
+    `dict` 에서 한 단계 더 올라가는 이유: 전역이나 인스턴스 속성에 담긴 컨테이너는
+    참조자가 `dict`(모듈 `__dict__`·인스턴스 `__dict__`) 로만 나와 **어느 dict 인지
+    말해 주지 않는다.** 그 dict 를 누가 들고 있는지까지 봐야 클래스명이나 모듈명이
+    나오고, 그래야 코드에서 찾을 수 있다.
+    """
+    if isinstance(r, FrameType):
+        code = r.f_code
+        return f"{code.co_name}() {os.path.basename(code.co_filename)}:{r.f_lineno}"
+    if isinstance(r, dict):
+        for owner in gc.get_referrers(r):
+            if isinstance(owner, ModuleType):
+                return f"dict of module {owner.__name__}"
+            if hasattr(owner, "__class__") and getattr(owner, "__dict__", None) is r:
+                return f"dict of {type(owner).__name__}"
+        return "dict (소유자 불명)"
+    return type(r).__name__
+
+
+def probe_largest(top_k: int) -> list[dict[str, object]]:
+    """가장 큰 컨테이너 `top_k` 개가 **무엇이고 누가 들고 있는지**.
+
+    **스파이크가 났을 때만 부른다.** `gc.get_referrers()` 는 전체 힙을 훑으므로
+    상시로 돌릴 것이 아니다(설계 규칙 1). 평상시 비용은 0 이다.
+
+    **`repr` 을 남기지 않는다.** 컨테이너 안에는 프로세스명·경로·네트워크 목적지가
+    들어 있을 수 있다(설계 규칙 5). 남기는 것은 타입·크기·원소 타입 분포와,
+    참조자가 프레임일 때의 **함수명·파일·줄**뿐이다 — 정체를 말하는 데 그것으로 충분하고
+    내용은 필요 없다.
+    """
+    objects = gc.get_objects()
+    sized = [o for o in objects if isinstance(o, _SIZED)]
+    try:
+        biggest = sorted(sized, key=len, reverse=True)[:top_k]
+    except Exception:  # noqa: BLE001 - 계측이 남의 __len__ 때문에 죽으면 안 된다
+        return []
+    del objects, sized
+
+    out: list[dict[str, object]] = []
+    for o in biggest:
+        elem = Counter(type(x).__name__ for x in list(o)[:200]) if isinstance(o, (list, tuple)) else Counter()
+        # 프레임 지역 변수를 먼저 본다 — 참조자로는 안 보이는 자리다(위 주석).
+        holders: list[str] = _frame_holders(o)
+        for r in gc.get_referrers(o):
+            # 프로브 자신이 만든 목록은 건너뛴다. 안 거르면 `biggest`·`out` 이
+            # 참조자 자리를 먼저 차지해 정작 진짜 보유자가 잘려 나간다(스모크가 잡았다).
+            if r is biggest or r is out:
+                continue
+            holders.append(_describe_holder(r))
+            if len(holders) >= 4:
+                break
+        out.append(
+            {
+                "type": type(o).__name__,
+                "len": len(o),
+                "elems": dict(elem.most_common(4)),
+                "holders": holders,
+            }
+        )
+    return out
+
+
 class HeapCensus(Component):
     """주기적으로 힙 센서스를 남긴다."""
 
@@ -105,13 +207,47 @@ class HeapCensus(Component):
     # 대신 주기 자체를 길게 잡아 비용을 낸다 — `self_telemetry` 와 같은 논리다.
     throttleable = False
 
-    def __init__(self, db: Database, interval_s: float = 300.0, top_n: int = 20) -> None:
+    def __init__(
+        self,
+        db: Database,
+        interval_s: float = 300.0,
+        top_n: int = 20,
+        spike_ratio: float = 1.3,
+        spike_top_k: int = 3,
+    ) -> None:
         self.db = db
         self.interval_s = interval_s
         self.top_n = top_n
+        self.spike_ratio = spike_ratio
+        self.spike_top_k = spike_top_k
+        # 직전 틱의 원소 총합. 첫 틱에는 비교 대상이 없으므로 스파이크로 보지 않는다.
+        self._last_items: int | None = None
 
     def tick(self) -> None:
         total, total_items, scan_ms, top = census(self.top_n)
+
+        # **튄 틱에서만 정체를 캔다.** 2026-08-26 19:45 에 `container_items` 가
+        # 98,604(중앙값) -> 147,308 로 한 틱 튀었다가 다음 틱에 사라졌다. `list` 가
+        # 9개 늘고 원소가 +52,355 인데 `tuple` 은 오히려 줄어, 원소가 튜플이 아닌
+        # 큰 리스트 몇 개라는 것까지는 읽혔다. 거기서 멈췄다 — **표본이 1건이고
+        # 어느 리스트인지 남은 것이 없었다.** 롤업의 float 시계열을 의심했으나
+        # census 291건 중 282건이 프로세스 롤업 완료 2초 이내인데 전부 평범해
+        # 기각됐다. 그래서 추측을 더 쌓는 대신 다음 스파이크가 스스로 말하게 한다.
+        #
+        # 평상시 비용은 0 이다. `probe_largest` 는 이 분기 안에서만 돈다.
+        if self._last_items and total_items > self._last_items * self.spike_ratio:
+            log.warning(
+                "힙 원소가 튀었다",
+                extra={
+                    "items": total_items,
+                    "prev_items": self._last_items,
+                    "ratio": round(total_items / self._last_items, 2),
+                    "total_objects": total,
+                    "largest": probe_largest(self.spike_top_k),
+                },
+            )
+        self._last_items = total_items
+
         self.db.insert_many(
             "heap_census",
             _COLUMNS,
@@ -160,4 +296,52 @@ if __name__ == "__main__":  # 스모크: python -m argus.runtime.heapcensus
     if ms > 500:
         print(f"[FAIL] 스캔이 {ms:.0f}ms — 관측자가 무겁다")
         raise SystemExit(1)
+
+    # **스파이크 프로브가 실제로 범인을 지목하는가.** 이 스모크가 없으면 정작
+    # 스파이크가 났을 때 빈 목록만 남고 다시 아무것도 모르게 된다.
+    # 실제로 자라는 것은 **지역 변수**(스레드가 도는 중)이거나 **인스턴스 속성**
+    # (캐시가 쌓이는 중)이다. 둘 다 지목되는지 나눠 본다.
+    import threading as _th
+
+    result: dict[str, object] = {}
+    go, done = _th.Event(), _th.Event()
+
+    def _worker() -> None:
+        haystack = list(range(120_000))  # noqa: F841 - 프로브가 찾아야 할 대상
+        go.set()
+        done.wait(10)
+        del haystack
+
+    def _local_holder() -> list[dict[str, object]]:
+        t = _th.Thread(target=_worker, name="probe-victim")
+        t.start()
+        go.wait(10)
+        try:
+            return probe_largest(top_k=3)
+        finally:
+            done.set()
+            t.join(10)
+
+    found = _local_holder()
+    if not found or found[0]["len"] < 100_000:
+        print(f"[FAIL] 12만 원소 리스트를 못 찾았다 -> {found}")
+        raise SystemExit(1)
+    holders = found[0]["holders"]
+    print(f"  프로브(다른 스레드 지역변수): {found[0]['type']} {found[0]['len']:,}원소  보유자 {holders}")
+    if not any("_worker()" in h and "probe-victim" in h for h in holders):
+        print(f"[FAIL] 다른 스레드의 지역 변수가 안 잡혔다 — 한 틱짜리 스파이크를 영영 못 본다 -> {holders}")
+        raise SystemExit(1)
+
+    class _Cache:
+        def __init__(self) -> None:
+            self.rows = list(range(130_000))
+
+    cache = _Cache()
+    found2 = probe_largest(top_k=3)
+    holders2 = found2[0]["holders"] if found2 else []
+    print(f"  프로브(인스턴스 속성): {found2[0]['type']} {found2[0]['len']:,}원소  보유자 {holders2}")
+    if not any("_Cache" in h for h in holders2):
+        print(f"[FAIL] 보유 인스턴스가 안 잡혔다 — dict 에서 한 단계 더 올라가지 못했다 -> {holders2}")
+        raise SystemExit(1)
+    del cache
     print("[OK] runtime.heapcensus")

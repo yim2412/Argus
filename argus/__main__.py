@@ -434,6 +434,8 @@ def run(args: argparse.Namespace) -> int:
                     db,
                     interval_s=settings.heap_census.interval_s,
                     top_n=settings.heap_census.top_n,
+                    spike_ratio=settings.heap_census.spike_ratio,
+                    spike_top_k=settings.heap_census.spike_top_k,
                 )
             )
 

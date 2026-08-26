@@ -133,3 +133,123 @@ def test_ranking_is_stable_across_samples():
     _, _, _, b = census(top_n=20)
     common = set(a) & set(b)
     assert len(common) >= len(a) * 0.9
+
+
+# --- 스파이크 프로브 (2026-08-26) -------------------------------------------
+#
+# **왜 붙였나.** 08-26 19:45 에 `container_items` 가 한 틱만 98,604 -> 147,308 로
+# 튀었다가 다음 틱에 사라졌다. `list` 가 9개 늘고 원소가 +52,355 인데 `tuple` 은
+# 오히려 줄어 "원소가 튜플이 아닌 큰 리스트 몇 개"까지는 읽혔지만, **어느 리스트인지
+# 남은 것이 없어 거기서 끝났다.** 롤업의 float 시계열을 의심했으나 census 291건 중
+# 282건이 프로세스 롤업 완료 2초 이내인데 전부 평상치라 기각됐다. 다음 스파이크가
+# 스스로 정체를 말하게 하는 것이 이 프로브의 존재 이유다.
+
+import threading  # noqa: E402
+
+from argus.config.loader import load_settings  # noqa: E402
+from argus.runtime.heapcensus import HeapCensus, probe_largest  # noqa: E402
+
+
+def test_probe_names_the_thread_holding_a_local():
+    """**다른 스레드의 지역 변수**를 지목한다.
+
+    이것이 이 프로브의 핵심이고, `gc.get_referrers()` 만으로는 **불가능하다** —
+    CPython 3.12 에서 함수 지역 변수를 담은 리스트의 참조자를 물으면 0건이 돌아온다
+    (2026-08-26 실측). 한 틱만에 나타났다 사라지는 스파이크가 바로 그 모양이므로,
+    이 경로가 죽으면 정작 찾으려던 것을 영영 못 본다.
+    """
+    go, done = threading.Event(), threading.Event()
+
+    def worker():
+        haystack = list(range(150_000))  # noqa: F841
+        go.set()
+        done.wait(10)
+        del haystack
+
+    t = threading.Thread(target=worker, name="spike-victim")
+    t.start()
+    try:
+        go.wait(10)
+        found = probe_largest(top_k=3)
+    finally:
+        done.set()
+        t.join(10)
+
+    holders = [h for f in found for h in f["holders"]]
+    assert any("spike-victim" in h and "worker()" in h for h in holders), holders
+
+
+def test_probe_leaves_no_content_behind():
+    """**내용은 남기지 않는다**(설계 규칙 5).
+
+    컨테이너 안에는 프로세스명·경로·네트워크 목적지가 들어 있을 수 있다. 프로브가
+    남기는 것은 타입·크기·원소 타입 이름·보유자뿐이어야 한다. 값이 새어 나가면
+    로그가 곧 개인정보가 된다.
+    """
+    secret = "s3cret-process-name-\u314f"
+    ballast = [secret] * 200_000  # noqa: F841
+    found = probe_largest(top_k=2)
+    del ballast
+    assert secret not in repr(found)
+
+
+def test_spike_branch_stays_quiet_when_nothing_spikes():
+    """평상시에는 프로브를 부르지 않는다 — 관측자는 가벼워야 한다(설계 규칙 1)."""
+    calls = []
+    census_ = HeapCensus(_FakeDb(), spike_ratio=1.3)
+    census_._last_items = 100_000
+    _run_tick(census_, total_items=101_000, on_probe=calls.append)
+    assert calls == []
+
+
+def test_spike_branch_fires_when_it_spikes():
+    """**막지 않았으면 무엇이 일어났을 것인가** — 같은 값이 문턱 아래면 조용하고,
+    위면 프로브가 돈다. 두 방향을 다 재야 문턱이 실제로 무언가를 가른다."""
+    calls = []
+    census_ = HeapCensus(_FakeDb(), spike_ratio=1.3)
+    census_._last_items = 100_000
+    _run_tick(census_, total_items=150_000, on_probe=calls.append)
+    assert len(calls) == 1
+
+
+def test_spike_ratio_is_wired_from_config():
+    """**기본값이 아닌 값으로 잰다.** 코드 기본값(1.3)과 YAML 기본값이 같으면
+    `assert engine.x == cfg.x` 는 배선이 끊겨도 참이다(2026-08-04 에 네 번 당했다).
+    그래서 기본값과 다른 값을 넣고, 그 값이 실제 판정을 바꾸는지 본다."""
+    import os
+
+    os.environ["ARGUS_HEAP_CENSUS__SPIKE_RATIO"] = "2.5"
+    try:
+        cfg = load_settings(use_user_file=False)
+    finally:
+        del os.environ["ARGUS_HEAP_CENSUS__SPIKE_RATIO"]
+    assert cfg.heap_census.spike_ratio == 2.5
+
+    # 그 값으로 만든 컴포넌트는 1.5배에 **침묵해야** 한다 — 기본값 1.3 이었다면 울린다.
+    calls = []
+    census_ = HeapCensus(_FakeDb(), spike_ratio=cfg.heap_census.spike_ratio)
+    census_._last_items = 100_000
+    _run_tick(census_, total_items=150_000, on_probe=calls.append)
+    assert calls == [], "config 의 2.5 가 아니라 코드 기본값 1.3 으로 판정하고 있다"
+
+
+class _FakeDb:
+    def insert_many(self, *a, **k):
+        pass
+
+
+def _run_tick(component, total_items, on_probe):
+    """`tick()` 을 돌리되 힙 실측 대신 주어진 원소 수를 먹인다.
+
+    실제 힙을 부풀려 문턱을 넘기려 하면 그 숫자를 만드느라 테스트가 느리고 불안정해진다.
+    여기서 재려는 것은 **분기 판정**이지 힙 스캔이 아니다.
+    """
+    import argus.runtime.heapcensus as mod
+
+    orig_census, orig_probe = mod.census, mod.probe_largest
+    mod.census = lambda top_n: (1000, total_items, 1.0, {})
+    mod.probe_largest = lambda top_k: (on_probe(top_k), [])[1]
+    try:
+        component.tick()
+    finally:
+        mod.census, mod.probe_largest = orig_census, orig_probe

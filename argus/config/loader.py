@@ -93,6 +93,10 @@ class HeapCensusSettings(BaseModel):
     enabled: bool = True
     interval_s: float = Field(default=300.0, gt=0)
     top_n: int = Field(default=20, gt=0)
+    # 직전 틱 대비 원소 총합이 이 배를 넘으면 "튀었다"로 보고 정체를 캔다.
+    spike_ratio: float = Field(default=1.3, gt=1.0)
+    # 그때 들여다볼 가장 큰 컨테이너 개수.
+    spike_top_k: int = Field(default=3, ge=1)
 
 
 class GapMonitorSettings(BaseModel):

@@ -50,6 +50,35 @@ class Mutant:
 # 07-30 점검에서 "안 잡힘"으로 분류된 7개와 "잡힘"으로 분류된 7개를 모두 다시 잰다.
 # 후자를 다시 재는 이유: 그 판정이 캐시 오염 상태에서 나왔다.
 MUTANTS: list[Mutant] = [
+    # ---- 힙 스파이크 프로브 (2026-08-26). 세 고리를 따로 무력화한다:
+    #      분기가 열리는가 / 프레임 지역변수를 보는가 / 내용을 안 남기는가.
+    Mutant(
+        "heap_spike_branch",
+        "힙 원소가 튄 틱에서만 정체를 캔다 (분기 자체)",
+        (
+            (
+                "argus/runtime/heapcensus.py",
+                "if self._last_items and total_items > self._last_items * self.spike_ratio:",
+                "if False:  # noqa",
+            ),
+        ),
+        note="분기가 죽으면 스파이크가 나도 아무 기록이 안 남는다",
+    ),
+    Mutant(
+        "heap_frame_holders",
+        "스파이크의 보유자로 **다른 스레드의 지역 변수**를 지목한다",
+        (
+            (
+                "argus/runtime/heapcensus.py",
+                "    holders: list[str] = _frame_holders(o)",
+                "    holders: list[str] = []",
+            ),
+        ),
+        note=(
+            "CPython 3.12 는 지역 변수를 gc.get_referrers 로 안 보여 준다(실측 0건). "
+            "이 줄이 죽으면 한 틱짜리 스파이크는 영영 정체를 못 밝힌다"
+        ),
+    ),
     # ---- 07-30 에 "안 잡힘" → 그 뒤 테스트를 붙였다. 회귀 확인이다.
     Mutant(
         "mad_to_sigma",
