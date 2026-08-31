@@ -854,7 +854,15 @@ class ProgramUsageRollup(_RollupBase):
         return days
 
     def run_once(self, now: float | None = None) -> int:
+        # **단계별로 시간을 잰다.** 이 롤업이 도는 순간마다 수집 쓰기가 멈춘다 —
+        # 19회 중 16회에서 ±30초 안에 3초 이상의 쓰기 지연이 났고(최대 39.3초),
+        # 무작위 시각을 같은 창으로 잡은 대조군은 0.4% 였다(2026-08-31 실측).
+        # `db._lock` 은 읽기·쓰기를 함께 덮는 전역 락이라 여기서 오래 쥐면 그 시간이
+        # 그대로 수집 지연이 된다(`retention._delete_chunked` 와 같은 문제).
+        # **어느 단계가 쥐고 있는지는 아직 모른다** — 원본 읽기는 실측 236ms 라
+        # 설명이 안 된다. 고치기 전에 재려고 붙인 계측이다.
         now = now if now is not None else time.time()
+        t0 = time.perf_counter()
         days = self._pending_days(now)
         if not days:
             return 0
@@ -862,7 +870,9 @@ class ProgramUsageRollup(_RollupBase):
         lo = _local_day_bounds(days[0])[0]
         hi = _local_day_bounds(days[-1])[1]
 
+        t_pending = time.perf_counter()
         sessions = self._sessions(lo, hi)
+        t_sessions = time.perf_counter()
         if not sessions:
             # 관측 세션을 모르면 자를 기준이 없다. 워터마크만 넘겨 다음으로 간다 —
             # 여기서 자르지 않고 저장하면 관측 시간을 넘는 값이 확정으로 남는다.
@@ -872,6 +882,7 @@ class ProgramUsageRollup(_RollupBase):
         # 프로세스 구간은 세션 시작까지 거슬러 읽어야 한다. 세션이 뜬 순간 이미 떠 있던
         # 프로세스의 `start` 가 거기 있고, 그게 lo 이전이면 구간의 시작점을 잃는다.
         spans, launches = self._spans(min(sessions[0][0], lo), hi, sessions)
+        t_spans = time.perf_counter()
         merged = {name: _union(items) for name, items in spans.items()}
 
         # 실행 횟수는 날짜별로 한 번만 센다. 날마다 전체 목록을 훑으면 이벤트 수 × 날짜
@@ -901,19 +912,45 @@ class ProgramUsageRollup(_RollupBase):
                     (day, name, round(seconds, 1), day_launches.get(name, 0), round(observed, 1))
                 )
 
+        t_build = time.perf_counter()
+        t_wait = t_insert = t_commit = t_build
         if out:
             placeholders = ", ".join("?" * len(PROGRAM_USAGE_COLUMNS))
             with self.db._lock:  # noqa: SLF001
+                # 락을 **잡기까지** 걸린 시간과 잡고 나서 쓴 시간을 가른다.
+                # 앞이 길면 우리가 피해자이고, 뒤가 길면 우리가 가해자다.
+                t_wait = time.perf_counter()
                 self.db.conn.executemany(
                     f"INSERT OR REPLACE INTO program_usage_daily "
                     f"({', '.join(PROGRAM_USAGE_COLUMNS)}) VALUES ({placeholders})",
                     out,
                 )
+                t_insert = time.perf_counter()
                 self.db.conn.commit()
+                t_commit = time.perf_counter()
 
         self._set_watermark(hi)
         if out:
-            log.debug("프로그램 사용시간 롤업", extra={"rows": len(out), "days": len(days)})
+            ms = lambda a, b: round((b - a) * 1000, 1)  # noqa: E731
+            phases = {
+                "pending_ms": ms(t0, t_pending),
+                "sessions_ms": ms(t_pending, t_sessions),
+                "spans_ms": ms(t_sessions, t_spans),
+                "build_ms": ms(t_spans, t_build),
+                "lock_wait_ms": ms(t_build, t_wait),
+                "insert_ms": ms(t_wait, t_insert),
+                "commit_ms": ms(t_insert, t_commit),
+                "lock_held_ms": ms(t_wait, t_commit),
+                "total_ms": ms(t0, t_commit),
+                "launches": len(launches),
+            }
+            log.debug(
+                "프로그램 사용시간 롤업", extra={"rows": len(out), "days": len(days), **phases}
+            )
+            # 락을 1초 넘게 쥐었으면 그 시간만큼 수집 쓰기가 멈춘 것이다.
+            # DEBUG 는 배포판에서 꺼지므로 판정에 쓸 신호는 WARNING 으로 남긴다.
+            if t_commit - t_wait > 1.0:
+                log.warning("사용시간 롤업이 DB 락을 오래 쥐었다", extra=phases)
         return len(out)
 
 
