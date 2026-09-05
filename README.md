@@ -363,6 +363,20 @@ scikit-learn · river · PyTorch→ONNX Runtime · PySide6/pyqtgraph · PyInstal
 
 ---
 
+## 개발 노트
+
+만들면서 **무엇이 어떻게 깨졌고 어떻게 알아냈는지**를 [`docs/notes/`](docs/notes/) 에
+세 편으로 적었다. 기능 소개가 아니라 판단 기록이라 *"이건 아직 안 쟀다"* 도 그대로 적는다.
+
+| | 노트 |
+|---|---|
+| 01 | [자를 자로 쟀다](docs/notes/01-measuring-a-ruler-with-itself.md) — 문턱을 정하려고 만든 시험 도형이 그 문턱값을 품고 태어났다 |
+| 02 | [신호가 0인 실패](docs/notes/02-failures-with-no-signal.md) — 방어 코드가 실패의 증거를 지우는 다섯 가지 방식 |
+| 03 | [트림된 값을 다섯 번 믿었다](docs/notes/03-i-believed-a-trimmed-number-five-times.md) — RSS 는 "얼마나 쓰는가"가 아니라 "OS 가 얼마나 내주는가"를 잰다 |
+
+고르고 남은 후보 **96건**과 왜 안 골랐는지는 [`CANDIDATES.md`](docs/notes/CANDIDATES.md).
+다섯 프로젝트의 공개 색인은 <https://yim2412.github.io> 에 있다.
+
 ## 라이선스
 
 MIT — [`LICENSE`](LICENSE)
