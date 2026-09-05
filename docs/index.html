@@ -5,69 +5,140 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Argus</title>
 <meta name="description" content="Windows 상주형 PC 성능 이상 탐지 프로그램. 리소스를 5초마다 모아 «평소와 다른» 상태를 감지하고, 느려진 원인 프로세스를 지목한다.">
+<meta property="og:title" content="Argus">
+<meta property="og:description" content="Windows 상주형 PC 성능 이상 탐지 프로그램. 리소스를 5초마다 모아 «평소와 다른» 상태를 감지하고, 느려진 원인 프로세스를 지목한다.">
+<meta property="og:type" content="website">
 <!-- 생성된 파일이다. 고칠 때는 개발노트/make_pages.py 를 고치고 다시 뽑는다.
      이 파일을 직접 고치면 다음 생성에서 덮어쓴다. -->
 <style>
-:root{--bg:#fbfaf8;--fg:#1b1a18;--dim:#6b6862;--line:#e3dfd8;--card:#fff;
-      --accent:#8a5a2b;--mark:#f0ebe2;--code:#f4f1ec}
+:root{--accent:#8a6708;--tint:rgba(138,103,8,.10)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--accent:#e0c060}}
+:root[data-theme=dark]{--accent:#e0c060}
+
+:root{
+  --bg:#fbfaf8; --fg:#171614; --dim:#6b6862; --faint:#94908a;
+  --line:#e5e1da; --soft:#f1ede6; --card:#fff;
+  --code:#f3efe9; --shadow:0 1px 2px rgba(0,0,0,.04),0 8px 24px -12px rgba(0,0,0,.12);
+}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
-  --bg:#151513;--fg:#e8e5df;--dim:#928d84;--line:#2c2b28;--card:#1c1b19;
-  --accent:#c99a63;--mark:#26241f;--code:#211f1c}}
-:root[data-theme=dark]{--bg:#151513;--fg:#e8e5df;--dim:#928d84;--line:#2c2b28;
-  --card:#1c1b19;--accent:#c99a63;--mark:#26241f;--code:#211f1c}
+  --bg:#121211; --fg:#eae7e1; --dim:#9b968d; --faint:#6f6b64;
+  --line:#2a2926; --soft:#1c1b19; --card:#1a1917;
+  --code:#201f1c; --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px -14px rgba(0,0,0,.7);
+}}
+:root[data-theme=dark]{
+  --bg:#121211; --fg:#eae7e1; --dim:#9b968d; --faint:#6f6b64;
+  --line:#2a2926; --soft:#1c1b19; --card:#1a1917;
+  --code:#201f1c; --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px -14px rgba(0,0,0,.7);
+}
 *{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--fg);
-  font:16px/1.75 -apple-system,BlinkMacSystemFont,"Pretendard","Malgun Gothic",system-ui,sans-serif;
-  letter-spacing:-.005em}
-.wrap{max-width:760px;margin:0 auto;padding:0 22px}
-a{color:inherit}a:hover{color:var(--accent)}
-img{max-width:100%;height:auto;border:1px solid var(--line);border-radius:8px;display:block}
-header{padding:76px 0 44px;border-bottom:1px solid var(--line)}
-h1{font-size:32px;line-height:1.25;margin:0 0 14px;letter-spacing:-.02em;font-weight:700}
-.lead{font-size:17px;margin:0 0 12px;max-width:40em}
-.meta{font-size:13px;color:var(--dim);margin:0}
-.links{display:flex;gap:16px;flex-wrap:wrap;margin-top:24px;font-size:14px}
-.links a{color:var(--accent);text-decoration:none;border-bottom:1px solid transparent}
-.links a:hover{border-bottom-color:var(--accent)}
-section{padding:44px 0;border-bottom:1px solid var(--line)}
-h2{font-size:13px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);
-   margin:0 0 22px;font-weight:600}
-p{margin:0 0 15px;max-width:42em}
+  font:16px/1.75 -apple-system,BlinkMacSystemFont,"Pretendard","Malgun Gothic",
+       "Apple SD Gothic Neo",system-ui,sans-serif;letter-spacing:-.005em}
+.wrap{max-width:820px;margin:0 auto;padding:0 24px}
+a{color:inherit}
+.mono{font-family:ui-monospace,SFMono-Regular,"Cascadia Mono",Consolas,monospace}
+
+/* 머리 */
+header{position:relative;overflow:hidden;border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg,var(--tint) 0%,transparent 70%)}
+.hero{padding:88px 0 56px}
+.eyebrow{font:500 11.5px/1 ui-monospace,monospace;letter-spacing:.18em;
+  text-transform:uppercase;color:var(--accent)}
+h1{font-size:clamp(34px,6.5vw,52px);line-height:1.08;letter-spacing:-.03em;
+  margin:16px 0 0;font-weight:700}
+.lead{font-size:clamp(17px,2.3vw,19px);line-height:1.6;margin:18px 0 0;max-width:32em;
+  color:var(--fg)}
+.lead b{font-weight:600;box-shadow:inset 0 -.42em 0 var(--tint)}
+.stack{display:flex;gap:7px;flex-wrap:wrap;margin-top:26px}
+.stack span{font:500 12px/1 ui-monospace,monospace;letter-spacing:.02em;
+  padding:6px 10px;border-radius:100px;border:1px solid var(--line);color:var(--dim);
+  background:var(--card)}
+.cta{display:flex;gap:10px;flex-wrap:wrap;margin-top:30px}
+.cta a{font-size:14px;font-weight:500;text-decoration:none;padding:9px 16px;
+  border-radius:8px;border:1px solid var(--line);background:var(--card);
+  box-shadow:var(--shadow);transition:transform .12s ease,border-color .12s ease}
+.cta a:hover{transform:translateY(-1px);border-color:var(--accent);color:var(--accent)}
+.cta a.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.cta a.primary:hover{color:#fff;opacity:.9}
+
+/* 절 */
+section{padding:60px 0;border-bottom:1px solid var(--line)}
+h2{font:600 12px/1 ui-monospace,monospace;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--faint);margin:0 0 26px;display:flex;align-items:center;gap:12px}
+h2::after{content:"";flex:1;height:1px;background:var(--line)}
+p{margin:0 0 16px;max-width:40em;color:var(--dim)}
+p b{color:var(--fg);font-weight:600}
 p:last-child{margin-bottom:0}
-.feat{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
-.feat li{border-bottom:1px solid var(--line);padding:12px 0;display:flex;gap:14px;
-  align-items:baseline;font-size:15px}
-.feat b{flex:none;min-width:8.5em;font-weight:600}
-.feat span{color:var(--dim)}
-.shots{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+code{font:13px/1.5 ui-monospace,monospace;background:var(--code);
+  padding:2px 6px;border-radius:5px;color:var(--fg)}
+
+/* 흐름 도식 */
+.flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:8px;margin:0 0 22px}
+.flow .step{flex:1 1 120px;min-width:120px;background:var(--card);
+  border:1px solid var(--line);border-radius:10px;padding:13px 14px;position:relative}
+.flow .step b{display:block;font-size:13.5px;font-weight:650;letter-spacing:-.01em}
+.flow .step span{display:block;font-size:12px;color:var(--faint);margin-top:3px;
+  line-height:1.5}
+.flow .step::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:2px;
+  border-radius:2px;background:var(--accent);opacity:.55}
+.flow-note{font-size:13.5px;color:var(--faint);margin:0}
+
+/* 기능 */
+.feat{display:grid;gap:1px;background:var(--line);border:1px solid var(--line);
+  border-radius:12px;overflow:hidden;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.feat div{background:var(--card);padding:16px 18px}
+.feat b{display:block;font-size:14px;font-weight:650;margin-bottom:4px}
+.feat span{font-size:13px;color:var(--dim);line-height:1.6}
+
+/* 화면 */
+.shots{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
 figure{margin:0}
-figcaption{font-size:12.5px;color:var(--dim);margin-top:7px}
-ol.notes{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
-ol.notes li{border-bottom:1px solid var(--line);padding:11px 0;display:flex;gap:14px;
-  align-items:baseline}
-.n{font-size:12px;color:var(--dim);min-width:1.6em;flex:none;font-variant-numeric:tabular-nums}
-.nt{flex:1}
-.nt a{text-decoration:none;border-bottom:1px solid var(--line)}
-.nt a:hover{border-bottom-color:var(--accent)}
-.nk{display:block;font-size:12.5px;color:var(--dim);margin-top:2px}
-.note-intro{color:var(--dim);font-size:14.5px;margin-bottom:18px}
-code{font:13px/1.6 ui-monospace,SFMono-Regular,"Cascadia Mono",Menlo,monospace;
-  background:var(--code);padding:1.5px 5px;border-radius:4px}
-footer{padding:38px 0 64px;font-size:13.5px;color:var(--dim)}
+figure img{width:100%;height:auto;display:block;border-radius:10px;
+  border:1px solid var(--line);box-shadow:var(--shadow)}
+figcaption{font-size:12.5px;color:var(--faint);margin-top:9px;line-height:1.5}
+
+/* 노트 */
+.note-intro{margin-bottom:22px}
+.notes{display:flex;flex-direction:column;gap:10px}
+.notes a{display:block;text-decoration:none;background:var(--card);
+  border:1px solid var(--line);border-radius:11px;padding:16px 18px;
+  transition:border-color .12s ease,transform .12s ease}
+.notes a:hover{border-color:var(--accent);transform:translateY(-1px)}
+.notes .num{font:500 11px/1 ui-monospace,monospace;letter-spacing:.14em;color:var(--accent)}
+.notes .ttl{display:block;font-size:16px;font-weight:650;margin-top:7px;
+  letter-spacing:-.01em;line-height:1.4}
+.notes .kick{display:block;font-size:13px;color:var(--dim);margin-top:5px;line-height:1.55}
+
+/* 다른 프로젝트 */
+.others{display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
+.others a{text-decoration:none;border:1px solid var(--line);border-radius:10px;
+  padding:13px 15px;background:var(--card);transition:border-color .12s ease}
+.others a:hover{border-color:var(--accent)}
+.others b{display:block;font-size:14px;font-weight:600}
+.others span{display:block;font-size:12.5px;color:var(--faint);margin-top:2px}
+
+footer{padding:44px 0 76px;font-size:13.5px;color:var(--faint)}
 footer a{color:var(--accent);text-decoration:none}
-@media(max-width:560px){header{padding:52px 0 34px}h1{font-size:26px}
-  section{padding:34px 0}.feat li{flex-direction:column;gap:2px}}
+footer p{color:var(--faint);max-width:44em}
+
+@media(max-width:600px){
+  .hero{padding:60px 0 42px}
+  section{padding:44px 0}
+  .flow .step{flex:1 1 100%}
+}
 </style>
 </head>
 <body>
 
 <header>
-  <div class="wrap">
+  <div class="wrap hero">
+    <div class="eyebrow">Windows Monitoring</div>
     <h1>Argus</h1>
     <p class="lead">Windows <b>상주형 PC 성능 이상 탐지</b> 프로그램. 리소스를 5초마다 모아 «평소와 다른» 상태를 감지하고, <b>느려진 원인 프로세스를 지목한다.</b></p>
-    <p class="meta">Python · PySide6 · SQLite/Parquet · PyInstaller</p>
-    <div class="links">
-      <a href="https://github.com/yim2412/Argus">저장소</a>
+    <div class="stack"><span>Python</span><span>PySide6</span><span>SQLite</span><span>DuckDB/Parquet</span><span>PyInstaller</span></div>
+    <div class="cta">
+      <a class="primary" href="https://github.com/yim2412/Argus">저장소 보기</a>
       <a href="https://github.com/yim2412/Argus/tree/main/docs/notes">개발 노트 3편</a>
       <a href="https://github.com/yim2412/Argus/blob/main/docs/notes/CANDIDATES.md">노트 후보 목록</a>
       <a href="https://yim2412.github.io">다섯 프로젝트 색인</a>
@@ -77,44 +148,71 @@ footer a{color:var(--accent);text-decoration:none}
 
 <section>
   <div class="wrap">
+    <h2>구조</h2>
+    <div class="flow">
+      <div class="step"><b>수집</b><span>psutil·PDH·NVML</span></div>
+      <div class="step"><b>저장</b><span>핫 SQLite / 웜 Parquet</span></div>
+      <div class="step"><b>탐지</b><span>중앙값·MAD + 룰</span></div>
+      <div class="step"><b>판정</b><span>융합·억제·등급</span></div>
+      <div class="step"><b>설명</b><span>병목→귀인→문장</span></div>
+      <div class="step"><b>UI</b><span>트레이 · 창</span></div>
+    </div>
+    <p class="flow-note">데이터는 한 방향으로만 흐른다. 탐지가 수집기를 직접 부르는 경로는 만들지 않는다 — 그러면 리플레이로 재현할 수 없다.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
     <h2>무엇을 하는가</h2>
-    <p>절대 임계값을 쓰지 않는다. <code>디스크 응답 50ms</code> 는 NVMe 에겐 이상이고 HDD 에겐 평소다. 그래서 첫 실행에 이 PC 의 능력을 재고, 모든 판정을 그 기준의 상대값으로 표현한다.</p>
-    <p>탐지가 아니라 <b>설명이 산출물이다.</b> «이상 감지» 알림은 가치가 낮다 — «디스크 병목, 기여도 1위 Chrome 68%, 40초 선행»이 제품이다.</p>
-    <p>설계 규칙 1번은 <b>«관측자는 가벼워야 한다»</b> 다. 자기 CPU·메모리·큐 깊이를 항상 계측하고, 예산을 넘으면 스스로 샘플링을 낮춘다. 모니터가 병목이 되는 순간 제품은 실패다.</p>
+    <p>절대 임계값을 쓰지 않는다. <code>디스크 응답 50ms</code> 는 NVMe 에겐 이상이고 HDD 에겐 평소다. 첫 실행에 이 PC 의 능력을 재고 <b>모든 판정을 그 기준의 상대값</b>으로 표현한다.</p>
+    <p>그리고 탐지가 아니라 <b>설명이 산출물이다.</b> «이상 감지» 알림은 가치가 낮다 — «디스크 병목, 기여도 1위 Chrome 68%, 40초 선행»이 제품이다.</p>
+    <p>설계 규칙 1번은 <b>«관측자는 가벼워야 한다»</b> 다. 자기 CPU·메모리·큐 깊이를 항상 계측하고 예산을 넘으면 스스로 샘플링을 낮춘다. 모니터가 병목이 되는 순간 제품은 실패다.</p>
   </div>
 </section>
 
 <section>
   <div class="wrap">
     <h2>주요 기능</h2>
-    <ul class="feat">
-    <li><b>수집</b><span>psutil · PDH · NVML — 수집기 하나가 죽어도 나머지는 계속</span></li>
-    <li><b>저장</b><span>핫(SQLite) + 웜(Parquet/DuckDB) 2계층</span></li>
-    <li><b>탐지</b><span>중앙값/MAD 베이스라인 위에 룰 + 프로세스 누수 추적</span></li>
-    <li><b>설명</b><span>무엇에 막혔나 → 누가 가져갔나 → 문장으로</span></li>
-    <li><b>평가</b><span>리플레이 + 결함 주입 스코어보드</span></li>
-    <li><b>자기계측</b><span>CPU·RSS·큐·드롭을 스스로 재고 예산을 지킨다</span></li>
-    </ul>
+    <div class="feat">
+      <div><b>하드웨어 무가정</b><span>첫 실행 캘리브레이션 기준의 상대값으로만 판정</span></div>
+      <div><b>개별 실패 격리</b><span>수집기 하나가 죽어도 나머지는 계속 돈다</span></div>
+      <div><b>프로세스 누수 추적</b><span>PID별 + 이름으로 묶은 그룹 축</span></div>
+      <div><b>원인 귀인</b><span>무엇에 막혔나 → 누가 가져갔나 → 문장</span></div>
+      <div><b>리플레이 평가</b><span>결함 주입 + 스코어보드로 채점</span></div>
+      <div><b>자기계측</b><span>CPU·RSS·큐·드롭을 재고 예산을 지킨다</span></div>
+    </div>
   </div>
 </section>
 
 <section>
   <div class="wrap">
     <h2>개발 노트</h2>
-    <p class="note-intro">자기를 재는 프로그램이라, <b>재는 쪽이 틀린 이야기</b>가 셋 나왔다.
-      기능 소개가 아니라 <b>판단 기록</b>이라 «이건 아직 안 쟀다» 도 그대로 적는다.</p>
-    <ol class="notes">
-    <li><span class="n">01</span><span class="nt"><a href="https://github.com/yim2412/Argus/blob/main/docs/notes/01-measuring-a-ruler-with-itself.md">자를 자로 쟀다</a><span class="nk">실험 설계 — 문턱을 정하려고 만든 시험 도형이 그 문턱값을 품고 태어났다</span></span></li>
-    <li><span class="n">02</span><span class="nt"><a href="https://github.com/yim2412/Argus/blob/main/docs/notes/02-failures-with-no-signal.md">신호가 0인 실패</a><span class="nk">관측 가능성 — 방어 코드가 실패의 증거를 지우는 다섯 가지 방식</span></span></li>
-    <li><span class="n">03</span><span class="nt"><a href="https://github.com/yim2412/Argus/blob/main/docs/notes/03-i-believed-a-trimmed-number-five-times.md">트림된 값을 다섯 번 믿었다</a><span class="nk">지표 선택 — 한 번 배운 교훈이 그것이 나온 영역 밖으로는 안 옮겨간다</span></span></li>
-    </ol>
+    <p class="note-intro">자기를 재는 프로그램이라, <b>재는 쪽이 틀린 이야기</b>가 셋 나왔다. 기능 소개가 아니라 <b>판단 기록</b>이라
+      «이건 아직 안 쟀다» 도 그대로 적는다. 각 노트 끝에 근거 커밋이 걸려 있다.</p>
+    <div class="notes">
+      <a href="https://github.com/yim2412/Argus/blob/main/docs/notes/01-measuring-a-ruler-with-itself.md"><span class="num">NOTE 01</span><span class="ttl">자를 자로 쟀다</span><span class="kick">실험 설계 — 문턱을 정하려고 만든 시험 도형이 그 문턱값을 품고 태어났다</span></a>
+      <a href="https://github.com/yim2412/Argus/blob/main/docs/notes/02-failures-with-no-signal.md"><span class="num">NOTE 02</span><span class="ttl">신호가 0인 실패</span><span class="kick">관측 가능성 — 방어 코드가 실패의 증거를 지우는 다섯 가지 방식</span></a>
+      <a href="https://github.com/yim2412/Argus/blob/main/docs/notes/03-i-believed-a-trimmed-number-five-times.md"><span class="num">NOTE 03</span><span class="ttl">트림된 값을 다섯 번 믿었다</span><span class="kick">지표 선택 — 한 번 배운 교훈이 그것이 나온 영역 밖으로는 안 옮겨간다</span></a>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>다른 프로젝트</h2>
+    <div class="others">
+      <a href="https://yim2412.github.io/domynion/"><b>Domynion</b><span>실시간 영토 확장 + 증강 드래프트</span></a>
+      <a href="https://yim2412.github.io/joint-defense-sim/"><b>합동 통합방어 시뮬레이터</b><span>다층 방어 · 몬테카를로 판정</span></a>
+      <a href="https://yim2412.github.io/fifa-match-tracker/"><b>피파 전적 관리</b><span>FC 온라인 감독모드 분석</span></a>
+      <a href="https://yim2412.github.io/RL3D/"><b>RL3D</b><span>로켓 발사 · 위성 실시간 추적</span></a>
+    </div>
   </div>
 </section>
 
 <footer>
   <div class="wrap">
-    노트 본문은 저장소에 있다 — 이 페이지는 링크만 건다.
-    다른 프로젝트의 기록은 <a href="https://yim2412.github.io">개발 노트 색인</a>에.
+    <p>노트 본문은 저장소에 있다 — 이 페이지는 링크만 건다.
+      다섯 프로젝트를 가로지르는 주제 색인은 <a href="https://yim2412.github.io">개발 노트 허브</a>에.</p>
   </div>
 </footer>
 
