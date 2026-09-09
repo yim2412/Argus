@@ -24,6 +24,13 @@ storage:
   flush_max_rows: 500
   # 큐가 가득 차면 오래된 것부터 버린다. 수집 경로는 절대 블로킹하지 않는다.
   queue_max_rows: 20000
+  # DB 전역 락 진단 (기본 꺼짐). 켜면 `with db._lock:` 호출부별로 보유·대기를 재고
+  # 5분마다 로그에 남긴다. 결과는 `tools/lock_report.py` 로 본다.
+  # 끄고 있으면 오버헤드가 없다 — 계측 락 자체가 안 끼워진다.
+  lock_trace: false
+  lock_trace_slow_wait_ms: 200.0
+  lock_trace_slow_held_ms: 1000.0
+  lock_trace_report_s: 300.0
 
 budget:
   # Argus 자신의 리소스 상한. 모니터가 병목이 되는 순간 제품은 실패다.

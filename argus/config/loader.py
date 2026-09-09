@@ -50,6 +50,18 @@ class StorageSettings(BaseModel):
     flush_max_rows: int = Field(default=500, ge=1)
     queue_max_rows: int = Field(default=20_000, ge=100)
 
+    # DB 전역 락의 보유자를 기록하는 진단 모드. 기본은 꺼짐 — 켜져야만 계측 락이
+    # 끼워지고, 꺼져 있으면 순수 RLock 이라 오버헤드가 0 이다(설계 규칙 1).
+    # 근거는 `storage/locktrace.py`.
+    lock_trace: bool = False
+    # 이만큼 기다렸으면 "누가 나를 막았나"를 남긴다. **이 값은 아직 정해진 것이
+    # 아니다** — 정상 분포를 모르는 채 문턱을 박으면 그 값이 답을 만든다
+    # (2026-08-17 "자를 자로 쟀다"). 일부러 낮게 두고 하루치 분포를 본 뒤 정한다.
+    lock_trace_slow_wait_ms: float = Field(default=200.0, gt=0)
+    # 이만큼 쥐고 있었으면 그 보유자가 가해자다. 롤업 실측 최대 41ms 의 24배.
+    lock_trace_slow_held_ms: float = Field(default=1000.0, gt=0)
+    lock_trace_report_s: float = Field(default=300.0, gt=0)
+
 
 class BudgetSettings(BaseModel):
     cpu_percent: float = Field(default=2.0, gt=0)

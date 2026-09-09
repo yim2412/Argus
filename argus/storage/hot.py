@@ -24,6 +24,7 @@ from typing import Any, Iterable, Sequence
 from .. import __version__
 from ..logging_setup import get_logger
 from ..paths import db_path, resource_path
+from .locktrace import make_lock
 
 log = get_logger(__name__)
 
@@ -50,7 +51,10 @@ class Database:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or db_path()
         self._conn: sqlite3.Connection | None = None
-        self._lock = threading.RLock()
+        # 평소엔 순수 RLock 이다. `storage.lock_trace` 를 켜야만 계측 래퍼가 끼워진다 —
+        # 40여 군데의 `with db._lock:` 을 하나도 고치지 않고 보유자를 얻기 위해
+        # **락 객체 자체를** 바꾼다. 근거는 `locktrace.py`.
+        self._lock = make_lock()
 
     # ------------------------------------------------------------------ 생명주기
 

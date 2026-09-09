@@ -2024,6 +2024,54 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    # ---- DB 락 진단 (2026-09-10). 넷 다 "조용히 틀리는" 자리다 — 깨져도 앱은
+    #      멀쩡히 돌고 용의자 표만 거짓이 된다. 그래서 잡히는지 재 둔다.
+    Mutant(
+        "locktrace_reentry_counted_once",
+        "재진입을 한 번의 보유로 센다 (중복으로 세면 재진입이 잦은 쪽이 자동 1위)",
+        (
+            (
+                "argus/storage/locktrace.py",
+                '    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:\n'
+                '        depth = getattr(self._local, "depth", 0)',
+                '    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:\n'
+                "        depth = 0  # MUTANT: 재진입을 매번 새 보유로 센다",
+            ),
+        ),
+    ),
+    Mutant(
+        "locktrace_holder_is_caller",
+        "보유자 이름이 실제 호출부다 (틀리면 표 전체가 무의미하다)",
+        (
+            (
+                "argus/storage/locktrace.py",
+                "        name = _caller()",
+                '        name = "?"  # MUTANT: 호출부를 안 본다',
+            ),
+        ),
+    ),
+    Mutant(
+        "locktrace_names_the_blocker",
+        "오래 기다렸을 때 막고 있던 쪽을 지목한다 (집계만으로는 그 순간에 못 답한다)",
+        (
+            (
+                "argus/storage/locktrace.py",
+                "        blocker = self._current",
+                "        blocker = None  # MUTANT: 막은 쪽을 안 본다",
+            ),
+        ),
+    ),
+    Mutant(
+        "locktrace_wired_into_database",
+        "`Database` 가 설정을 보고 계측 락을 끼운다 (배선이 끊기면 아무것도 안 재고 조용하다)",
+        (
+            (
+                "argus/storage/hot.py",
+                "        self._lock = make_lock()",
+                "        self._lock = threading.RLock()  # MUTANT: 진단 배선을 끊는다",
+            ),
+        ),
+    ),
 ]
 
 
