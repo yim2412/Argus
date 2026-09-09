@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT))
 
 from argus.config.loader import load_settings  # noqa: E402
 from argus.detection.registry import build  # noqa: E402
+from argus.detection.trace import LABELS, RuleTrace  # noqa: E402
 from argus.eval.replay import Replayer, Window  # noqa: E402
 from argus.logging_setup import setup  # noqa: E402
 from argus.storage.hot import Database  # noqa: E402
@@ -54,6 +55,60 @@ def _hhmm(day: str, value: str) -> float:
     hour, _, minute = value.partition(":")
     d = date.fromisoformat(day)
     return datetime(d.year, d.month, d.day, int(hour), int(minute or 0)).timestamp()
+
+
+#: 룰별 판정 표의 열 순서와 짧은 머리글. `unready` 는 빼 둔다 — 베이스라인이 서기 전
+#: 구간은 위에서 따로 세고 있어, 여기 또 넣으면 같은 것을 두 번 읽게 된다.
+#: 긴 이름은 `LABELS` 에 있고 아래 "한 줄 판정"이 그 뜻을 풀어 준다.
+OUTCOME_COLS = (
+    ("unknown", "불가"),
+    ("false", "거짓"),
+    ("holding", "지속미달"),
+    ("cooldown", "쿨다운"),
+    ("fired", "발화"),
+)
+
+
+def _width(text: str) -> int:
+    """터미널에서 차지하는 칸 수. **한글은 두 칸이다.**
+
+    `str.ljust` 는 글자 수로 세므로 한글이 섞이면 표가 통째로 어긋난다 — 값이 맞아도
+    읽을 수 없으면 진단 도구로 쓸모가 없다.
+    """
+    import unicodedata
+
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+
+
+def _pad(text: str, width: int, *, right: bool = False) -> str:
+    fill = " " * max(0, width - _width(text))
+    return fill + text if right else text + fill
+
+
+def _print_trace(trace: RuleTrace) -> None:
+    """룰별로 어느 관문에서 멈췄는지. **가까이 간 룰부터** 보여준다."""
+    stats = trace.ordered()
+    if not stats:
+        print("  [주의] 룰이 한 번도 평가되지 않았다 — 재고 있는 것이 없다는 뜻이다.")
+        print()
+        return
+
+    name_w = max(24, max(_width(s.name) for s in stats) + 2)
+    print("  룰별 판정 (가까이 간 순서)  — 숫자는 틱 수")
+    print("    " + _pad("룰", name_w) + "".join(_pad(h, 10, right=True) for _, h in OUTCOME_COLS))
+    for stat in stats:
+        row = "    " + _pad(stat.name, name_w)
+        row += "".join(
+            _pad(f"{stat.counts.get(key, 0):,}", 10, right=True) for key, _ in OUTCOME_COLS
+        )
+        print(row)
+    print()
+    print("    " + " · ".join(f"{short}={LABELS[key]}" for key, short in OUTCOME_COLS))
+    print()
+    print("  한 줄 판정")
+    for stat in stats:
+        print("    " + _pad(stat.name, name_w) + stat.verdict)
+    print()
 
 
 def _injection_window(days: list[str]) -> tuple[str, str, str] | None:
@@ -92,6 +147,11 @@ def main() -> int:
         "--check",
         action="store_true",
         help="결함 주입이 있던 날을 재생해 **발화가 나오는지** 본다 (도구 생존 확인)",
+    )
+    parser.add_argument(
+        "--why",
+        action="store_true",
+        help="룰별로 **어느 관문에서 멈췄는지** 함께 찍는다 (rules 탐지기만)",
     )
     args = parser.parse_args()
 
@@ -137,14 +197,26 @@ def main() -> int:
     end = _hhmm(day, args.end) if args.end else (day_start + 86400)
 
     detectors = []
+    trace = RuleTrace() if args.why else None
+    traced = False
     for name in names:
         try:
             det = build(name)
             det.reset()
+            if trace is not None and hasattr(det, "trace"):
+                det.trace = trace
+                traced = True
             detectors.append(det)
         except Exception as exc:  # noqa: BLE001
             print(f"[FAIL] 탐지기 '{name}' 를 세우지 못했다: {exc}")
             return 1
+
+    if trace is not None and not traced:
+        # **조용히 빈 표를 내지 않는다.** 추적을 켰는데 아무 탐지기도 안 받으면
+        # "이유가 없다"가 아니라 "재고 있는 것이 없다"는 뜻이다(규칙 4).
+        print("[FAIL] --why 를 켰지만 추적을 받는 탐지기가 없다.")
+        print(f"       지금 구성: {names} — 추적은 'rules' 만 지원한다.")
+        return 1
 
     print(f"  날짜 {day}  구간 {_clock(start)} ~ {_clock(end)}")
     print(f"  탐지기 {[d.name for d in detectors]}  (설정: {settings.detection.detector})")
@@ -193,12 +265,15 @@ def main() -> int:
     print(f"  베이스라인 채우는 중이라 제외한 판정 {cold:,}건 (~{_clock(warm_until)} 까지)")
     print()
 
+    if trace is not None:
+        _print_trace(trace)
+
     if not fired:
         print("  발화 0건 — 어떤 룰도 문턱을 넘지 않았다.")
-        print("  이 도구는 근접도(문턱에 얼마나 가까웠나)를 보여주지 못한다.")
-        print("  탐지기가 발화할 때만 판정을 돌려주기 때문이다.")
+        if trace is None:
+            print("  **왜** 안 넘었는지는 --why 로 본다 (룰별로 어느 관문에서 멈췄는지).")
         print()
-        print("  **0건을 결론으로 쓰기 전에 도구가 살아 있는지 확인할 것:")
+        print("  0건을 결론으로 쓰기 전에 도구가 살아 있는지 확인할 것:")
         print(f"    {CHECK_HINT}")
         if args.check:
             print()

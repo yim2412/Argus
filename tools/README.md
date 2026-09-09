@@ -18,7 +18,7 @@
 | `eval_snapshot.py` | 평가 입력을 고정해 둔다 (채점 재현용) |
 | `inject_progress.py` | 주입 진행·판정을 `procleak.judge()` **자체**로 본다 (`--watch`) |
 | `rescore_incidents.py` | 이미 닫힌 사건을 지금 코드로 다시 분석한다 |
-| `replay_day.py` | 웜의 **초 단위 원본**으로 하루를 다시 재생해 룰이 무엇을 했는지 본다. `--check` 로 도구 생존부터 확인한다 |
+| `replay_day.py` | 웜의 **초 단위 원본**으로 하루를 다시 재생해 룰이 무엇을 했는지 본다. `--why` 는 룰별로 **어느 관문에서 멈췄는지**, `--check` 는 도구 생존을 확인한다 |
 | `mutation_sweep.py` | 규칙을 무력화했다 되돌리며 테스트가 잡는지 잰다 |
 | `pyc_audit.py` | 소스와 `__pycache__` 의 모듈 상수가 어긋났는지 검사한다 |
 | `grade_probe.py` | 등급 판정을 입력별로 찔러 본다 |

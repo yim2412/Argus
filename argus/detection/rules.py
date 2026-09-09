@@ -42,6 +42,7 @@ from .base import (
 )
 from .baseline import BaselineSet, LoadGate, Stats
 from .expr import ExprError, compile_expr, evaluate
+from .trace import RuleTrace
 
 log = get_logger(__name__)
 
@@ -387,6 +388,9 @@ class RuleEngine(BaseDetector):
             load_min_interval_s=load_min_interval_s,
             load_min_samples=load_min_samples,
         )
+        # 진단용 기록기. **기본은 없음** — 상주는 이 경로를 타지 않는다(설계 규칙 1).
+        # 설정하면 룰별로 "어느 관문에서 멈췄는지"를 센다. 판정은 바뀌지 않는다.
+        self.trace: RuleTrace | None = None
         self._since: dict[str, float] = {}      # 룰 이름 → 조건이 참이 된 시각
         self._last_fired: dict[str, float] = {}
 
@@ -407,6 +411,9 @@ class RuleEngine(BaseDetector):
 
     def evaluate(self, obs: Observation) -> Detection | None:
         if not self.baselines.ready:
+            if self.trace is not None:
+                for rule in self.rules:
+                    self.trace.record(rule.name, "unready", need_s=rule.for_s)
             return None      # 부트스트랩 — 베이스라인이 서기 전에는 판정하지 않는다
 
         fired: list[tuple[Rule, float]] = []
@@ -415,17 +422,32 @@ class RuleEngine(BaseDetector):
             if state is not True:
                 # 거짓이든 판정 불가든 지속 시계를 끊는다. 판정 불가 구간을 참으로
                 # 이어 주면 "30초 지속"이 실제로는 관측되지 않은 30초가 된다.
+                if self.trace is not None:
+                    self.trace.record(
+                        rule.name,
+                        "unknown" if state is None else "false",
+                        need_s=rule.for_s,
+                    )
                 self._since.pop(rule.name, None)
                 continue
 
             since = self._since.setdefault(rule.name, obs.ts)
-            if obs.ts - since < rule.for_s:
+            held = obs.ts - since
+            if held < rule.for_s:
+                # **여기가 진단의 핵심이다.** 조건은 참인데 지속이 모자란 것과,
+                # 조건이 아예 거짓인 것은 고칠 곳이 다르다.
+                if self.trace is not None:
+                    self.trace.record(rule.name, "holding", held_s=held, need_s=rule.for_s)
                 continue
             last = self._last_fired.get(rule.name)
             if last is not None and obs.ts - last < rule.cooldown_s:
+                if self.trace is not None:
+                    self.trace.record(rule.name, "cooldown", held_s=held, need_s=rule.for_s)
                 continue
             self._last_fired[rule.name] = obs.ts
-            fired.append((rule, obs.ts - since))
+            if self.trace is not None:
+                self.trace.record(rule.name, "fired", held_s=held, need_s=rule.for_s)
+            fired.append((rule, held))
 
         if not fired:
             return None
