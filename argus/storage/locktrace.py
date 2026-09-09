@@ -55,6 +55,9 @@ _SLOW_LOG_MIN_GAP_S = 1.0
 # 주기 보고에 싣는 보유자 수.
 _REPORT_TOP = 8
 
+# 공통 통로가 있는 파일. 여기서 락을 잡았으면 부른 쪽을 한 칸 더 올라가 붙인다.
+_HOT_FILE = "hot.py"
+
 
 def _caller() -> str:
     """`with db._lock:` 을 쓴 호출부를 `모듈.함수:줄` 로.
@@ -69,6 +72,16 @@ def _caller() -> str:
         frame = frame.f_back
     if frame is None:
         return "?"
+    name = _frame_name(frame)
+    if Path(frame.f_code.co_filename).name == _HOT_FILE and frame.f_back is not None:
+        # `Database.query`·`insert_many` 는 **모든 조회·쓰기의 공통 통로**다. 여기서
+        # 멈추면 209회가 `hot.query` 한 줄로 뭉쳐 "누가 399ms 를 쥐었나"에 답할 수
+        # 없다(2026-09-10 첫 집계에서 실제로 그랬다). 한 칸 더 올라가 부른 쪽을 붙인다.
+        name = f"{_frame_name(frame.f_back)} → {name}"
+    return name
+
+
+def _frame_name(frame: Any) -> str:
     return f"{Path(frame.f_code.co_filename).stem}.{frame.f_code.co_name}:{frame.f_lineno}"
 
 

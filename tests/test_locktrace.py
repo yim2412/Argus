@@ -157,6 +157,12 @@ def test_켜면_실제_DB_작업이_보유자로_잡힌다(tmp_path, monkeypatch
 
     names = [h["holder"] for h in holders]
     assert any("hot.set_meta" in n for n in names), names
+    # **공통 통로에서 멈추지 않는다.** `Database.query`·`set_meta` 는 모든 조회·쓰기가
+    # 지나가는 자리라, 거기서 이름을 끊으면 수백 회가 한 줄로 뭉쳐 누가 오래 쥐었는지
+    # 말할 수 없게 된다. 부른 쪽이 함께 붙어야 한다.
+    # 마이그레이션도 `set_meta` 를 쓰므로 **이 테스트가 부른 것**을 골라서 본다.
+    mine = f"{Path(__file__).stem}.test_켜면_실제_DB_작업이_보유자로_잡힌다"
+    assert any(n.startswith(mine) and "→ hot.set_meta" in n for n in names), names
 
 
 def test_진단_설정을_못_읽어도_저장소는_열린다(monkeypatch):
