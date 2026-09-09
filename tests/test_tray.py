@@ -322,8 +322,49 @@ def test_notify_is_a_no_op_without_an_icon() -> None:
 def test_describe_exposes_failure() -> None:
     """규칙 4 — 조용히 실패하지 않는다. 상태를 읽을 수 있어야 한다."""
     state = TrayIcon().describe()
-    assert set(state) == {"active", "icon", "notify", "suppressed", "error"}
+    assert set(state) == {"active", "icon", "notify", "suppressed", "error", "readds"}
     assert state["active"] == "False"
+    # 아직 한 번도 안 버려졌다. 이 값이 오르는 것 자체가 진단 정보라 드러나 있어야 한다.
+    assert state["readds"] == "0"
+
+
+# ------------------------------------------------- 셸이 아이콘을 버렸을 때
+#
+# explorer.exe 가 재시작되면 Windows 는 트레이 아이콘을 전부 지우고 `TaskbarCreated` 를
+# 브로드캐스트한다. 이걸 안 받으면 `_added` 는 True 인데 셸에는 아이콘이 없어서, 이후
+# 모든 `NIM_MODIFY` 가 `-2147467259` 로 실패하고 **재시작 전까지 복구되지 않는다.**
+# 2026-09-06 20:24·20:47 에 알림 두 건이 그렇게 사라졌고 그 둘이 마지막 알림 시도였다.
+
+
+def test_taskbar_created_readds_icon(monkeypatch) -> None:
+    """`TaskbarCreated` 를 받으면 아이콘을 다시 등록해야 한다."""
+    tray = TrayIcon()
+    calls = []
+    monkeypatch.setattr(tray, "_readd_icon", lambda reason: calls.append(reason) or True)
+
+    tray._taskbar_msg = 49312  # RegisterWindowMessage 가 주는 번호대
+    tray._on_message(0, 49312, 0, 0)
+
+    assert calls, "TaskbarCreated 를 받고도 아이콘을 다시 등록하지 않았다"
+
+
+def test_unregistered_taskbar_msg_does_not_match_wm_null(monkeypatch) -> None:
+    """등록에 실패하면 `_taskbar_msg` 는 0 인데, **0 은 WM_NULL 이라 실제로 온다.**
+
+    가드가 없으면 아무 WM_NULL 에나 아이콘을 다시 등록한다. 그 경우에도 화면은
+    멀쩡해 보이므로, 이 테스트가 없으면 가드를 지워도 아무도 모른다.
+    """
+    tray = TrayIcon()
+    calls = []
+    monkeypatch.setattr(tray, "_readd_icon", lambda reason: calls.append(reason) or True)
+
+    tray._taskbar_msg = 0
+    try:
+        tray._on_message(0, 0, 0, 0)
+    except Exception:
+        pass  # DefWindowProc(hwnd=0) 가 거부하는 것은 이 테스트의 관심사가 아니다
+
+    assert not calls, "등록 안 된 상태에서 WM_NULL 을 TaskbarCreated 로 오인했다"
 
 
 # ---------------------------------------------------------------- 알림 → 사건

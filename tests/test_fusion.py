@@ -183,6 +183,83 @@ def test_notifier_absent_is_safe(db: Database) -> None:
     assert db.query("SELECT notified FROM incidents")[0]["notified"] == 1
 
 
+# ------------------------------------------------------- 알림이 실제로 닿았는가
+#
+# `notified` 는 **판정**이고 발송과 일부러 분리돼 있다(위 테스트들이 그 분리를 지킨다).
+# 문제는 분리해 놓고 **전달 쪽을 아무 데도 안 적었다는 것**이었다: 2026-09-06 20:24·
+# 20:47 에 `Shell_NotifyIcon` 오류로 알림 두 건이 전달되지 않았는데 둘 다 `notified=1`
+# 이라, DB 만 보면 발송 67건이 전부 성공으로 보였다. 그 둘이 마지막 알림 시도였고
+# 실패가 3일 동안 아무 화면에도 안 드러났다 — 규칙 4("조용히 실패하지 않는다") 위반.
+
+
+def test_delivery_failure_is_recorded(db: Database) -> None:
+    """전달자가 실패를 돌려주면 `delivered=0` 과 이유가 남아야 한다."""
+    now = time.time()
+    _one_incident(db, now)
+    notifier = _FakeNotifier(returns=False)
+
+    fusion = Fusion(db, FusionSettings(notify_enabled=True), notifier=notifier)
+    fusion._set_watermark(now - 601)
+    fusion.run_once(now=now)
+
+    row = db.query("SELECT notified, delivered, delivery_error FROM incidents")[0]
+    # **먼저 "막지 않았으면 무엇이 일어났을 것인가"를 단언한다.** `notified` 만 보면
+    # 이 사건은 성공한 알림과 구분되지 않는다 — 그게 이 칸이 생긴 이유다.
+    assert row["notified"] == 1, "판정은 그대로 서야 한다 (분리가 유지되는가)"
+    assert row["delivered"] == 0, "전달 실패가 기록되지 않았다 — DB 로는 성공과 같아 보인다"
+    assert row["delivery_error"], "실패 이유가 비었다 — 왜 안 닿았는지 답할 수 없다"
+
+
+def test_delivery_exception_is_recorded(db: Database) -> None:
+    """전달자가 **예외**를 던진 경우도 실패로 남아야 한다. 조용히 넘어가지 않는다."""
+    now = time.time()
+    _one_incident(db, now)
+    notifier = _FakeNotifier(fail=True)
+
+    fusion = Fusion(db, FusionSettings(notify_enabled=True), notifier=notifier)
+    fusion._set_watermark(now - 601)
+    fusion.run_once(now=now)
+
+    row = db.query("SELECT delivered, delivery_error FROM incidents")[0]
+    assert row["delivered"] == 0, "예외로 죽은 발송이 실패로 남지 않았다"
+    assert "죽었다" in (row["delivery_error"] or ""), (
+        f"예외 내용이 안 남았다: {row['delivery_error']!r}"
+    )
+
+
+def test_delivery_success_is_recorded(db: Database) -> None:
+    now = time.time()
+    _one_incident(db, now)
+
+    fusion = Fusion(db, FusionSettings(notify_enabled=True), notifier=_FakeNotifier())
+    fusion._set_watermark(now - 601)
+    fusion.run_once(now=now)
+
+    row = db.query("SELECT delivered, delivery_error FROM incidents")[0]
+    assert row["delivered"] == 1
+    assert row["delivery_error"] is None, "성공했는데 오류가 남았다"
+
+
+def test_not_attempted_is_distinct_from_failed(db: Database) -> None:
+    """**시도 안 함(NULL) 과 실패(0) 를 가른다.**
+
+    둘을 합치면 "알림을 꺼 둬서 조용한 것"과 "깨져서 조용한 것"이 같은 값이 되고,
+    그게 정확히 2026-09-06 의 전달 실패를 3일 동안 못 본 이유다.
+    """
+    now = time.time()
+    _one_incident(db, now)
+
+    fusion = Fusion(db, FusionSettings(notify_enabled=False), notifier=_FakeNotifier())
+    fusion._set_watermark(now - 601)
+    fusion.run_once(now=now)
+
+    row = db.query("SELECT delivered, delivery_error FROM incidents")[0]
+    assert row["delivered"] is None, (
+        "시도하지 않은 것이 실패(0)로 기록됐다 — 꺼 둔 조용함과 깨진 조용함이 섞인다"
+    )
+    assert row["delivery_error"], "왜 시도조차 안 했는지가 없다"
+
+
 def test_first_run_persists_watermark(db: Database) -> None:
     """첫 실행에서 워터마크를 저장하지 않으면 융합이 영원히 제자리가 된다.
 

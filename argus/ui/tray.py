@@ -15,7 +15,15 @@
    아이콘 생성 실패는 예외로 올리지 않고 비활성화 상태로 내려간다. 대신 **조용히 죽지
    않는다**(규칙 4) — 경고를 남기고 `describe()` 로 상태를 드러낸다.
 
-3. **종료할 때 아이콘을 반드시 지운다.** 안 지우면 죽은 아이콘이 트레이에 남아, 사용자가
+3. **셸이 아이콘을 언제든 버린다.** explorer.exe 가 재시작되면 Windows 는 트레이
+   아이콘을 전부 지우고 `TaskbarCreated` 를 브로드캐스트한다. 이걸 안 받으면 우리는
+   `_added=True` 를 그대로 들고 있는데 셸에는 아이콘이 없어, 이후 모든 `NIM_MODIFY`
+   가 `-2147467259`("지정되지 않은 오류")로 실패한다. **재시작 전까지 영구히
+   복구되지 않는다** — 2026-09-06 20:24·20:47 에 알림 두 건이 그렇게 사라졌고,
+   그 둘이 마지막 알림 시도였다. 그래서 두 겹으로 막는다: 브로드캐스트를 받아
+   다시 등록하고, 놓쳤을 때를 대비해 **전달 실패 시에도 한 번 재등록하고 재시도**한다.
+
+4. **종료할 때 아이콘을 반드시 지운다.** 안 지우면 죽은 아이콘이 트레이에 남아, 사용자가
    마우스를 올려야 사라진다. 프로그램이 끝났는데 흔적이 남는 것은 상주 프로그램의 기본
    예의 문제다.
 
@@ -98,6 +106,12 @@ class TrayIcon(Component):
     # 전용 아이콘 파일을 실제로 썼는가. False 면 시스템 아이콘으로 떨어진 것이다.
     _own_icon: bool = False
     _added: bool = False
+    # `TaskbarCreated` 브로드캐스트의 메시지 번호. `RegisterWindowMessage` 가 정하므로
+    # 상수로 박을 수 없다 — 0 이면 아직 등록 전이라 어떤 msg 와도 같지 않아야 한다.
+    _taskbar_msg: int = 0
+    # 아이콘을 다시 등록한 횟수. **0 이 아니면 셸이 우리를 버린 적이 있다는 뜻**이라
+    # `describe()` 로 드러낸다 — 이 값이 조용히 오르는 것 자체가 진단 정보다.
+    _readds: int = 0
     # 마지막으로 띄운 풍선이 가리키는 사건. 클릭 알림에는 아무 정보도 실려 오지 않아,
     # 띄우는 쪽에서 붙잡아 두는 것 말고는 방법이 없다.
     _balloon_incident: int | None = None
@@ -134,12 +148,16 @@ class TrayIcon(Component):
 
             self._hicon, self._own_icon = self._load_icon()
 
-            flags = win32gui.NIF_ICON | win32gui.NIF_MESSAGE | win32gui.NIF_TIP
-            win32gui.Shell_NotifyIcon(
-                win32gui.NIM_ADD,
-                (self._hwnd, 0, flags, _WM_TRAY, self._hicon, self.current_tooltip()),
-            )
-            self._added = True
+            # **창을 만든 뒤에 등록한다.** 이 번호로 오는 브로드캐스트를 받아야
+            # explorer 재시작을 알 수 있다. 실패해도 트레이 자체는 뜨므로 삼킨다 —
+            # 그때는 아래 `notify()` 의 재시도가 유일한 방어선이 된다.
+            try:
+                self._taskbar_msg = win32gui.RegisterWindowMessage("TaskbarCreated")
+            except Exception as exc:
+                log.warning("TaskbarCreated 등록 실패 — 셸 재시작을 감지하지 못한다",
+                            extra={"error": str(exc)})
+
+            self._add_icon_unlocked()
             # 어느 아이콘으로 떴는지 남긴다. 폴백은 경고가 나지만 **성공은 조용해서**,
             # 상주(창도 콘솔도 없다)에서는 나중에 확인할 방법이 로그밖에 없다.
             log.info("트레이 아이콘 등록", extra={"icon": "전용" if self._own_icon else "시스템"})
@@ -196,6 +214,34 @@ class TrayIcon(Component):
         import win32gui
 
         win32gui.PumpWaitingMessages()
+
+    def _add_icon_unlocked(self) -> None:
+        """셸에 아이콘을 등록한다. **락은 호출자가 잡는다** — `notify()` 는 이미 쥔 채로
+        부르므로 여기서 다시 잡으면 교착한다. 실패는 그대로 올린다."""
+        import win32gui
+
+        flags = win32gui.NIF_ICON | win32gui.NIF_MESSAGE | win32gui.NIF_TIP
+        win32gui.Shell_NotifyIcon(
+            win32gui.NIM_ADD,
+            (self._hwnd, 0, flags, _WM_TRAY, self._hicon, self.current_tooltip()),
+        )
+        self._added = True
+
+    def _readd_icon(self, reason: str) -> bool:
+        """아이콘을 다시 등록한다. 락을 잡고 실패를 삼킨다 — 메시지 펌프에서 부른다."""
+        if not self._hwnd:
+            return False
+        with self._lock:
+            try:
+                self._add_icon_unlocked()
+            except Exception as exc:
+                self._failed = str(exc)
+                log.warning("트레이 아이콘 재등록 실패", extra={"error": self._failed, "reason": reason})
+                return False
+            self._readds += 1
+            self._failed = ""
+        log.info("트레이 아이콘 재등록", extra={"reason": reason, "count": self._readds})
+        return True
 
     def teardown(self) -> None:
         if not self._added:
@@ -272,30 +318,50 @@ class TrayIcon(Component):
             flags |= _NIIF_NOSOUND
 
         with self._lock:
-            try:
-                import win32gui
+            import win32gui
 
-                win32gui.Shell_NotifyIcon(
-                    win32gui.NIM_MODIFY,
-                    (
-                        self._hwnd,
-                        0,
-                        win32gui.NIF_INFO,
-                        _WM_TRAY,
-                        self._hicon,
-                        self.tooltip,
-                        message,
-                        _BALLOON_TIMEOUT_MS,
-                        title,
-                        flags,
-                    ),
-                )
+            payload = (
+                self._hwnd,
+                0,
+                win32gui.NIF_INFO,
+                _WM_TRAY,
+                self._hicon,
+                self.tooltip,
+                message,
+                _BALLOON_TIMEOUT_MS,
+                title,
+                flags,
+            )
+            try:
+                win32gui.Shell_NotifyIcon(win32gui.NIM_MODIFY, payload)
                 return True
             except Exception as exc:
+                first = str(exc)
+
+            # **여기서 포기하지 않는다.** 이 실패의 압도적 다수는 셸이 아이콘을 버린
+            # 것이고(explorer 재시작), 그때 `NIM_MODIFY` 는 영원히 실패한다.
+            # `TaskbarCreated` 를 이미 받았다면 이 경로는 안 온다 — 못 받았을 때
+            # (등록 실패·펌프가 늦음)를 위한 두 번째 방어선이다.
+            try:
+                self._add_icon_unlocked()
+                win32gui.Shell_NotifyIcon(win32gui.NIM_MODIFY, payload)
+            except Exception as exc:
+                # 재등록으로도 안 되면 진짜 못 띄우는 것이다. **`_added` 를 내려
+                # 상태를 정직하게 만든다** — `describe()` 가 "active=True" 라고
+                # 말하는 동안에는 아무도 이걸 못 찾는다(규칙 4).
+                self._added = False
+                self._failed = str(exc)
                 log.warning(
-                    "알림 표시 실패", extra={"error": str(exc), "title": title}
+                    "알림 표시 실패 — 재등록해도 안 된다",
+                    extra={"error": self._failed, "first_error": first, "title": title},
                 )
                 return False
+            self._readds += 1
+            log.info(
+                "알림 표시 실패 후 재등록으로 복구",
+                extra={"first_error": first, "title": title, "count": self._readds},
+            )
+            return True
 
     # ------------------------------------------------------------------ 내부
 
@@ -326,6 +392,12 @@ class TrayIcon(Component):
         import win32con
         import win32gui
 
+        # **가장 먼저 본다.** 셸이 방금 되살아났다는 뜻이라, 다른 어떤 처리보다
+        # 아이콘 복구가 앞선다. `_taskbar_msg` 가 0 이면 등록에 실패한 것이므로
+        # 어떤 msg 와도 같아선 안 된다 — 0 은 WM_NULL 이라 실제로 올 수 있다.
+        if self._taskbar_msg and msg == self._taskbar_msg:
+            self._readd_icon("explorer 재시작")
+            return 0
         if msg == _WM_TRAY and lparam == _NIN_BALLOONUSERCLICK:
             # 알림을 눌렀다 = "이게 뭔데?" 다. 그 사건을 바로 연다.
             self._open_dashboard(incident_id=self._balloon_incident)
@@ -513,6 +585,9 @@ class TrayIcon(Component):
             # 억제 중이면 설정이 켜져 있어도 아무것도 안 뜬다. 그 차이가 안 보이면
             # "알림을 켰는데 왜 안 오지"의 답을 찾을 수 없다.
             "suppressed": str(notifications_suppressed()),
+            # **0 이 아니면 셸이 우리를 버린 적이 있다.** 복구는 됐지만 그 사실이
+            # 안 보이면 "알림이 가끔 안 온다"의 원인을 영영 못 찾는다.
+            "readds": str(self._readds),
             "error": self._failed or "-",
         }
 
@@ -528,6 +603,7 @@ if __name__ == "__main__":  # 스모크: python -m argus.ui.tray
     state = tray.describe()
     print(f"  아이콘 등록 = {state['active']}  종류 = {state['icon']}  (오류: {state['error']})")
 
+    recovered = None
     if tray._added:
         # 실제로 풍선이 떠야 확인되는 것이라 사람이 봐야 한다. 자동화하지 않는다.
         print("  풍선 알림 표시 =", tray.notify("Argus", "트레이 스모크입니다.", "info"))
@@ -536,5 +612,48 @@ if __name__ == "__main__":  # 스모크: python -m argus.ui.tray
             tray.tick()
             time.sleep(0.05)
 
+        # ---- 셸이 아이콘을 버린 상태에서 복구되는가 (2026-09-06 실패의 재현) ----
+        # explorer 를 실제로 재시작할 수는 없으므로 셸에서 아이콘만 지운다. 그러면
+        # 우리 쪽 `_added` 는 True 인데 셸에는 없는, **정확히 그날의 상태**가 된다.
+        import win32gui
+
+        win32gui.Shell_NotifyIcon(win32gui.NIM_DELETE, (tray._hwnd, 0))
+
+        # **먼저 "막지 않았으면 무엇이 일어났을 것인가"를 단언한다.** 이게 없으면
+        # 재등록을 통째로 뜯어내도 아래 알림이 그냥 성공해 스모크가 통과한다.
+        try:
+            win32gui.Shell_NotifyIcon(
+                win32gui.NIM_MODIFY,
+                (tray._hwnd, 0, win32gui.NIF_INFO, _WM_TRAY, tray._hicon,
+                 tray.tooltip, "확인용", _BALLOON_TIMEOUT_MS, "확인용", 0x01),
+            )
+        except Exception as exc:
+            would_fail = True
+            print(f"  아이콘을 버린 뒤 생 NIM_MODIFY = 실패 (예상대로: {str(exc)[:60]})")
+        else:
+            would_fail = False
+            print("  아이콘을 버린 뒤 생 NIM_MODIFY = 성공 — 이 스모크는 아무것도 재지 못한다")
+
+        before = tray._readds
+        recovered = tray.notify("Argus", "재등록 복구 스모크입니다.", "info")
+        print(f"  같은 상태에서 notify() = {recovered}  (재등록 {before} -> {tray._readds})")
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            tray.tick()
+            time.sleep(0.05)
+
     tray.teardown()
-    print("[OK] ui.tray" if state["active"] == "True" else "[FAIL] ui.tray")
+
+    ok = state["active"] == "True"
+    if ok and recovered is not None:
+        if not would_fail:
+            print("[FAIL] ui.tray — 복구 경로를 검증할 조건이 만들어지지 않았다")
+            ok = False
+        elif not recovered:
+            print("[FAIL] ui.tray — 셸이 아이콘을 버리자 알림이 죽었다 (재등록이 안 돈다)")
+            ok = False
+        elif tray._readds <= before:
+            print("[FAIL] ui.tray — 알림은 성공했는데 재등록이 없었다 (다른 경로로 통과했다)")
+            ok = False
+    print("[OK] ui.tray" if ok else "[FAIL] ui.tray")
+    raise SystemExit(0 if ok else 1)

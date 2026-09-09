@@ -631,9 +631,13 @@ class Fusion(Component):
             return
         decision = self.budget.decide(self.db, dict(rows[0]))
         self.budget.record(self.db, incident_id, decision)
-        # **자동 라벨은 예산 판정 다음이다.** 판정 대상은 실제로 발송된 알림뿐인데
-        # (`notified`), 그 값을 세우는 것이 바로 위 `record` 다. 앞에서 부르면
-        # 모든 사건이 "안 나간 알림"으로 보여 하나도 판정되지 않는다.
+        # **자동 라벨은 예산 판정 다음이다.** 판정 대상은 `notified` 가 선 사건뿐인데,
+        # 그 값을 세우는 것이 바로 위 `record` 다. 앞에서 부르면 모든 사건이
+        # "알림 대상이 아님"으로 보여 하나도 판정되지 않는다.
+        #
+        # `notified` 는 **"보낼 대상인가"이지 "닿았는가"가 아니다.** 실제 전달 여부는
+        # `delivered` 에 따로 남는다(마이그레이션 020) — 자동 라벨이 전달 실패까지
+        # 기다리면 알림을 꺼 둔 기간의 라벨이 통째로 사라진다.
         autolabel.apply(self.db, incident_id, self.settings.autolabel)
         if decision.notify:
             log.info("알림 대상", extra={"incident": incident_id})
@@ -660,6 +664,13 @@ class Fusion(Component):
         전에 잴 수 있다(CLAUDE.md: 알림은 되돌릴 수 없다).
         """
         if not self.notify_enabled or self.notifier is None:
+            # **시도조차 안 했다는 것을 남긴다.** `delivered` 를 NULL 로 두되 이유를
+            # 적어야 "꺼 둬서 조용한 것"과 "깨져서 조용한 것"이 구분된다.
+            self._record_delivery(
+                incident_id,
+                None,
+                "알림 스위치 꺼짐" if self.notifier is not None else "알림 전달자 없음",
+            )
             return
 
         title = incident.get("title") or "성능 이상"
@@ -675,9 +686,38 @@ class Fusion(Component):
         except Exception as exc:
             # 알림 실패가 융합을 죽이면 사건 기록이 통째로 멈춘다. 탐지가 알림보다 중요하다.
             log.warning("알림 발송 실패", extra={"incident": incident_id, "error": str(exc)})
+            self._record_delivery(incident_id, False, str(exc)[:200])
             return
         if not sent:
             log.warning("알림이 전달되지 않았다", extra={"incident": incident_id})
+            self._record_delivery(incident_id, False, "전달자가 실패를 돌려줬다")
+        else:
+            self._record_delivery(incident_id, True, None)
+
+    def _record_delivery(
+        self, incident_id: int, delivered: bool | None, error: str | None
+    ) -> None:
+        """알림이 실제로 닿았는지를 사건에 남긴다.
+
+        **`notified` 와 나뉘어 있는 이유는 `migrations/020` 에 있다.** 요약하면
+        `notified` 는 판정이고 이 값은 결과다 — 둘을 합치면 "알림을 꺼 둔 조용함"과
+        "깨져서 조용함"이 같은 값이 되고, 그게 2026-09-06 의 전달 실패를 3일 동안
+        아무 화면에도 드러나지 않게 만든 이유다.
+
+        기록 실패가 융합을 죽이지 않는다 — 알림보다 사건 기록이 중요하다.
+        """
+        try:
+            with self.db._lock:  # noqa: SLF001
+                self.db.conn.execute(
+                    "UPDATE incidents SET delivered = ?, delivery_error = ? WHERE id = ?",
+                    (None if delivered is None else int(delivered), error, incident_id),
+                )
+                self.db.conn.commit()
+        except Exception as exc:
+            log.warning(
+                "알림 전달 결과를 남기지 못했다",
+                extra={"incident": incident_id, "error": str(exc)},
+            )
 
     def _merge(self, incident_id: int, signal: dict) -> None:
         """진행 중인 사건에 신호를 더한다.
