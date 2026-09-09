@@ -476,7 +476,15 @@ def run(args: argparse.Namespace) -> int:
             from .storage.warm import WarmExporter
 
             sup.add(WarmExporter(db, settings.warm))
-        sup.add(Retention(db, settings.retention))
+        sup.add(
+            Retention(
+                db,
+                settings.retention,
+                # 웜이 원본을 안 내보내면 원본 삭제를 그 워터마크에 묶지 않는다.
+                # 묶으면 오지 않을 신호를 기다리며 DB 가 무한히 자란다.
+                gate_on_warm_raw=bool(settings.warm.export_raw),
+            )
+        )
 
         # 수집기 — 예산이 빠듯해지면 스로틀 대상이 된다
         collectors = _build_collectors(settings, queue, caps)

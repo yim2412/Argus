@@ -15,6 +15,11 @@ import pytest
 from argus.config.loader import RetentionSettings, RollupSettings, WarmSettings
 from argus.storage.hot import Database
 from argus.storage.retention import Retention
+
+# **`gate_on_warm_raw=False` 를 명시하는 이유.** 여기서 재는 것은 "삭제가 롤업
+# 워터마크를 넘지 않는가"다. 기본값(True)이면 웜의 초 단위 내보내기 워터마크까지
+# 기다리므로, 그걸 안 세워 준 이 테스트들에서는 **아무것도 안 지워져** 롤업 관문이
+# 실제로 도는지 알 수 없게 된다. 웜 관문 자체는 `test_warm_raw.py` 가 따로 잰다.
 from argus.storage.rollup import BUCKET_S, Rollup, bucket_of, _p95, _std
 
 
@@ -133,7 +138,7 @@ def test_retention_never_outruns_rollup(db: Database) -> None:
     old = bucket_of(time.time() - 40 * 3600)  # raw_hours(24) 를 훨씬 넘긴 시각
     _seed(db, old, 5)
 
-    retention = Retention(db, RetentionSettings())
+    retention = Retention(db, RetentionSettings(), gate_on_warm_raw=False)
     retention.purge_once()
     assert db.query("SELECT COUNT(*) AS c FROM metrics_raw")[0]["c"] == 300, (
         "롤업이 한 번도 돌지 않았는데 원본이 지워졌다 — 그 구간은 어디에도 남지 않는다"
@@ -157,7 +162,7 @@ def test_retention_stops_at_watermark_midway(db: Database) -> None:
     rollup.run_once()
     assert rollup.watermark() == old + 3 * BUCKET_S
 
-    Retention(db, RetentionSettings()).purge_once()
+    Retention(db, RetentionSettings(), gate_on_warm_raw=False).purge_once()
     remaining = db.query("SELECT MIN(ts) AS lo, COUNT(*) AS c FROM metrics_raw")[0]
     assert remaining["c"] == 180
     assert remaining["lo"] >= old + 3 * BUCKET_S
@@ -186,7 +191,9 @@ def test_warm_export_roundtrip(db: Database, tmp_path: Path, monkeypatch) -> Non
     dates = store.exportable_dates("metrics")
     assert dates, "이틀 전 날짜가 내보내기 대상이 아니다"
     exported = store.export_pending()
-    assert sum(exported.values()) == 10
+    # **종류를 갈라서 센다.** `export_pending()` 은 초 단위 원본도 함께 내보내므로
+    # 합계로 재면 이 테스트가 묻는 것("1분 집계가 나갔나")과 다른 것을 재게 된다.
+    assert exported[f"{dates[0]}/metrics"] == 10, f"1분 집계가 안 나갔다: {exported}"
 
     # 파일이 실제로 생겼고 DuckDB 로 읽힌다
     assert store.has_partitions("metrics")
@@ -197,7 +204,8 @@ def test_warm_export_roundtrip(db: Database, tmp_path: Path, monkeypatch) -> Non
     # 내보낸 뒤에는 SQLite 에서 비워진다(중복 보관하지 않는다)
     assert db.query("SELECT COUNT(*) AS c FROM metrics_1m")[0]["c"] == 0
     # 두 번 내보내지 않는다
-    assert store.export_pending() == {}
+    again = store.export_pending()
+    assert not any(k.endswith("/metrics") for k in again), f"같은 날짜를 다시 내보냈다: {again}"
 
 
 def test_warm_keeps_schemas_apart(db: Database, tmp_path: Path, monkeypatch) -> None:
@@ -351,11 +359,11 @@ def test_retention_waits_for_network_rollup(db: Database) -> None:
          for i in range(0, 300, 30)],
     )
 
-    Retention(db, RetentionSettings()).purge_once()
+    Retention(db, RetentionSettings(), gate_on_warm_raw=False).purge_once()
     assert db.query("SELECT COUNT(*) AS c FROM net_connections")[0]["c"] > 0
 
     NetworkRollup(db, RollupSettings()).run_once()
-    Retention(db, RetentionSettings()).purge_once()
+    Retention(db, RetentionSettings(), gate_on_warm_raw=False).purge_once()
     assert db.query("SELECT COUNT(*) AS c FROM net_connections")[0]["c"] == 0
     assert db.query("SELECT COUNT(*) AS c FROM net_activity_5m")[0]["c"] > 0
 
@@ -381,20 +389,20 @@ def test_retention_uses_the_rollup_that_folds_it(db: Database) -> None:
 
     # 1분 롤업만 돌린다 — 프로세스는 아직 접히지 않았다
     Rollup(db, RollupSettings()).run_once()
-    Retention(db, RetentionSettings()).purge_once()
+    Retention(db, RetentionSettings(), gate_on_warm_raw=False).purge_once()
     assert db.query("SELECT COUNT(*) AS c FROM process_metrics")[0]["c"] > 0, (
         "프로세스 롤업이 돌지 않았는데 원본이 지워졌다"
     )
 
     # 프로세스 롤업만 지나가도 **아직** 안 된다 — 일일 리포트가 같은 원본을 읽는다
     ProcessRollup(db, RollupSettings()).run_once()
-    Retention(db, RetentionSettings()).purge_once()
+    Retention(db, RetentionSettings(), gate_on_warm_raw=False).purge_once()
     assert db.query("SELECT COUNT(*) AS c FROM process_metrics")[0]["c"] > 0, (
         "일일 리포트가 접기 전에 원본이 지워졌다 — 그날 리포트는 영영 만들 수 없다"
     )
 
     # 둘 다 지나간 뒤에 지운다
     DailyReportRollup(db, RollupSettings(), UsageSettings()).run_once()
-    Retention(db, RetentionSettings()).purge_once()
+    Retention(db, RetentionSettings(), gate_on_warm_raw=False).purge_once()
     assert db.query("SELECT COUNT(*) AS c FROM process_metrics")[0]["c"] == 0
     assert db.query("SELECT COUNT(*) AS c FROM process_5m")[0]["c"] > 0

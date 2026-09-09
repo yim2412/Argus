@@ -204,7 +204,18 @@ class WarmSettings(BaseModel):
     export_after_days: int = Field(default=1, ge=1)
     compression: str = "zstd"
     # 내보낸 날짜를 metrics_1m 에서 지울지. 끄면 두 곳에 중복 보관된다.
+    # **초 단위 원본에는 적용되지 않는다** — 그 테이블의 삭제는 `retention` 이
+    # 결함 주입 보호와 함께 판단한다(`warm.Source.purge`).
     purge_after_export: bool = True
+    # 초 단위 원본(metrics_raw·gpu_metrics·process_metrics)도 웜으로 내보낼지.
+    #
+    # 1분 집계로는 룰을 재현할 수 없다 — 룰은 초 단위 표본에 30초 이상의 지속
+    # 조건으로 돈다. 이게 꺼져 있으면 원본 보존(24h)을 넘긴 구간은 **영영 조사할
+    # 수 없다.** 2026-09-08 의 "부하는 있었는데 신호 0건"이 그래서 미해결로 남았다.
+    export_raw: bool = True
+    # 웜에 둔 초 단위 원본의 보존 일수. 실측 하루 11.1MB(zstd)라 30일이면 330MB.
+    # 집계(metrics·process)는 작고 오래 볼 값이라 이 기한을 적용하지 않는다.
+    raw_retention_days: int = Field(default=30, ge=1)
 
 
 class RetentionSettings(BaseModel):

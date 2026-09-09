@@ -113,7 +113,13 @@ class Replayer:
         rows = self.db.query(
             "SELECT ts, pid, name, cpu_percent, rss_mb, io_read_bps, io_write_bps, "
             "handles, threads, foreground FROM process_metrics "
-            "WHERE ts BETWEEN ? AND ? ORDER BY ts",
+            # **`ts` 만으로는 전순서가 아니다.** 한 틱에 프로세스가 수백 개라 같은
+            # `ts` 안의 순서를 저장 엔진에 맡기게 되고, 그러면 같은 데이터를 읽어도
+            # 관측이 달라진다 — 결정론 회귀(골든)가 성립하지 않는다.
+            # 2026-09-09 에 핫(SQLite)과 웜(Parquet)을 대조하다 드러났다: 2,997개 중
+            # 1개가 달랐는데 정렬하면 같았다. 두 저장소가 같은 행을 다른 순서로 준 것뿐인데,
+            # 그 차이가 어디까지 번지는지는 대조해 보기 전에는 알 수 없다.
+            "WHERE ts BETWEEN ? AND ? ORDER BY ts, pid",
             (window.start, window.end),
         )
         grouped: dict[float, list[ProcessView]] = {}
@@ -135,7 +141,9 @@ class Replayer:
 
     def _load_gpus(self, window: Window) -> dict[float, list[dict]]:
         rows = self.db.query(
-            "SELECT * FROM gpu_metrics WHERE ts BETWEEN ? AND ? ORDER BY ts",
+            # 위와 같은 이유. GPU 는 보통 1개라 지금은 차이가 안 나지만, 다중 GPU
+            # PC 에서 같은 문제가 조용히 생긴다 — 하드웨어를 가정하지 않는다(설계 규칙 2).
+            "SELECT * FROM gpu_metrics WHERE ts BETWEEN ? AND ? ORDER BY ts, gpu_index",
             (window.start, window.end),
         )
         grouped: dict[float, list[dict]] = {}

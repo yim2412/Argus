@@ -147,7 +147,11 @@ def test_rollup_range_joins_both_without_overlap(wired, db: Database) -> None:
     # 접고 나서 과거를 끼워 넣으면 그 구간은 영영 접히지 않는다(실제 수집은 시간순이라
     # 일어나지 않는 상황이다 — `tools/backfill_rollup.py` 참조).
     old = _day_start(2) + 3600
-    recent = bucket_of(time.time() - 1800)
+    # **오늘 안에 있어야 한다.** `time.time() - 1800` 은 자정 직후 30분 동안 어제로
+    # 떨어지고, 그러면 이 구간이 "끝난 날짜"가 되어 내보내기에 함께 실려 나간다 —
+    # 아래 "오늘 것은 핫에 남는다" 단언이 하루 중 30분만 거짓이 된다. 2026-09-10
+    # 00:17 에 실제로 그렇게 깨졌다(23:45 에는 통과했다).
+    recent = max(_day_start(0), bucket_of(time.time() - 1800))
     _seed_minutes(db, old, 5)
     _seed_minutes(db, recent, 5)
     _fold(db)

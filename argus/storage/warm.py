@@ -11,6 +11,22 @@
 
 내보내기 순서도 뒤집으면 안 된다 — **파일을 먼저 쓰고, 검증하고, 그 다음 SQLite 에서
 지운다.** 반대로 하면 쓰기가 실패했을 때 데이터가 사라진다.
+
+**초 단위 원본도 내보낸다 (2026-09-09).** 1분 집계로는 룰을 재현할 수 없다 — 룰은
+초 단위 표본에 30초 이상의 지속 조건으로 돌기 때문이다. 원본 보존이 24시간이라
+"이틀 전에 왜 안 잡혔지"라는 질문이 생긴 시점에 **답할 데이터가 이미 없었다.**
+09-08 은 부하가 평소와 같았는데(CPU 평균 34%·최대 100%·GPU 96°C) 신호가 0건이었고,
+확인하려는 순간 원본이 사라진 뒤였다.
+
+보호 구간(결함 주입)만 영구 보존되는 구조는 **미탐 조사에 쓸모가 없다.** 미탐은
+정의상 아무것도 기록되지 않은 구간이라 사건 주변을 지켜도 지킬 것이 없다.
+
+비용은 실측했다 — 하루치(관측 15.2시간, 108만 행)가 zstd Parquet 으로 **11.1MB**,
+SQLite 대비 6~8배 압축이다. 30일 보관에 330~500MB 라 절충할 것이 없었다.
+
+**원본 종류는 warm 이 지우지 않는다**(`Source.purge=False`). 그 테이블들의 삭제는
+`retention` 이 결함 주입 보호·롤업 워터마크와 함께 판단한다 — warm 이 날짜 범위로
+통째로 지우면 **보호 중인 주입 구간까지 지워진다.**
 """
 
 from __future__ import annotations
@@ -44,6 +60,10 @@ EXPORT_CHUNK_ROWS = 50_000
 #: 락을 붙들어 수집 쓰기가 멈춘다(보존 정리와 같은 이유 — `fd31f70`).
 PURGE_CHUNK_ROWS = 20_000
 
+#: 원본 내보내기 진척을 담는 `rollup_state` 행 이름. `retention._rules()` 가 이 이름을
+#: 롤업과 똑같이 취급한다 — 내보내기 전에는 원본을 지우지 않는다.
+RAW_WATERMARK_NAME = "warm_raw"
+
 
 def _record_batch(chunk: list[sqlite3.Row], schema: Any) -> Any:
     """SQLite 행 묶음 → Arrow RecordBatch. **열 방향으로 뒤집는 자리다.**
@@ -67,6 +87,27 @@ def warm_dir() -> Path:
     return path
 
 
+#: 초 단위 원본의 컬럼. **명시적으로 적는다** — `PRAGMA` 로 뽑으면 컬럼이 추가될 때
+#: Parquet 스키마가 조용히 바뀌어, 같은 `kind` 의 날짜별 파일이 서로 다른 스키마를
+#: 갖게 된다. DuckDB 는 그걸 읽다가 날짜 범위 조회에서 터진다.
+RAW_METRICS_COLUMNS: tuple[str, ...] = (
+    "ts", "cpu_total", "cpu_per_core", "cpu_max_core", "cpu_freq_mhz", "cpu_perf_percent",
+    "mem_used_mb", "mem_avail_mb", "mem_percent", "swap_used_mb",
+    "disk_read_bps", "disk_write_bps", "disk_read_iops", "disk_write_iops",
+    "disk_queue", "disk_resp_ms", "net_rx_bps", "net_tx_bps",
+    "ctx_switches_ps", "proc_count", "thread_count",
+)
+RAW_GPU_COLUMNS: tuple[str, ...] = (
+    "ts", "gpu_index", "util_percent", "mem_util_percent", "vram_used_mb", "vram_total_mb",
+    "temp_c", "power_w", "power_limit_w", "pstate", "clock_sm_mhz", "clock_mem_mhz",
+    "fan_percent", "throttle_reasons",
+)
+RAW_PROCESS_COLUMNS: tuple[str, ...] = (
+    "ts", "pid", "name", "cpu_percent", "rss_mb", "io_read_bps", "io_write_bps",
+    "handles", "threads", "tier", "foreground",
+)
+
+
 @dataclass(frozen=True)
 class Source:
     """내보낼 대상 하나. 종류가 늘어도 이 표만 고치면 된다."""
@@ -75,11 +116,24 @@ class Source:
     table: str
     ts_column: str
     columns: tuple[str, ...]
+    #: 내보낸 뒤 warm 이 SQLite 원본을 지워도 되는가.
+    #:
+    #: **초 단위 원본은 False 다.** 그 테이블들은 `retention` 이 결함 주입 보호와
+    #: 롤업 워터마크를 함께 보고 지운다. warm 이 날짜 범위로 통째로 지우면 그 두
+    #: 장치를 우회해 **보호 중인 주입 구간을 지워 버린다** — 귀인 채점의 유일한
+    #: 근거가 사라지는 경로다(`retention.py` 의 FAULT_PROTECTED 주석 참조).
+    purge: bool = True
 
+
+#: 웜에 내보내는 초 단위 원본. `retention` 이 이 이름들의 내보내기를 기다렸다 지운다.
+RAW_KINDS: tuple[str, ...] = ("raw_metrics", "raw_gpu", "raw_process")
 
 SOURCES: dict[str, Source] = {
     "metrics": Source("metrics", "metrics_1m", "ts_min", ROLLUP_COLUMNS),
     "process": Source("process", "process_5m", "ts_5m", PROCESS_COLUMNS),
+    "raw_metrics": Source("raw_metrics", "metrics_raw", "ts", RAW_METRICS_COLUMNS, purge=False),
+    "raw_gpu": Source("raw_gpu", "gpu_metrics", "ts", RAW_GPU_COLUMNS, purge=False),
+    "raw_process": Source("raw_process", "process_metrics", "ts", RAW_PROCESS_COLUMNS, purge=False),
 }
 
 
@@ -288,21 +342,19 @@ class WarmStore:
 
         if not written:
             temp.unlink(missing_ok=True)
+            if source.kind in RAW_KINDS:
+                # **0행도 기록한다.** 안 하면 그 날짜가 영원히 "안 끝난 것"으로 남아
+                # 워터마크가 멈추고, 워터마크가 멈추면 `retention` 이 원본을 영영
+                # 안 지워 DB 가 무한히 자란다. GPU 없는 PC 의 `raw_gpu` 가 정확히
+                # 이 경우다 — 실제로 내보낼 것이 없는 것이지 실패가 아니다.
+                self._record_export(date_key, source.kind, target, 0, 0)
             return 0
 
         temp.replace(target)
         size = target.stat().st_size
-        with self.db._lock:  # noqa: SLF001
-            self.db.conn.execute(
-                "INSERT INTO warm_exports (date_key, kind, path, row_count, bytes, exported_at) "
-                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(date_key, kind) DO UPDATE SET "
-                "path=excluded.path, row_count=excluded.row_count, bytes=excluded.bytes, "
-                "exported_at=excluded.exported_at",
-                (date_key, kind, str(target), written, size, time.time()),
-            )
-            self.db.conn.commit()
+        self._record_export(date_key, kind, target, written, size)
 
-        if self.settings.purge_after_export:
+        if self.settings.purge_after_export and source.purge:
             # 파일이 실제로 읽히는지 확인한 뒤에 지운다. 쓰기 성공과 읽기 가능은 다르다.
             if self._verify(target, written):
                 self._purge(source, start, end)
@@ -314,6 +366,119 @@ class WarmStore:
 
         log.info("웜 내보내기", extra={"date": date_key, "kind": kind, "rows": written, "bytes": size})
         return written
+
+    def _record_export(
+        self, date_key: str, kind: str, target: Path, rows: int, size: int
+    ) -> None:
+        with self.db._lock:  # noqa: SLF001
+            self.db.conn.execute(
+                "INSERT INTO warm_exports (date_key, kind, path, row_count, bytes, exported_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(date_key, kind) DO UPDATE SET "
+                "path=excluded.path, row_count=excluded.row_count, bytes=excluded.bytes, "
+                "exported_at=excluded.exported_at",
+                (date_key, kind, str(target), rows, size, time.time()),
+            )
+            self.db.conn.commit()
+
+    def raw_watermark(self) -> float | None:
+        """초 단위 원본이 **어디까지 웜으로 나갔는가** (epoch). 못 정하면 None.
+
+        `retention` 이 이 값을 롤업 워터마크와 똑같이 취급해, 여기를 넘겨 지우지
+        않는다. 새 보호 장치를 만들지 않고 기존 불변식("삭제는 워터마크를 넘지
+        못한다")에 이름 하나를 얹는 것이 요점이다.
+
+        **가장 뒤처진 종류에 맞춘다.** 셋 중 하나라도 아직 안 나갔으면 그 날짜의
+        원본은 남아야 한다 — 앞선 종류 기준으로 지우면 뒤처진 쪽은 영영 못 나간다.
+        `retention._rules()` 가 롤업을 목록으로 받는 것과 같은 이유다.
+        """
+        latest: list[date] = []
+        for kind in RAW_KINDS:
+            rows = self.db.query(
+                "SELECT MAX(date_key) AS d FROM warm_exports WHERE kind = ?", (kind,)
+            )
+            if not rows or not rows[0]["d"]:
+                return None  # 한 번도 안 나간 종류가 있다. 아무것도 지우지 않는다.
+            try:
+                latest.append(date.fromisoformat(rows[0]["d"]))
+            except ValueError:
+                return None
+        # 내보낸 날짜의 **끝**까지가 안전하다. 그 날짜는 통째로 파일에 있다.
+        return _day_bounds(min(latest))[1]
+
+    def _publish_raw_watermark(self) -> None:
+        """원본 내보내기 진척을 `rollup_state` 에 남긴다. `retention` 이 여기를 본다."""
+        mark = self.raw_watermark()
+        if mark is None:
+            return
+        with self.db._lock:  # noqa: SLF001
+            self.db.conn.execute(
+                "INSERT INTO rollup_state (name, watermark_ts, updated_at) "
+                "VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET "
+                "watermark_ts=excluded.watermark_ts, updated_at=excluded.updated_at",
+                (RAW_WATERMARK_NAME, mark, time.time()),
+            )
+            self.db.conn.commit()
+
+    def _fault_days(self) -> set[str]:
+        """결함 주입이 있었던 날짜들. **기한이 지나도 지우지 않는다.**
+
+        `retention.FAULT_PROTECTED` 와 같은 이유다 — 이 구간이 귀인 채점의 유일한
+        근거이고, 롤업은 대신하지 못한다(`process_5m` 은 이름 단위로 접혀 `pid` 가
+        없다). 2026-09-09 에 이 보호가 없어서 방금 내보낸 07-29·07-30·08-02 파티션이
+        30일 기한에 걸려 **쓰자마자 지워졌다.** SQLite 원본은 보호되고 있어 손실은
+        없었지만, 그러면 이 아카이브는 정작 가장 필요한 날짜를 안 갖게 된다.
+        """
+        days: set[str] = set()
+        try:
+            rows = self.db.query("SELECT ts_start, ts_end FROM fault_injections")
+        except Exception:
+            return days  # 주입 테이블이 없는 DB. 지킬 날짜도 없다.
+        for row in rows:
+            start = float(row["ts_start"])
+            end = float(row["ts_end"]) if row["ts_end"] is not None else start
+            day = datetime.fromtimestamp(start).date()
+            last = datetime.fromtimestamp(max(end, start)).date()
+            while day <= last:  # 자정을 넘긴 주입은 이틀에 걸친다
+                days.add(day.isoformat())
+                day += timedelta(days=1)
+        return days
+
+    def prune_raw_partitions(self, now: float | None = None) -> int:
+        """보존 기한이 지난 **웜의 원본 파티션**을 지운다. 지운 파일 수.
+
+        집계(`metrics`·`process`)는 작고 오래 볼 값이라 지우지 않는다. 원본만
+        기한을 둔다 — 하루 11MB 라 30일이면 330MB 이고, 그 이상은 리플레이로
+        되짚을 일이 사실상 없다.
+
+        **결함 주입이 있었던 날짜는 예외다** (`_fault_days`).
+        """
+        days = int(getattr(self.settings, "raw_retention_days", 0) or 0)
+        if days <= 0:
+            return 0
+        now = now if now is not None else time.time()
+        cutoff = datetime.fromtimestamp(now).date() - timedelta(days=days)
+        protected = self._fault_days()
+        removed = 0
+        for kind in RAW_KINDS:
+            for path in sorted(warm_dir().glob(f"date=*/{kind}.parquet")):
+                key = path.parent.name.removeprefix("date=")
+                if key in protected:
+                    continue
+                try:
+                    if date.fromisoformat(key) > cutoff:
+                        continue
+                except ValueError:
+                    continue  # 사람이 만든 디렉터리. 건드리지 않는다.
+                try:
+                    path.unlink()
+                    removed += 1
+                except OSError as exc:
+                    log.warning("웜 원본 파티션 삭제 실패",
+                                extra={"path": str(path), "error": str(exc)})
+        if removed:
+            log.info("웜 원본 파티션 정리",
+                     extra={"removed": removed, "keep_days": days, "held_days": len(protected)})
+        return removed
 
     def _purge(self, source: Source, start: float, end: float) -> None:
         """내보낸 구간을 SQLite 에서 지운다. **나눠 지운다.**
@@ -386,13 +551,21 @@ class WarmStore:
     def export_pending(self, now: float | None = None) -> dict[str, int]:
         """모든 종류의 밀린 날짜를 내보낸다. 키는 `YYYY-MM-DD/<kind>`."""
         result: dict[str, int] = {}
+        export_raw = bool(getattr(self.settings, "export_raw", True))
         for kind in SOURCES:
+            if kind in RAW_KINDS and not export_raw:
+                continue
             for date_key in self.exportable_dates(kind, now):
                 try:
                     result[f"{date_key}/{kind}"] = self.export_date(date_key, kind)
                 except Exception:
                     # 하루가 실패해도 나머지 날짜·종류는 내보낸다.
                     log.exception("웜 내보내기 실패", extra={"date": date_key, "kind": kind})
+        if export_raw:
+            # **내보내기가 다 끝난 뒤에 세운다.** 중간에 세우면 아직 안 나간 날짜를
+            # `retention` 이 지울 수 있다 — 원본 삭제는 되돌릴 수 없다.
+            self._publish_raw_watermark()
+            self.prune_raw_partitions(now)
         return result
 
     # ------------------------------------------------------------ 조회

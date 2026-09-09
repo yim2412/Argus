@@ -11,6 +11,12 @@
 롤업이 멈춰 있으면(예외·설정 오류) 삭제도 함께 멈추고 DB 가 커지는데, **그게 맞다.**
 디스크가 차는 것은 눈에 보이고 고칠 수 있지만, 지워진 2주치는 되돌릴 방법이 없다.
 
+**초 단위 원본은 웜으로 나간 뒤에 지운다 (2026-09-09).** 룰은 초 단위 표본에 30초
+이상의 지속 조건으로 도는데 원본이 24시간 만에 사라져, "이틀 전에 왜 안 잡혔지"를
+확인할 방법이 없었다. 이제 `warm` 이 원본도 Parquet 으로 내보내고 그 진척을
+`rollup_state` 의 `warm_raw` 에 남기므로, 위의 워터마크 규칙이 그대로 적용된다 —
+**내보내기가 멈추면 삭제도 멈추고 DB 가 커지는데, 그게 맞다.**
+
 **결함 주입 구간은 기한이 지나도 지우지 않는다.** 롤업은 이 원본을 대신하지 못한다 —
 `process_5m` 은 이름 단위로 접혀 **`pid` 가 없고**, 귀인 채점은 정답을 PID 집합으로
 매칭하므로 롤업만 남으면 채점 자체가 불가능해진다. 2026-07-29 에 이것이 드러났다:
@@ -29,6 +35,7 @@ from ..config.loader import RetentionSettings
 from ..logging_setup import get_logger
 from ..runtime.supervisor import Component
 from .hot import Database
+from .warm import RAW_WATERMARK_NAME
 
 log = get_logger(__name__)
 
@@ -78,10 +85,20 @@ class Retention(Component):
 
     name = "retention"
 
-    def __init__(self, db: Database, settings: RetentionSettings) -> None:
+    def __init__(
+        self,
+        db: Database,
+        settings: RetentionSettings,
+        *,
+        gate_on_warm_raw: bool = True,
+    ) -> None:
         self.db = db
         self.settings = settings
         self.interval_s = settings.interval_s
+        # **웜이 원본을 안 내보내면 이 관문을 걸면 안 된다.** 걸어 두면 영영 오지
+        # 않을 워터마크를 기다리며 원본이 계속 쌓인다 — `warm.export_raw` 를 끈
+        # 사용자의 DB 가 무한히 자라는 경로다. 호출자가 그 설정을 넘긴다.
+        self.gate_on_warm_raw = gate_on_warm_raw
 
     def _rules(self) -> list[tuple[str, float, tuple[str, ...]]]:
         """(테이블, 보존 초, 이 원본을 접는 롤업들의 이름) 목록.
@@ -98,12 +115,20 @@ class Retention(Component):
         접기 전에 원본이 사라진다 — 위와 정확히 같은 사고가 다시 난다.
         """
         s = self.settings
+        # 초 단위 원본은 **웜으로 나가기 전에는 지우지 않는다.** 이름 하나를 롤업
+        # 목록에 얹는 것으로 끝나는 이유는, 여기 이미 "삭제는 워터마크를 넘지 못한다"가
+        # 있기 때문이다 — 새 보호 장치를 만들지 않는다(2026-09-09).
+        #
+        # 이게 없으면 원본은 24시간 뒤 사라지고 1분 집계만 남는데, 룰은 초 단위
+        # 표본에 30초 이상의 지속 조건으로 돌아 집계로는 재현되지 않는다. 09-08 의
+        # "부하는 평소와 같은데 신호 0건"을 확인하려 했을 때 원본이 이미 없었다.
+        raw = (RAW_WATERMARK_NAME,) if self.gate_on_warm_raw else ()
         return [
-            ("metrics_raw", s.raw_hours * 3600, ("metrics_1m",)),
-            ("gpu_metrics", s.raw_hours * 3600, ("metrics_1m",)),
+            ("metrics_raw", s.raw_hours * 3600, ("metrics_1m", *raw)),
+            ("gpu_metrics", s.raw_hours * 3600, ("metrics_1m", *raw)),
             # 일일 리포트가 포어그라운드 시간을 여기서 센다. `process_5m` 은 상위 N 만
             # 남기므로 그걸로 대신할 수 없다(가벼운 앱이 최대 90% 깎인다 — 017 참조).
-            ("process_metrics", s.process_hours * 3600, ("process_5m", "daily_report")),
+            ("process_metrics", s.process_hours * 3600, ("process_5m", "daily_report", *raw)),
             ("net_connections", s.network_hours * 3600, ("net_activity_5m",)),
             # 프로그램 사용시간 롤업이 이 원본을 접는다. 접기 전에 지워지면 그 날짜의
             # 사용시간은 **영구히 복원 불가능**하다 — 다른 테이블에 같은 정보가 없다
@@ -262,7 +287,10 @@ if __name__ == "__main__":  # 스모크: python -m argus.storage.retention
 
     setup(level="INFO")
     with Database() as db:
-        retention = Retention(db, load_settings().retention)
+        cfg = load_settings()
+        retention = Retention(
+            db, cfg.retention, gate_on_warm_raw=bool(cfg.warm.export_raw)
+        )
         old_ts = time.time() - 400 * 86400  # 확실히 기한이 지난 시각
 
         # 1) 롤업이 아직 그 구간을 접지 않았으면 지우면 안 된다.

@@ -192,6 +192,11 @@ warm:
   export_after_days: 1
   compression: zstd
   purge_after_export: true
+  # 초 단위 원본도 내보낸다. 1분 집계로는 룰(초 단위 표본 + 30초 지속 조건)을
+  # 재현할 수 없어서, 이게 없으면 24시간이 지난 구간은 영영 조사할 수 없다.
+  # 실측 하루 11.1MB(zstd, 108만 행) — 30일에 330MB.
+  export_raw: true
+  raw_retention_days: 30
 
 retention:
   # 원본(초 단위) 보존 시간. 1분 집계는 롤업이 따로 장기 보존한다.

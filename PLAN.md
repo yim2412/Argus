@@ -179,8 +179,16 @@ self_telemetry(ts, cpu, rss, queue_depth, drop_count, write_latency_ms)
 
 - `warm/date=YYYY-MM-DD/metrics.parquet` (1분 집계)
 - `warm/date=YYYY-MM-DD/process.parquet` (5분 집계, 상위 프로세스만)
+- `warm/date=YYYY-MM-DD/raw_{metrics,gpu,process}.parquet` (**초 단위 원본**, 30일)
 - DuckDB로 직접 쿼리 (`SELECT ... FROM 'warm/**/*.parquet'`)
-- 보존: 원본 24h → 1분 집계 30일 → 1시간 집계 무기한
+- 보존: 원본 24h(핫) / 30일(웜) → 1분 집계 30일 → 1시간 집계 무기한
+
+> ✅ **초 단위 원본을 웜에 둔다 (2026-09-09).** 1분 집계로는 룰을 재현할 수 없다 —
+> 룰은 초 단위 표본에 30초 이상의 지속 조건으로 돈다. 원본이 24시간 만에 사라져
+> **"이틀 전에 왜 안 잡혔지"에 답할 수 없었다**(09-08: 부하는 평소와 같은데 신호 0건,
+> 확인하려는 시점에 원본이 이미 삭제). 결함 주입 구간만 영구 보존되는 구조는 미탐
+> 조사에 쓸모가 없다 — 미탐은 정의상 아무것도 기록되지 않은 구간이다.
+> 실측 하루 11.1MB(zstd, 108만 행, SQLite 대비 6~8배). `tools/replay_day.py` 로 재생한다.
 
 > ✅ **`net_activity_5m` 추가 (2026-07-27).** `net_connections` 는 72시간 보존이라
 > 접지 않으면 네트워크 이력이 3일마다 사라진다. **개별 원격 주소는 저장하지 않고**
