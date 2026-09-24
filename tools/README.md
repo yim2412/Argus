@@ -25,6 +25,32 @@
 | `grade_probe.py` | 등급 판정을 입력별로 찔러 본다 |
 | `ui_snapshot.py` | 창을 띄우지 않고 `QWidget.grab()` 으로 화면을 뜬다 |
 | `make_icon.py` | 트레이 아이콘 생성 |
+| `audit/` | 전면 감사 안전망(2026-09-25). 아래 "감사 게이트" 절 |
+
+## 감사 게이트 (`tools/audit/`, 2026-09-25~)
+
+CI 가 없어서 이걸 한 번 돌린다. 모든 검사는 `--selftest` 로 **일부러 깨뜨려 FAIL 이 나는지**를
+스스로 확인한다.
+
+```powershell
+.venv\Scripts\python.exe tools\audit\run_gates.py              # 전부 (약 3~4분)
+.venv\Scripts\python.exe tools\audit\run_gates.py --skip pytest collectors golden   # 빠른 것만
+```
+
+| 파일 | 무엇을 잡나 (실제로 당한 사건) |
+|---|---|
+| `static_scan.py` | 인코딩 미지정(dffee7f) · 재할당 전역의 이름 import · 네트워크 import · `eval`/`yaml.load` · 감사 산출물의 사용자 경로. AST 라 여러 줄 호출도 본다 |
+| `doc_numbers.py` | README·CLAUDE.md 의 숫자 ↔ `defaults.yaml` 값 (문구가 사라져도 FAIL) |
+| `config_defaults.py` | 코드 기본값 ↔ `defaults.yaml` (e2094f6·de7fbee — 배선 테스트가 기본값끼리 같아서 못 잡던 것) |
+| `config_fuzz.py` | 설정·룰 파일을 한 칸씩 망가뜨려 `ok/human/crash/silent` 로 분류 (판정은 하지 않고 센다) |
+| `golden_replay.py` | 합성 입력을 탐지 → 융합 → 귀인까지 통과시킨 결과를 통째로 대조. 의도한 변경이면 `--update` 후 커밋 메시지에 **무엇이 왜** 바뀌었는지 |
+| `check_ledger.py` | 감사 대장 형식·심각도 상한·프로브 실재·앵커 실재·COVERAGE 누락 |
+| `backtest.py` | 위 도구들을 **과거 수정 커밋의 직전 상태**에 돌려 그 사고를 잡았을지 센다 (1차: 3/13) |
+| `sweep_jobs.py` · `ifpy_recheck.py` | `mutation_sweep`·if-py 변이를 적응형 풀(`~/.claude/tools/pool.js`)로 나눠 돌리고 모은다. 작업마다 사본을 새로 푼다 — 죽다 만 무력화 소스가 새지 않게 |
+
+**게이트가 못 보는 것(백테스트 1차의 사각 10/13):** 실행 중에만 드러나는 동작 결함 — 스레드가
+조용히 죽음(a8fd5fb)·explorer 재시작(7b32e3e)·호출 시점 시그니처 오류(af73bf7) 등. 정적 검사의
+한계이고, 감사 대장 F-008·F-014 가 그 공백을 다룬다.
 
 ## 착수 조건 판정
 

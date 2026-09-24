@@ -1,0 +1,6 @@
+{
+  "label": "if-py 핵심(detection·decide)",
+  "preset": "if-py",
+  "files": ["argus/detection/*.py", "argus/decide/*.py"],
+  "test": ".venv/Scripts/python.exe -m pytest -q -x -p no:cacheprovider tests/test_detection.py tests/test_fusion.py tests/test_procleak.py tests/test_procleak_group.py tests/test_rule_machine_scaling.py tests/test_rule_trace.py tests/test_baseline_load_gate.py tests/test_baseline_per_program.py tests/test_thermal_drift.py tests/test_config_thresholds.py tests/test_autolabel.py tests/test_attribution.py tests/test_readiness_severity.py tests/test_fingerprint.py"
+}

@@ -1,0 +1,134 @@
+{
+ "attribution": [
+  {
+   "resource": "cpu",
+   "scenario": "cpu_spin",
+   "skipped": null,
+   "title": "CPU 병목 — synth_spinner 100%",
+   "top1": true
+  },
+  {
+   "resource": "handles",
+   "scenario": "handle_leak",
+   "skipped": null,
+   "title": "synth_leaker (PID 902) 핸들 300 → 1,052개 (3.5배, 8분간 줄지 않음)",
+   "top1": true
+  },
+  {
+   "resource": "rss",
+   "scenario": "memory_leak",
+   "skipped": null,
+   "title": "synth_hog (PID 903) 메모리 80 → 602MB (7.5배, 9분간 줄지 않음)",
+   "top1": true
+  }
+ ],
+ "detectors": {
+  "always": {
+   "alarms": 1,
+   "fn": 0,
+   "fp": 219,
+   "latencies_s": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "missed": [],
+   "tp": 3
+  },
+  "fixed_cpu": {
+   "alarms": 0,
+   "fn": 3,
+   "fp": 0,
+   "latencies_s": [],
+   "missed": [
+    "cpu_spin",
+    "handle_leak",
+    "memory_leak"
+   ],
+   "tp": 0
+  },
+  "fixed_mem": {
+   "alarms": 0,
+   "fn": 3,
+   "fp": 0,
+   "latencies_s": [],
+   "missed": [
+    "cpu_spin",
+    "handle_leak",
+    "memory_leak"
+   ],
+   "tp": 0
+  },
+  "procleak": {
+   "alarms": 2,
+   "fn": 1,
+   "fp": 0,
+   "latencies_s": [
+    150.0,
+    240.0
+   ],
+   "missed": [
+    "cpu_spin"
+   ],
+   "tp": 2
+  },
+  "rules": {
+   "alarms": 2,
+   "fn": 1,
+   "fp": 0,
+   "latencies_s": [
+    30.0,
+    270.0
+   ],
+   "missed": [
+    "handle_leak"
+   ],
+   "tp": 2
+  }
+ },
+ "incidents": [
+  {
+   "bottleneck": "CPU",
+   "severity": "warning",
+   "title": "CPU 병목 — synth_spinner 100%",
+   "ts_end": 1788232504.0,
+   "ts_start": 1788232187.0
+  },
+  {
+   "bottleneck": "NONE",
+   "severity": "warning",
+   "title": "synth_leaker (PID 902) 핸들 300 → 1,052개 (3.5배, 8분간 줄지 않음)",
+   "ts_end": 1788233554.0,
+   "ts_start": 1788233099.0
+  },
+  {
+   "bottleneck": "NONE",
+   "severity": "critical",
+   "title": "synth_hog (PID 903) 메모리 80 → 602MB (7.5배, 9분간 줄지 않음)",
+   "ts_end": 1788235504.0,
+   "ts_start": 1788234599.0
+  }
+ ],
+ "input": {
+  "faults": [
+   [
+    "cpu_spin",
+    11400,
+    300
+   ],
+   [
+    "handle_leak",
+    12600,
+    600
+   ],
+   [
+    "memory_leak",
+    14100,
+    600
+   ]
+  ],
+  "seed": 20260925,
+  "t0": 1788220800.0
+ },
+ "observations": 15000
+}
