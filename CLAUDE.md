@@ -85,7 +85,10 @@ UI 는 시스템 트레이 + 네이티브 창(PySide6).
    그래서 웜 내보내기 자식(`--export-warm`)은 UTF-8 로 쓴다 — 부모가 `text=True` 만 쓰면
    **실행 PC 의 ACP 로 디코딩해서 어긋난다.** 개발 PC 는 2026-08-15 부터 UTF-8 로캘이라
    **여기서는 재현되지 않고, 배포 대상(CP949)에서만 깨진다.** 규칙 2("하드웨어를 가정하지
-   않는다")의 인코딩판이다. 해당 자리: `storage/warm.py`(자식=우리 자신), `machine/calibration.py`(자식=powershell).
+   않는다")의 인코딩판이다. 해당 자리: `storage/warm.py`(자식=우리 자신), `machine/calibration.py`(자식=powershell),
+   `ui/tray.py`(자식=창 — 곧바로 죽으면 stderr 마지막 줄을 풍선에 띄운다. 창은 `logging_setup` 을
+   안 불러 부모가 `_window_env` 에서 `PYTHONIOENCODING=utf-8` 을 넣는다. 2026-09-25 감사 F-029 에서
+   빠져 있던 자리다 — 새 자식 프로세스를 띄우면 여기 목록에 더한다).
 
    **그리고 이 실패는 요란하지 않고 조용하다.** 디코딩은 `subprocess` 의 reader 스레드에서
    일어나 예외가 부모까지 오지 않는다 — `run()` 은 정상 반환하고 **깨진 스트림만 `None`** 이 된다.

@@ -63,6 +63,28 @@ _BALLOON_TIMEOUT_MS = 10_000
 _SM_CXSMICON = 49
 
 
+def _window_env() -> dict[str, str]:
+    """창(별도 프로세스)에 물려줄 환경.
+
+    - **`sys.path` 를 `PYTHONPATH` 로** — base `pythonw.exe` 로 도는 상주에는 PySide6 가 없어,
+      `soak_entry` 가 세운 venv 경로를 넘겨야 창이 뜬다(2026-08-03 실측).
+    - **stdio 인코딩을 UTF-8 로 못박는다.** 창이 곧바로 죽으면 `_watch_dashboard` 가 stderr 마지막
+      줄을 UTF-8 로 읽어 풍선에 띄우는데, 창은 `logging_setup` 을 안 불러 stderr 가 실행 PC 의
+      로캘(배포 대상 CP949)로 나왔다 → "설정 값이 잘못됐습니다" 같은 한글 이유가 깨졌다(감사 F-029).
+      자식의 출력 인코딩은 부모가 정한다(전역 인코딩 규칙 3). 이 PC 는 UTF-8 로캘이라 안 보였다.
+    """
+    import os
+    import sys
+
+    env = dict(os.environ)
+    inherited = os.pathsep.join(p for p in sys.path if p)
+    if inherited:
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{inherited}{os.pathsep}{existing}" if existing else inherited
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
 def win32api_small_icon_size() -> int:
     """트레이 아이콘 크기. 시스템 값을 못 얻으면 표준 16px."""
     try:
@@ -512,11 +534,9 @@ class TrayIcon(Component):
         인터프리터에는 PySide6 가 없다. 실측(2026-08-03): 메뉴를 눌러도 아무 일도
         일어나지 않았고 `ModuleNotFoundError` 는 `CREATE_NO_WINDOW` 뒤에서 사라졌다.
         그래서 **현재 프로세스의 `sys.path` 를 `PYTHONPATH` 로 물려준다** — `soak_entry`
-        가 `site.addsitedir` 로 세운 venv 경로가 그 안에 들어 있다.
+        가 `site.addsitedir` 로 세운 venv 경로가 그 안에 들어 있다(`_window_env`).
         """
-        import os
         import subprocess
-        import sys
         import threading
 
         command = self._window_command()
@@ -529,11 +549,7 @@ class TrayIcon(Component):
         if incident_id is not None:
             argv = [*argv, "--incident", str(incident_id)]
 
-        env = dict(os.environ)
-        inherited = os.pathsep.join(p for p in sys.path if p)
-        if inherited:
-            existing = env.get("PYTHONPATH", "")
-            env["PYTHONPATH"] = f"{inherited}{os.pathsep}{existing}" if existing else inherited
+        env = _window_env()
 
         try:
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)

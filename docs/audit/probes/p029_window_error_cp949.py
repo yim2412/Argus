@@ -25,12 +25,13 @@ CHILD = f"import sys; sys.stderr.write('RuntimeError: {MSG}\\n'); sys.exit(1)"
 
 
 def reason_for(child_encoding: str) -> str:
-    from argus.ui.tray import TrayIcon
+    from argus.ui.tray import TrayIcon, _window_env
 
     shown: list[str] = []
     tray = object.__new__(TrayIcon)
     tray.notify = lambda title, message, severity="warning", incident_id=None: shown.append(message) or True
-    env = dict(os.environ, PYTHONIOENCODING=child_encoding)
+    os.environ["PYTHONIOENCODING"] = child_encoding   # 실행 PC 의 로캘 흉내 — 제품은 이 위에 자기 값을 얹는다
+    env = _window_env()
     proc = subprocess.Popen([sys.executable, "-c", CHILD], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     TrayIcon._watch_dashboard(tray, proc)

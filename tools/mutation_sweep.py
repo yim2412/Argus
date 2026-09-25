@@ -2207,6 +2207,17 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    Mutant(
+        "window_child_encoding_is_pinned",
+        "창 자식의 stdio 를 부모가 UTF-8 로 못박는다 (F-029 — CP949 PC 에서 실패 이유가 깨진다)",
+        (
+            (
+                "argus/ui/tray.py",
+                '    env["PYTHONIOENCODING"] = "utf-8"\n',
+                "    pass  # MUTANT: 로캘에 맡긴다\n",
+            ),
+        ),
+    ),
 ]
 
 

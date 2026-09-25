@@ -423,3 +423,29 @@ def test_notify_remembers_which_incident_the_balloon_shows(monkeypatch) -> None:
     tray.notify("제목", "내용", "warning", incident_id=42)
 
     assert tray._balloon_incident == 42
+
+
+def test_window_error_reason_survives_a_cp949_pc(monkeypatch):
+    """창이 곧바로 죽을 때 트레이가 보이는 이유가 CP949 PC 에서도 읽힌다 (감사 F-029).
+
+    창은 `logging_setup` 을 안 불러 stderr 가 실행 PC 의 로캘로 나오는데, 트레이는 UTF-8 로 읽는다.
+    이 PC 는 UTF-8 로캘이라 안 보이므로 부모 환경에 `PYTHONIOENCODING=cp949` 를 넣어 흉내 낸다
+    (전역 인코딩 규칙 6-a). `_window_env` 가 자식 인코딩을 못박지 않으면 그대로 물려받아 깨진다.
+    """
+    import subprocess
+    import sys
+
+    from argus.ui.tray import TrayIcon, _window_env
+
+    monkeypatch.setenv("PYTHONIOENCODING", "cp949")
+    msg = "설정 값이 잘못됐습니다"
+    shown: list[str] = []
+    tray = object.__new__(TrayIcon)
+    tray.notify = lambda title, message, severity="warning", incident_id=None: shown.append(message) or True
+    proc = subprocess.Popen(
+        [sys.executable, "-c", f"import sys; sys.stderr.write('ConfigError: {msg}\\n'); sys.exit(1)"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=_window_env(),
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    TrayIcon._watch_dashboard(tray, proc)
+    assert shown and msg in shown[0], f"CP949 PC 에서 창 실패 이유가 깨진다: {shown}"

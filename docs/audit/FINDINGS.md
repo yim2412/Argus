@@ -375,7 +375,7 @@
 - 대상: `tests/`
 - 결과: `tests/test_live_path.py` 5개 — 가짜 시계 + 격리 DB 로 기동(예열) → 꼬리 읽기 → 판정 → `anomaly_signals` 쓰기를 그대로 돈다. 대조 테스트(예열이 없으면 이상이 흡수돼 신호 0)가 예열 배선까지 재고 있음을 먼저 단언한다. **변이 9/9 잡힘**(각 줄을 뒤집어 이 파일만 돌림). 처음엔 8/9 였다 — 복귀 테스트의 `pytest.approx(T + 305)` 가 기본 상대 오차(1e-6)라 17억 초대 시각에서 ±1,790초를 같다고 봐 `skip_to_now` 를 빼도 초록이었다. `abs=1.0` 으로 고쳐 잡힘. 같은 함정이 기존 테스트에 있는지 훑었다 — `test_retention_fault_window.py` 는 시각이 100만 초대라 ±1초로 안전. 전체 649 통과
 
-### F-029 · 영역: 인코딩 · 상태: 미처리
+### F-029 · 영역: 인코딩 · 상태: 수정됨
 - 위치: `argus/ui/tray.py:573` — `        detail = (err or b"").decode("utf-8", "replace").strip().splitlines()`
 - 요약: 창이 곧바로 죽으면 트레이가 자식 stderr 마지막 줄을 풍선으로 보여 주는데, 바이트를 **UTF-8 로 못박아** 읽는다. 창 프로세스(`argus.desktop.app`)는 `logging_setup.setup()` 을 부르지 않아 stderr 가 실행 PC 의 로캘(배포 대상 CP949)로 나온다 → **한글 이유가 깨져 보인다.** 현실적 방아쇠: 사용자가 `settings.yaml` 을 잘못 고쳐 창이 `ConfigError("설정 값이 잘못됐습니다 …")` 로 죽는 순간 — 이유를 읽어야 할 바로 그때다. 이 PC 는 UTF-8 로캘이라 여기서는 안 보인다(전역 인코딩 절).
 - 근거: 실측 — 자식 stdio 를 `PYTHONIOENCODING=cp949` 로 되돌려 제품의 `_watch_dashboard` 에 넘김 → "RuntimeError: â ���� ……". 대조(자식 UTF-8) → 원문 그대로
@@ -385,6 +385,7 @@
 - 심각도: 중간
 - 수정비용: 작음 — `_open_dashboard` 가 자식 `env` 에 `PYTHONIOENCODING=utf-8` 을 넣는다(부모가 정한다 — 전역 인코딩 규칙 3). CLAUDE.md 규칙 6 의 "해당 자리"에 추가
 - 대상: `argus/ui/tray.py`, `CLAUDE.md`, 테스트
+- 결과: 창 환경을 `_window_env()` 로 떼어 `PYTHONIOENCODING=utf-8` 을 넣는다(자식의 출력 인코딩은 부모가 정한다 — 전역 인코딩 규칙 3). 쓰지 않게 된 지역 import 둘 정리. 프로브 p029 를 제품 경로(`_window_env`)를 거치게 고쳐 FAIL → **PASS**. 테스트(`test_tray.py`)는 부모 환경을 cp949 로 두어 배포 PC 를 흉내 낸다 — 고치기 전 빨강, 되돌리는 변이 `window_child_encoding_is_pinned` 빨강. 프로젝트 CLAUDE.md 수집·저장 규칙 6 의 "해당 자리"에 `ui/tray.py` 추가(빠져 있던 자리). **상주 재시작 필요**
 
 ### F-026 · 영역: 하위호환 · 상태: 미처리
 - 위치: `argus/config/loader.py:726` — `        shutil.copyfile(source, target)`
