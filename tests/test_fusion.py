@@ -1079,3 +1079,32 @@ def test_one_incident_failing_to_close_does_not_stall_fusion(db: Database, monke
     a = rows[start + 10]
     assert a["ts_end"] is not None, "실패한 사건이 열린 채 남았다 — 다음 틱이 또 같은 자리에서 죽는다"
     assert "분석 실패" in (a["title"] or ""), f"실패가 화면에 안 드러난다: {a['title']!r}"
+
+
+# ---------------------------------------------------------------- 늦게 기록된 신호 (감사 F-017)
+
+
+def _late_signal_scene(db: Database, *, write_delay_s: float, signal_age_s: float = 100.0) -> int:
+    """워터마크 T → 융합(신호 아직 없음) → 탐지 시각 T+age 의 신호가 이제서야 기록 → 융합."""
+    t = time.time() - 3600
+    f = Fusion(db)
+    f._set_watermark(t)  # noqa: SLF001
+    f.run_once(now=t + signal_age_s + write_delay_s)          # 워터마크가 신호 시각을 지나간다
+    _signals(db, [(t + signal_age_s, "rules", 0.8, "warning", None)])
+    f.run_once(now=t + signal_age_s + write_delay_s + 300)
+    return db.query("SELECT COUNT(*) AS c FROM incidents")[0]["c"]
+
+
+def test_signal_written_late_still_becomes_an_incident(db: Database) -> None:
+    """탐지 20초 뒤에 기록된 신호도 사건이 된다.
+
+    융합은 탐지 시각이 워터마크 뒤인 신호만 읽고 워터마크를 `now - lag_s`(15초)로 옮긴다.
+    락 정체로 신호가 15초 넘게 늦게 쓰이면(실측: 10초 초과 하루 1~3건, 최악 115초) 영영 안
+    읽혔다. 실DB 에서 323건 중 2건이 사건에 안 붙어 있었다.
+    """
+    assert _late_signal_scene(db, write_delay_s=20.0) == 1, "늦게 기록된 신호가 사건이 되지 않았다"
+
+
+def test_ancient_unattached_signals_are_not_resurrected(db: Database) -> None:
+    """대조 — 되돌아보기는 창 안만 본다. 오래된 미부착 신호(예: 융합이 없던 시절)를 사건으로 되살리지 않는다."""
+    assert _late_signal_scene(db, write_delay_s=FusionSettings().late_lookback_s + 60) == 0

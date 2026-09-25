@@ -2119,6 +2119,17 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    Mutant(
+        "late_signals_are_rescanned",
+        "워터마크를 지나 늦게 기록된 신호도 사건이 된다 (F-017 — 락 정체 때 신호가 사라진다)",
+        (
+            (
+                "argus/decide/fusion.py",
+                "                (start - self.settings.late_lookback_s, start),\n",
+                "                (start, start),  # MUTANT: 되돌아보지 않는다\n",
+            ),
+        ),
+    ),
 ]
 
 

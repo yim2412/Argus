@@ -61,6 +61,10 @@ class FusionSettings:
     gap_s: float = 120.0
     # 아직 안 쌓였을 수 있는 최근 구간은 건드리지 않는다.
     lag_s: float = 15.0
+    # 워터마크 앞 이만큼은 **아직 사건에 안 붙은** 신호를 다시 훑는다. 락 정체로 신호가 `lag_s`
+    # 보다 늦게 쓰이면 탐지 시각이 이미 워터마크 뒤라 영영 안 읽혔다(감사 F-017 — 쓰기 지연 실측
+    # 최악 115초). 창 밖의 오래된 미부착 신호는 되살리지 않는다.
+    late_lookback_s: float = 600.0
     # 귀인 비교 창: 사건 시작 전 이만큼을 "평소"로 본다.
     before_window_s: float = 180.0
     before_margin_s: float = 30.0
@@ -626,6 +630,20 @@ class Fusion(Component):
                 (start, end),
             )
         ]
+        # 워터마크를 이미 지나간 뒤에 기록된 신호 — 탐지 시각은 과거지만 사건에 안 붙었다.
+        late = [
+            dict(row)
+            for row in self.db.query(
+                "SELECT s.ts, s.detector, s.score, s.severity FROM anomaly_signals s "
+                "WHERE s.run_id IS NULL AND s.ts > ? AND s.ts <= ? AND NOT EXISTS ("
+                "SELECT 1 FROM incident_signals i WHERE i.ts = s.ts AND i.detector = s.detector"
+                ") ORDER BY s.ts",
+                (start - self.settings.late_lookback_s, start),
+            )
+        ]
+        if late:
+            log.info("늦게 기록된 신호를 되살린다", extra={"count": len(late)})
+            signals = sorted(late + signals, key=lambda s: s["ts"])
 
         created = 0
         current = self._open_incident()
