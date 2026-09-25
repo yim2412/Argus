@@ -78,7 +78,7 @@
 
 ---
 
-### F-001 · 영역: 조용한 실패 · 상태: 미처리
+### F-001 · 영역: 조용한 실패 · 상태: 수정됨
 - 위치: `argus/detection/rules.py:268` — `source = path if path is not None else resource_path("config/rules.yaml")`
 - 요약: 동봉 `rules.yaml` 머리말은 "사용자 룰은 `%APPDATA%\Argus\rules.yaml` 에 두면 이 파일을 대체한다"고 약속하는데, 사용자 경로를 읽는 코드가 어디에도 없다. 사용자가 룰을 고쳐도 **아무 일도 안 일어나고 아무 신호도 없다.**
 - 근거: 실측 — 격리 데이터 폴더에 룰 1개짜리 파일을 두고 `registry.build("rules")` → 동봉본 10개 룰이 쓰임
@@ -88,6 +88,7 @@
 - 심각도: 높음
 - 수정비용: 작음(경로 해석 1곳 + 테스트). 단 **판단 필요**: 약속을 지킬지(사용자 파일 읽기) 약속을 지울지(머리말 수정). 전자면 F-003 이 같이 따라온다
 - 대상: `argus/detection/rules.py`, `argus/config/rules.yaml`, `argus/paths.py`
+- 결과: `load_active_rules()` — `%APPDATA%\Argus\rules.yaml` 이 있으면 동봉본을 **통째로** 대체한다(머리말의 약속). `RuleEngine()` 기본 경로가 이것을 쓴다. 테스트가 부르는 `load_rules()` 는 여전히 동봉본이다(이 PC 에 사용자 룰이 생겨도 테스트가 흔들리지 않게). 프로브 p001 FAIL → **PASS**. 테스트 `tests/test_user_rules.py`(대조: 사용자 파일이 없으면 동봉 10개). 변이 `rule_engine_reads_user_file` 빨강. 동봉 rules.yaml 머리말·README 에 대체·되돌림 동작을 적었다. **상주 재시작 필요**
 
 ### F-002 · 영역: 측정 도구 신뢰성 · 상태: 수정됨
 - 위치: `tools/mutation_sweep.py` — `MUTANTS` 중 11개
@@ -101,7 +102,7 @@
 - 대상: `tools/mutation_sweep.py`
 - 결과: 11개 앵커를 지금 코드에 다시 맞췄다(대부분 `if` 줄만 잡게 좁혀 옆 줄 변화에 덜 끊기게). 도구에 **시작 전 앵커 전수 검사**(`stale_anchors`)를 넣어, 끊기면 11번째가 아니라 시작 시점에 전부 찍고 멈춘다(가짜 앵커로 확인). 작업 트리 사본에서 11개를 돌려 **잡힘 11/11** — 이 11개 규칙이 다시 재어진다. 프로브 p002 FAIL → PASS(162개 · 끊김 0, 감사 수정분 2개 추가 포함)
 
-### F-003 · 영역: 조용한 실패 · 상태: 미처리
+### F-003 · 영역: 조용한 실패 · 상태: 수정됨
 - 위치: `argus/detection/rules.py:276` — `for index, entry in enumerate(data.get("rules") or []):`
 - 요약: 룰 파일 구조가 틀리면(룰이 문자열·`rules` 가 매핑·최상위가 리스트·YAML 문법 오류) `RuleError` 가 아니라 `AttributeError`/`ParserError` 가 난다. 그러면 `build()` 가 "detection 설정을 읽지 못해 기본값을 쓴다"는 **틀린 경고**를 남긴 뒤 `RuleEngine()` 에서 같은 예외가 다시 나고, `live.setup` 이 로그 한 줄만 남기고 **룰 탐지 전체를 끈다.** 사용자에게 보이는 신호는 없다(설계 규칙 4).
 - 근거: 실측(`tools/audit/config_fuzz.py` crash 4건) + 인용(`rules.py:340` except → `RuleEngine()`, `live.py:70` except → continue)
@@ -111,8 +112,9 @@
 - 심각도: 중간
 - 수정비용: 작음
 - 대상: `argus/detection/rules.py`
+- 결과: 사용자 파일이 틀렸으면 `RuleError` 로 모아(YAML 문법·최상위·`rules`·룰·`when`·조건의 모양을 검사) **기본 룰로 계속 돌고** `rules_note` 에 이유를 남긴다 → `DetectionComponent.health_note()` → 수퍼바이저 건강 표의 `degraded` → 창 상태 줄 **"설정 확인이 필요합니다 — 이유"**(진행 중 사건이 없을 때 '정상' 자리). 테스트: 틀린 모양 7가지 모두 기본 룰 + 문구(예외가 밖으로 나오지 않는다) · 창 문구. 변이 `broken_user_rules_fall_back`·`window_shows_rules_note` 빨강
 
-### F-004 · 영역: 조용한 실패 · 상태: 미처리
+### F-004 · 영역: 조용한 실패 · 상태: 수정됨
 - 위치: `argus/detection/rules.py` — `Condition(**c)` (메트릭 이름을 검증하지 않음)
 - 요약: 존재하지 않는 메트릭 이름을 쓴 룰이 **오류 없이 로드되고 영원히 발화하지 않는다.** 룰 이름을 오타 내면 "예외도 로그도 없이 룰만 죽는다" — 822c1fa 가 기록한 바로 그 모양.
 - 근거: 실측 — `config_fuzz.py` `silent rules(구조) [알수없는 메트릭]`
@@ -122,6 +124,7 @@
 - 심각도: 중간 (사용자 룰이 읽히지 않는 지금은 개발자 실수 경로뿐. F-001 결정에 따라 올라간다)
 - 수정비용: 작음(로드 시 알려진 메트릭 집합과 대조)
 - 대상: `argus/detection/rules.py`
+- 결과: 로드 시점에 지표 이름을 **스키마에서 뽑은 목록**(`known_metrics()` — 마이그레이션을 메모리 DB 에 적용해 `metrics_raw` + `gpu_` 컬럼, 31개)과 대조해 없으면 `RuleError("없는 지표: …")`. 목록을 따로 두면 스키마와 어긋나 그 자체가 새 사각이 된다. 동봉 룰 10개 통과. 테스트: 오타(`cpu_totl`) 거절 · 대조(있는 지표 통과). 변이 `unknown_metric_is_rejected` 빨강
 
 ### F-005 · 영역: UI · 상태: 미처리
 - 위치: `argus/config/rules.yaml` — `CPU 과부하` 룰 `explain: "CPU {cpu_total}% 로 45초 이상 지속 …"` / `for: 30s`
@@ -307,7 +310,7 @@
 - 대상: `argus/decide/fusion.py`, 테스트
 - 결과: 합의 승격을 **탐지기 수가 1 → 2 가 되는 순간에만** 한 단계로. 세 번째 탐지기나 이후 신호는 지속이라 올리지 않는다. 테스트 `test_consensus_escalates_once_not_per_signal`(info 신호 5개·탐지기 2개 → warning) 고치기 전 빨강(critical). 기존 합의 테스트 그대로 통과. 변이 `consensus_escalates_once` 등록(잡힘 확인). **상주 재시작 필요**
 
-### F-021 · 영역: 조용한 실패 · 상태: 미처리
+### F-021 · 영역: 조용한 실패 · 상태: 수정됨
 - 위치: `argus/detection/expr.py:109` — `            return op(float(left), float(right))`
 - 요약: `**` 가 허용되어 있고, 음수의 분수 거듭제곱은 복소수가 된다. 비교에서 `TypeError` 가 나는데 룰 평가는 `ExprError` 만 잡아 그 틱의 **룰 전체**가 건너뛰어진다. 지금은 도달 불가 — 동봉 룰에는 `**` 가 없고 사용자 룰은 F-001 때문에 읽히지 않는다. **F-001 을 "사용자 룰을 읽는다"로 고치면 같이 고친다.**
 - 근거: 실측(단위) — `expr.evaluate("x > (y ** 0.5)", {"x":1, "y":-4})` → `TypeError`
@@ -317,6 +320,7 @@
 - 심각도: 낮음
 - 수정비용: 작음
 - 대상: `argus/detection/expr.py`, 테스트
+- 결과: 이항 연산 결과가 복소수면 `ExprError` — 그 조건만 평가 불가로 두고(`_warn_once`) 다른 룰은 그대로 판정한다. 테스트: 단위(복소수 → ExprError, 대조: 실수면 평소대로) · 복소수 식 룰과 멀쩡한 룰을 함께 두고 멀쩡한 룰이 발화. 변이 `complex_result_is_expr_error` 빨강
 
 ### F-022 · 영역: 설정 배선 · 상태: 수정됨
 - 위치: `argus/decide/fusion.py:62` — `    lag_s: float = 15.0`
@@ -387,7 +391,7 @@
 - 대상: `argus/ui/tray.py`, `CLAUDE.md`, 테스트
 - 결과: 창 환경을 `_window_env()` 로 떼어 `PYTHONIOENCODING=utf-8` 을 넣는다(자식의 출력 인코딩은 부모가 정한다 — 전역 인코딩 규칙 3). 쓰지 않게 된 지역 import 둘 정리. 프로브 p029 를 제품 경로(`_window_env`)를 거치게 고쳐 FAIL → **PASS**. 테스트(`test_tray.py`)는 부모 환경을 cp949 로 두어 배포 PC 를 흉내 낸다 — 고치기 전 빨강, 되돌리는 변이 `window_child_encoding_is_pinned` 빨강. 프로젝트 CLAUDE.md 수집·저장 규칙 6 의 "해당 자리"에 `ui/tray.py` 추가(빠져 있던 자리). **상주 재시작 필요**
 
-### F-026 · 영역: 하위호환 · 상태: 미처리
+### F-026 · 영역: 하위호환 · 상태: 수정됨
 - 위치: `argus/config/loader.py:726` — `        shutil.copyfile(source, target)`
 - 요약: 첫 실행에 `defaults.yaml` **전체**를 사용자 `settings.yaml` 로 복사하고, 이후 사용자 파일을 기본값 위에 덮는다. 사본의 모든 키가 사용자 값이 되므로 **업데이트로 바뀐 기본값(튜닝한 문턱 등)이 기존 설치에 영영 안 먹는다** — 오류도 없다. 설정 파일에 버전 필드가 없어(수집·저장 규칙 4 위반) 어느 판에서 만든 사본인지도 모른다. `rules.yaml` 의 `version: 1` 은 읽는 코드가 없다.
 - 근거: 인용 — `ensure_user_config` · `load_settings` 의 `_deep_merge(merged, 사용자)`. 이 PC 의 `settings.yaml` 은 109줄(동봉본 639줄)이라 옛 판 사본으로 보인다 — 이미 갈라져 있다
@@ -397,6 +401,7 @@
 - 심각도: 중간 — **배포가 전제**라 두 번째 릴리스부터 모든 사용자에게 해당
 - 수정비용: 중간 — **판단 필요**: (a) 사본 대신 주석만 있는 빈 템플릿을 만든다 (b) 사본에 버전을 넣고 옮겨 쓰기(마이그레이션) (c) 둘 다. 이미 퍼진 사본의 처리도 정해야 한다
 - 대상: `argus/config/loader.py`, `argus/config/defaults.yaml`, 테스트
+- 결과: 첫 실행이 **키를 전부 주석 처리한 템플릿**(`user_config_template` — 설명 주석은 그대로)을 만들고, 맨 위에 `config_version: 1` 만 살린다. `Settings.config_version` 필드 추가(수집·저장 규칙 4). 버전이 없는 사용자 파일은 옛 전체 사본으로 보고 경고를 남긴다 — 막지 않는다(사용자가 고친 값이 섞여 있어 기계가 못 가른다). 옛 사본 정리 도구 `tools/settings_prune.py`: 기본은 미리보기, `--apply` 는 백업 후 "현재 기본값과 다른 값 블록 + 주석 템플릿"으로 쓴다(YAML 을 다시 쓰면 주석이 사라지므로 템플릿을 새로 붙인다). 테스트 `tests/test_user_config.py` 3개: 템플릿이면 업데이트된 기본값이 먹는다 · **대조: 옛 전체 사본이면 안 먹는다** · 정리 전후 실제 설정이 같고 정리 뒤엔 업데이트가 먹는다. 되돌리는 변이 `user_config_is_a_template` 빨강. 이 PC 사본 미리보기: 다른 값 2개(`storage.lock_trace: true` — 락 진단, `detection.per_program: true`) — 둘 다 남기므로 정리해도 동작이 안 바뀐다. **노트북 사본은 원격 기계라 손대지 않았다**(화면을 건드리지 않는다 — 다음에 거기서 도구를 한 번 돌린다). **상주 재시작 필요**
 
 ### F-027 · 영역: 조용한 실패 · 상태: 수정됨
 - 위치: `argus/detection/rules.py:145` — `@lru_cache(maxsize=1)`

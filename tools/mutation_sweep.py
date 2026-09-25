@@ -2219,6 +2219,74 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    Mutant(
+        "rule_engine_reads_user_file",
+        "사용자 rules.yaml 이 동봉본을 대체한다 (F-001 — 머리말이 약속했는데 읽지 않았다)",
+        (
+            (
+                "argus/detection/rules.py",
+                "            self.rules, self.rules_note = load_active_rules()\n",
+                "            self.rules, self.rules_note = load_rules(), None  # MUTANT: 사용자 파일 무시\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "broken_user_rules_fall_back",
+        "틀린 사용자 룰 파일은 기본 룰로 돌며 드러낸다 (F-003 — 안 그러면 룰 탐지 전체가 꺼진다)",
+        (
+            (
+                "argus/detection/rules.py",
+                "        except RuleError as exc:\n"
+                '            log.error("사용자 룰 파일을 읽지 못해 기본 룰을 쓴다"',
+                "        except ZeroDivisionError as exc:  # MUTANT: 대체하지 않는다\n"
+                '            log.error("사용자 룰 파일을 읽지 못해 기본 룰을 쓴다"',
+            ),
+        ),
+    ),
+    Mutant(
+        "unknown_metric_is_rejected",
+        "없는 지표 이름은 로드 시점에 터진다 (F-004 — 오타 난 룰이 영원히 조용히 죽는다)",
+        (
+            (
+                "argus/detection/rules.py",
+                "                if unknown:\n",
+                "                if False:  # MUTANT: 지표 이름을 안 본다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "complex_result_is_expr_error",
+        "복소수 결과는 식 오류다 (F-021 — TypeError 가 그 틱의 룰 전체를 건너뛴다)",
+        (
+            (
+                "argus/detection/expr.py",
+                "        if isinstance(result, complex):\n",
+                "        if False:  # MUTANT: 복소수를 그대로 둔다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "window_shows_rules_note",
+        "기본 룰로 도는 중이면 창이 '정상' 대신 그 사실을 보인다 (F-003 — 고쳐도 아무 일도 없던 것이 원래 문제)",
+        (
+            (
+                "argus/desktop/app.py",
+                "    if degraded:\n",
+                "    if False:  # MUTANT: 설정 문제를 숨긴다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "user_config_is_a_template",
+        "첫 실행의 settings.yaml 은 주석 템플릿이다 (F-026 — 전체 사본이면 업데이트된 기본값이 안 먹는다)",
+        (
+            (
+                "argus/config/loader.py",
+                '        target.write_text(user_config_template(source.read_text(encoding="utf-8")), encoding="utf-8")\n',
+                '        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")  # MUTANT: 전체 사본\n',
+            ),
+        ),
+    ),
 ]
 
 

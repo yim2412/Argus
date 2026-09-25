@@ -22,6 +22,7 @@
 | `lock_report.py` | DB 락 진단(`storage.lock_trace`) 결과를 편다 — 누가 쥐고 누가 막혔나. **기록 0건은 결과가 아니라 `[FAIL]`** 이다 |
 | `mutation_sweep.py` | 규칙을 무력화했다 되돌리며 테스트가 잡는지 잰다 |
 | `pyc_audit.py` | 소스와 `__pycache__` 의 모듈 상수가 어긋났는지 검사한다 |
+| `settings_prune.py` | 옛 **전체 사본** `settings.yaml` 을 "기본값과 다른 값 + 주석 템플릿"으로 정리한다(기본 미리보기, `--apply` 는 백업 후). 사본이 업데이트된 기본값을 막던 문제(감사 F-026) |
 | `grade_probe.py` | 등급 판정을 입력별로 찔러 본다 |
 | `ui_snapshot.py` | 창을 띄우지 않고 `QWidget.grab()` 으로 화면을 뜬다 |
 | `make_icon.py` | 트레이 아이콘 생성 |

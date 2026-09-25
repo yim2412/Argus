@@ -1,11 +1,17 @@
 # Argus 기본 설정 — 패키지 동봉본. 이 파일을 직접 고치지 말 것.
 #
-# 사용자 설정은 %APPDATA%\Argus\settings.yaml 이며, 첫 실행 시 이 파일의 사본이 생성된다.
+# 사용자 설정은 %APPDATA%\Argus\settings.yaml 이며, 첫 실행 시 이 파일을 **키를 전부 주석 처리한
+# 템플릿**으로 만든다. 바꾸고 싶은 줄만 주석을 풀면 된다 — 안 푼 값은 업데이트된 기본값을 따른다.
+# (처음엔 전체 사본이었고, 사본의 모든 키가 사용자 값이 되어 업데이트로 바뀐 기본값이 영영 안
+#  먹었다 — 2026-09-25 감사 F-026. 옛 사본은 tools\settings_prune.py 로 정리한다.)
 # 적용 우선순위:  기본값(이 파일)  <  사용자 settings.yaml  <  환경변수(ARGUS_*)
 #
 # 환경변수 형식: ARGUS_<섹션>__<키>   예) ARGUS_BUDGET__CPU_PERCENT=1.0
 #
 # 규칙: 탐지 임계값을 코드에 박지 않는다. 튜닝은 코드 수정 없이 이 파일로만 되어야 한다.
+
+# 사용자 settings.yaml 의 형식 판. 템플릿에는 이 줄만 주석 없이 들어간다. 없으면 옛 전체 사본이다.
+config_version: 1
 
 general:
   log_level: INFO            # DEBUG / INFO / WARNING / ERROR

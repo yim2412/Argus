@@ -11,8 +11,8 @@
 
 from __future__ import annotations
 
+import logging
 import os
-import shutil
 from typing import Any, Literal
 
 import yaml
@@ -664,7 +664,12 @@ class UsageSettings(BaseModel):
     }
 
 
+CONFIG_VERSION = 1
+
+
 class Settings(BaseModel):
+    config_version: int = CONFIG_VERSION
+    """사용자 settings.yaml 의 형식 판. 없는 파일은 옛 전체 사본이다(감사 F-026)."""
     general: GeneralSettings = GeneralSettings()
     storage: StorageSettings = StorageSettings()
     budget: BudgetSettings = BudgetSettings()
@@ -747,16 +752,33 @@ def _read_yaml(path) -> dict[str, Any]:
     return data
 
 
+def user_config_template(defaults_text: str) -> str:
+    """기본값 파일을 **키를 전부 주석 처리한 템플릿**으로 바꾼다. `config_version` 만 살린다.
+
+    처음엔 전체 사본을 만들었다. 사본의 모든 키가 사용자 값이 되어, 업데이트로 바뀐 기본값이
+    기존 설치에 영영 안 먹었다 — 오류도 없이(감사 F-026). 설명(주석)은 그대로 남겨 설명서 역할은
+    한다. 사용자는 바꾸고 싶은 줄만 주석을 푼다.
+    """
+    out = []
+    for line in defaults_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("config_version:"):
+            out.append(line)
+        else:
+            out.append(f"# {line}")
+    return "\n".join(out) + "\n"
+
+
 def ensure_user_config() -> bool:
-    """사용자 설정 파일이 없으면 기본값 사본을 만든다. 새로 만들었으면 True."""
+    """사용자 설정 파일이 없으면 주석 템플릿을 만든다. 새로 만들었으면 True."""
     target = user_config_path()
     if target.exists():
         return False
     source = resource_path("config/defaults.yaml")
     try:
-        shutil.copyfile(source, target)
+        target.write_text(user_config_template(source.read_text(encoding="utf-8")), encoding="utf-8")
     except OSError:
-        # 사본 생성 실패가 실행을 막을 이유는 없다. 기본값으로 계속 돌면 된다.
+        # 템플릿 생성 실패가 실행을 막을 이유는 없다. 기본값으로 계속 돌면 된다.
         return False
     return True
 
@@ -769,7 +791,16 @@ def load_settings(*, use_user_file: bool = True, use_env: bool = True) -> Settin
         ensure_user_config()
         path = user_config_path()
         if path.exists():
-            merged = _deep_merge(merged, _read_yaml(path))
+            user = _read_yaml(path)
+            if "config_version" not in user:
+                # 옛 전체 사본 — 모든 키가 사용자 값이라 업데이트된 기본값이 안 먹는다(감사 F-026).
+                # 막지 않고 알린다: 사용자가 실제로 고친 값이 섞여 있어 기계가 가를 수 없다.
+                logging.getLogger("argus.config").warning(
+                    "사용자 settings.yaml 이 옛 전체 사본이다 — 기본값 업데이트가 안 먹는다. "
+                    "tools\\settings_prune.py 로 정리한다",
+                    extra={"path": str(path)},
+                )
+            merged = _deep_merge(merged, user)
 
     if use_env:
         merged = _deep_merge(merged, _env_overrides())
