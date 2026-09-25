@@ -654,9 +654,10 @@ MUTANTS: list[Mutant] = [
         (
             (
                 "argus/ui/tray.py",
-                '            env["PYTHONPATH"] = f"{inherited}{os.pathsep}{existing}"'
+                # `_window_env` 로 옮겨 들여쓰기가 줄었다(2026-09-25 F-029)
+                '        env["PYTHONPATH"] = f"{inherited}{os.pathsep}{existing}"'
                 " if existing else inherited\n",
-                "            pass  # MUTANT: 경로를 물려주지 않는다\n",
+                "        pass  # MUTANT: 경로를 물려주지 않는다\n",
             ),
         ),
     ),
