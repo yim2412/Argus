@@ -1038,3 +1038,44 @@ def test_without_trigger_metrics_the_peak_is_still_cpu(db: Database) -> None:
     _disk_stall_with_cpu_blip(db, start, evidence=None)
     row = _run(db, start, now)
     assert row["bottleneck"] == "CPU", f"방아쇠 없이도 {row['bottleneck']} — 장면이 CPU 튐을 못 만든다"
+
+
+# ---------------------------------------------------------------- 사건 하나의 실패 가두기 (감사 F-019)
+
+
+def test_one_incident_failing_to_close_does_not_stall_fusion(db: Database, monkeypatch) -> None:
+    """사건 하나를 닫다 예외가 나도 융합은 다음 신호로 간다.
+
+    워터마크는 신호를 다 처리한 **뒤에만** 옮겨진다. 처음엔 닫기 예외가 run_once 밖으로 나가,
+    다음 틱이 같은 신호를 다시 읽고 같은 자리에서 또 죽었다 — 그 사건의 데이터가 계속 예외를
+    부르면 **융합이 영구 정지하고 이후 모든 사건·알림이 사라진다.**
+    """
+    from argus.decide import fusion as fusion_mod
+
+    start = time.time() - 900
+    _signals(db, [(start + 10, "rules", 0.8, "warning", None), (start + 300, "rules", 0.8, "warning", None)])
+    real = fusion_mod.close_incident
+
+    def broken(db_, incident_id, ts_end, settings=None):
+        row = db_.query("SELECT ts_start FROM incidents WHERE id = ?", (incident_id,))
+        if row and row[0]["ts_start"] == start + 10:
+            raise ValueError("주입: 이 사건의 분석이 예외를 던진다")
+        return real(db_, incident_id, ts_end, settings)
+
+    monkeypatch.setattr(fusion_mod, "close_incident", broken)
+    f = Fusion(db)
+    f._set_watermark(start)  # noqa: SLF001
+    # 대조 — 주입이 실제로 예외를 던지는 장면이다(아니면 아래가 아무것도 안 잰다)
+    f.run_once(now=start + 250)                               # A 가 열린다(아직 안 닫힘)
+    a_id = db.query("SELECT id FROM incidents WHERE ts_start = ?", (start + 10,))[0]["id"]
+    with pytest.raises(ValueError):
+        broken(db, a_id, start + 10)
+
+    for k in range(3):
+        f.run_once(now=start + 600 + k * 10)                  # 예외가 밖으로 나오지 않아야 한다
+
+    rows = {r["ts_start"]: dict(r) for r in db.query("SELECT * FROM incidents")}
+    assert start + 300 in rows, "A 의 닫기 실패가 B 를 막았다 — 융합이 멈췄다"
+    a = rows[start + 10]
+    assert a["ts_end"] is not None, "실패한 사건이 열린 채 남았다 — 다음 틱이 또 같은 자리에서 죽는다"
+    assert "분석 실패" in (a["title"] or ""), f"실패가 화면에 안 드러난다: {a['title']!r}"

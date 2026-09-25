@@ -640,7 +640,7 @@ class Fusion(Component):
         for signal in signals:
             if current is not None and last_ts is not None:
                 if signal["ts"] - last_ts > self.settings.gap_s:
-                    self._close(current["id"], last_ts)
+                    self._close_safely(current["id"], last_ts)
                     current = None
 
             if current is None:
@@ -655,10 +655,34 @@ class Fusion(Component):
 
         # 신호가 끊긴 지 오래면 닫는다. 새 신호가 없어도 사건은 끝나야 한다.
         if current is not None and last_ts is not None and end - last_ts > self.settings.gap_s:
-            self._close(current["id"], last_ts)
+            self._close_safely(current["id"], last_ts)
 
         self._set_watermark(end)
         return created
+
+    def _close_safely(self, incident_id: int, ts_end: float) -> None:
+        """사건 하나의 닫기 실패를 그 사건에 가둔다.
+
+        워터마크는 신호를 다 처리한 **뒤에만** 옮겨진다. 닫기(분석·억제·예산·자동 라벨)가
+        예외를 던지면 다음 틱이 같은 신호를 다시 읽고 같은 자리에서 또 죽는다 — 그 사건의
+        데이터가 계속 예외를 부르면 **융합이 영구 정지하고 이후 모든 사건·알림이 사라진다**
+        (감사 F-019). 실패한 사건은 "분석 실패"로 닫고 넘어간다 — 사건은 남기고 설명만
+        비운다(`analyze_incident` 의 "관측 없음"과 같은 모양). 알림은 보내지 않는다.
+        """
+        try:
+            self._close(incident_id, ts_end)
+        except Exception:
+            log.exception("사건 닫기 실패 — 설명 없이 닫고 넘어간다", extra={"incident": incident_id})
+            try:
+                with self.db._lock:  # noqa: SLF001
+                    self.db.conn.execute(
+                        "UPDATE incidents SET title = '분석 실패 — 로그 참조', ts_end = ? "
+                        "WHERE id = ? AND ts_end IS NULL",
+                        (ts_end, incident_id),
+                    )
+                    self.db.conn.commit()
+            except Exception:
+                log.exception("실패한 사건을 닫지도 못했다", extra={"incident": incident_id})
 
     def _close(self, incident_id: int, ts_end: float) -> None:
         """사건을 닫고 억제·알림 판단까지 한 번에 한다.

@@ -2106,6 +2106,19 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    Mutant(
+        "close_failure_is_isolated",
+        "사건 하나의 닫기 실패가 융합을 멈추지 않는다 (F-019 — 멈추면 이후 알림이 전부 사라진다)",
+        (
+            (
+                "argus/decide/fusion.py",
+                "        except Exception:\n"
+                '            log.exception("사건 닫기 실패 — 설명 없이 닫고 넘어간다"',
+                "        except ZeroDivisionError:  # MUTANT: 가두지 않는다\n"
+                '            log.exception("사건 닫기 실패 — 설명 없이 닫고 넘어간다"',
+            ),
+        ),
+    ),
 ]
 
 

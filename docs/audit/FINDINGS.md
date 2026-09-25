@@ -280,7 +280,7 @@
 - 수정비용: 작음 — reset 에서 베이스라인은 남기고 지속 시계·쿨다운만 버린다(또는 복귀 뒤 `warm` 재호출)
 - 대상: `argus/detection/rules.py`, `argus/detection/live.py`, 테스트
 
-### F-019 · 영역: 조용한 실패 · 상태: 미처리
+### F-019 · 영역: 조용한 실패 · 상태: 수정됨
 - 위치: `argus/decide/fusion.py:618` — `        self._set_watermark(end)`
 - 요약: 워터마크는 신호를 다 처리한 **뒤에만** 옮겨진다. 도중에 `_close`(→ `analyze_incident`)가 예외를 던지면 다음 틱이 같은 신호를 다시 읽고 같은 자리에서 또 죽는다 — 그 사건의 데이터가 계속 예외를 부르면 **융합이 영구 정지하고 이후 모든 사건·알림이 사라진다.** 슈퍼바이저 로그에만 남고 화면에는 없다(→ F-014 와 같은 축).
 - 근거: 실측 — 격리 폴더, 사건 A 닫기에만 예외 주입 → 틱 3번 모두 예외, 뒤 신호 B 는 사건이 안 됨. 대조(예외 없음) → 사건 2개. 실로그(3개 파일)에는 융합 실패 기록 없음 — 잠재 결함
@@ -290,6 +290,7 @@
 - 심각도: 중간
 - 수정비용: 작음 — 사건 하나의 닫기를 try 로 가두고 "분석 실패"로 닫은 뒤 진행(사건은 남기고 설명만 비운다 — `peak is None` 경로와 같은 모양)
 - 대상: `argus/decide/fusion.py`, 테스트
+- 결과: `run_once` 의 두 닫기 자리를 `_close_safely` 로 — 닫기(분석·억제·예산·자동 라벨) 중 어디서든 예외가 나면 로그를 남기고 그 사건을 "분석 실패 — 로그 참조" 로 닫고 넘어간다(알림 없음, 사건은 남고 제목으로 화면에 드러난다). 프로브 pr07 FAIL → **PASS**(예외 0번 · B 열림). 테스트 `test_one_incident_failing_to_close_does_not_stall_fusion` — 주입이 실제로 예외를 던진다는 대조를 먼저 단언, 고치기 전 빨강. `mutation_sweep` 에 `close_failure_is_isolated` 등록(잡힘 확인). **상주 재시작 필요**
 
 ### F-020 · 영역: 알림 판정 · 상태: 미처리
 - 위치: `argus/decide/fusion.py:742` — `            severity = _escalate(severity)`
