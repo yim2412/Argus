@@ -75,3 +75,29 @@ def test_successful_multi_statement_migration_applies_every_statement(tmp_path, 
     hot.Database(db_file).open().close()
     assert _version(db_file) == 2
     assert _columns(db_file) == ["a", "b", "c"]
+
+
+def test_db_from_a_newer_version_opens_with_a_visible_warning(tmp_path, migrations, caplog):
+    """새 버전이 만든 DB 를 옛 코드로 열면 **막지 않고 드러낸다** (감사 F-013 — 사용자 결정: 경고만).
+
+    처음엔 아무 검사 없이 돌았다. 막으면 되돌린 순간 모니터가 통째로 멈춘다.
+    """
+    import logging
+    import time
+
+    from argus.desktop.app import _health_line
+
+    db_file = tmp_path / "x.db"
+    hot.Database(db_file).open().close()
+    assert hot.schema_ahead(1) is None, "대조: 같은 판이면 조용하다"
+    with sqlite3.connect(db_file) as conn:
+        conn.execute("PRAGMA user_version = 7")                # 더 새 Argus 가 만든 것처럼
+    with caplog.at_level(logging.WARNING):
+        hot.Database(db_file).open().close()                   # 기동이 막히면 안 된다
+    assert any("더 새 버전" in r.getMessage() for r in caplog.records), "로그에 안 남았다"
+    note = hot.schema_ahead(7)
+    assert note and "7 > 1" in note
+    now = time.time()
+    text, detail, _c, _id = _health_line({"sample_ts": now - 1, "open": None, "last_end_ts": None,
+                                          "unlabeled": 0, "broken": [], "schema_note": note}, now)
+    assert text == "설정 확인이 필요합니다" and "더 새 버전" in detail

@@ -216,7 +216,7 @@
 - 대상: `argus/storage/hot.py`, 테스트
 - 결과: 마이그레이션 파일 하나를 `BEGIN; … PRAGMA user_version=N; COMMIT;` 으로 감싸 `executescript` 에 넘긴다 — 실패해도 트랜잭션이 열린 채 남아 `rollback()` 이 통째로 되돌린다. user_version 도 같은 트랜잭션. 기존 마이그레이션 20개에 트랜잭션 밖 문장(VACUUM·journal_mode·BEGIN/COMMIT)이 없는 것을 확인(주석에만 나온다). 프로브 FAIL → **PASS**("고친 002 로 재기동: ok"). `tests/test_migration_atomic.py` 3개(실패 뒤 흔적 없음 · 실패 → 고친 판 재기동 · 대조: 정상 여러 문장 전부 적용). 고치기 전 빨강, 되돌리는 변이 2/3 빨강. `mutation_sweep` 에 `migration_is_atomic` 등록. 전체 653 통과(모든 테스트가 새 방식으로 마이그레이션 20개를 처음부터 돈다). **상주 재시작 필요**(수정 판 끝에 모아서)
 
-### F-013 · 영역: 하위호환 · 상태: 미처리
+### F-013 · 영역: 하위호환 · 상태: 수정됨
 - 위치: `argus/storage/hot.py:129` — `pending = [(v, p) for v, p in migration_files() if v > current]`
 - 요약: DB 의 `user_version` 이 코드가 아는 최대 버전보다 **높을 때**(새 버전을 쓰다 옛 exe 로 되돌린 경우) 아무 검사 없이 연다. 옛 코드가 새 스키마에 쓰면 조용히 어긋날 수 있다.
 - 근거: 인용
@@ -226,6 +226,7 @@
 - 심각도: 낮음 (자동 업데이트 채널이 아직 없다 — "나중에" 표)
 - 수정비용: 작음(경고 로그 + 창 표시) — 막을지 경고할지는 **판단 필요**
 - 대상: `argus/storage/hot.py`
+- 결과: 사용자 결정(경고만)대로 — `schema_ahead()` 가 DB 의 `user_version` 이 이 코드가 아는 최대 판보다 크면 문구를 낸다. 상주는 DB 를 열 때 경고 로그, 창은 상태 줄에 **"설정 확인이 필요합니다 — 이 DB 는 더 새 버전의 Argus 가 만들었습니다(스키마 7 > N)"**. 막지 않는다(되돌린 순간 모니터가 통째로 멈추는 것이 더 나쁘다). 테스트: 대조(같은 판이면 조용) · 새 판 DB 가 열린다(기동 안 막힘) · 로그 · 창 문구. 되돌리는 변이 `newer_schema_is_reported` 빨강. **상주 재시작 필요**
 
 ### F-014 · 영역: 조용한 실패 · 상태: 수정됨
 - 위치: `argus/runtime/supervisor.py:122` (setup 실패 → `return`, 컴포넌트 영구 중단) · `argus/dashboard/data.py:408` `health()`

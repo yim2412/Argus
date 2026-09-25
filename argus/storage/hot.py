@@ -31,6 +31,19 @@ log = get_logger(__name__)
 _MIGRATION_PATTERN = re.compile(r"^(\d{3})_.+\.sql$")
 
 
+def schema_ahead(db_version: int, known: list[tuple[int, Path]] | None = None) -> str | None:
+    """DB 가 이 코드가 아는 것보다 새 판이면 사람이 읽는 문구, 아니면 None (감사 F-013).
+
+    새 버전을 쓰다 옛 exe 로 되돌리면 옛 코드가 모르는 스키마 위에서 아무 검사 없이 돌았다.
+    """
+    known = migration_files() if known is None else known
+    latest = known[-1][0] if known else 0
+    if known and db_version > latest:
+        return (f"이 DB 는 더 새 버전의 Argus 가 만들었습니다(스키마 {db_version} > {latest}) — "
+                "옛 버전으로 되돌렸다면 일부 기능이 어긋날 수 있습니다")
+    return None
+
+
 def migration_files() -> list[tuple[int, Path]]:
     """`migrations/` 안의 마이그레이션을 번호 순으로."""
     directory = resource_path("storage/migrations")
@@ -126,7 +139,14 @@ class Database:
 
     def _migrate(self) -> None:
         current = self.schema_version()
-        pending = [(v, p) for v, p in migration_files() if v > current]
+        known = migration_files()
+        ahead = schema_ahead(current, known)
+        if ahead:
+            # 새 버전 Argus 가 만든 DB 를 옛 exe 로 연 것(되돌림). 막지 않는다 — 모니터가 멈추는 것이
+            # 더 나쁘다(사용자 결정, 감사 F-013). 대신 로그와 창 상태 줄에 드러낸다.
+            log.warning("이 DB 는 더 새 버전의 Argus 가 만들었다 — 일부 기능이 어긋날 수 있다",
+                        extra={"db_version": current, "known_version": known[-1][0] if known else 0})
+        pending = [(v, p) for v, p in known if v > current]
         if not pending:
             return
 

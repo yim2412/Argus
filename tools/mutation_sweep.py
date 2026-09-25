@@ -2299,6 +2299,17 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    Mutant(
+        "newer_schema_is_reported",
+        "더 새 버전이 만든 DB 를 옛 코드로 열면 드러낸다 (F-013 — 아무 검사 없이 돌았다)",
+        (
+            (
+                "argus/storage/hot.py",
+                "    if known and db_version > latest:\n",
+                "    if False:  # MUTANT: 새 판을 못 본 척한다\n",
+            ),
+        ),
+    ),
 ]
 
 

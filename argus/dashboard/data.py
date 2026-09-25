@@ -437,7 +437,21 @@ def health() -> dict:
         "broken": broken_components(),
         # 사용자 settings.yaml 의 모르는 키(오타·은퇴한 키) — 고쳤는데 아무 일도 없던 것(감사 F-007)
         "config_unknown": _config_unknown(),
+        # 더 새 버전이 만든 DB 를 옛 창·상주로 연 경우(감사 F-013)
+        "schema_note": _schema_note(),
     }
+
+
+def _schema_note() -> str | None:
+    from ..storage.hot import schema_ahead
+
+    rows = query("PRAGMA user_version")
+    if not rows:
+        return None
+    try:
+        return schema_ahead(int(list(rows[0].values())[0]))
+    except (TypeError, ValueError, IndexError):
+        return None
 
 
 def _config_unknown() -> list[str]:

@@ -362,6 +362,8 @@ def _health_line(health: dict, now: float) -> tuple[str, str, str, int | None]:
     unknown = health.get("config_unknown") or []
     if unknown:
         notes.append(f"settings.yaml 의 모르는 키(무시됨): {', '.join(unknown[:5])}")
+    if health.get("schema_note"):
+        notes.append(str(health["schema_note"]))
     if notes:
         return ("설정 확인이 필요합니다", " · ".join(notes), theme.STATUS["warning"], None)
 
