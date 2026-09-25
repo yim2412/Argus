@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -245,6 +246,10 @@ def analyze_incident(
     # 읽으며 비교 창 길이가 0 이라 원인 후보가 통째로 비어 버린다.
     ts_start, ts_end = _refine_bounds(db, ts_start, ts_end, settings.incident)
 
+    # 방아쇠를 **최악 시점 고르기 앞에서** 읽는다. 무엇이 울렸는지가 어느 순간을 볼지와
+    # 무엇에 막혔는지의 입력이다(F-016).
+    triggers, trigger_metrics, claim = _trigger_rules(db, incident_id)
+
     # 그 구간에서 가장 나빴던 시점을 병목 판정의 대상으로 삼는다.
     peak, baselines = _peak_and_baselines(db, ts_start, ts_end)
     if peak is None:
@@ -255,11 +260,28 @@ def analyze_incident(
             explanation="", title="관측 없음", triggers=[], resource="cpu",
         )
 
-    # 방아쇠를 병목 판정 **앞에서** 읽는다. 무엇이 울렸는지가 무엇에 막혔는지의 입력이다.
-    triggers, trigger_metrics, claim = _trigger_rules(db, incident_id)
     bottleneck = classify(
         peak, baselines, settings=settings.bottleneck, trigger_metrics=trigger_metrics
     )
+    # **CPU 최대 행의 판정이 방아쇠가 가리킨 자원과 어긋나면, 방아쇠 지표의 최악 행으로 다시 본다.**
+    # 디스크 룰이 연 사건에서 CPU 가 1초 튄 행이 뽑혀 "CPU 병목"이 됐다(감사 F-016). 처음엔 늘
+    # 방아쇠 지표로 골랐는데, 그러면 누수 사건이 `NONE`(→ 탐지기 주장: "80 → 602MB, 9분간 줄지
+    # 않음", 시작도 누수 시점으로)에서 `MEMORY`("메모리 압박 — 100%", 시작 367초 늦음)로 바뀌어
+    # 골든이 설명을 잃었다. 그래서 **어긋날 때만** 바꾼다 — `NONE`·`CONTENTION` 은 탐지기
+    # 주장 경로로 가야 하고, 이미 방아쇠 자원이면 고칠 것이 없다.
+    if (
+        trigger_metrics
+        and bottleneck.trigger_kinds
+        and bottleneck.kind not in _CLAIM_WINS_OVER
+        and bottleneck.kind not in bottleneck.trigger_kinds
+    ):
+        alt_peak, _ = _peak_and_baselines(db, ts_start, ts_end, prefer=trigger_metrics)
+        if alt_peak is not None:
+            alt = classify(
+                alt_peak, baselines, settings=settings.bottleneck, trigger_metrics=trigger_metrics
+            )
+            if alt.kind in alt.trigger_kinds:
+                peak, bottleneck = alt_peak, alt
 
     # **병목을 모르겠으면 탐지기가 말한 자원을 쓴다.**
     #
@@ -422,8 +444,22 @@ def _refine_bounds(
     return best
 
 
-def _peak_and_baselines(db: Database, ts_start: float, ts_end: float):
-    """구간의 최악 시점과, 그 이전 30분으로 만든 베이스라인."""
+# 낮을수록 나쁜 지표. 나머지(응답·큐·사용률·스위치 …)는 높을수록 나쁘다.
+_LOWER_IS_WORSE = frozenset({"cpu_perf_percent", "mem_avail_mb"})
+
+
+def _peak_and_baselines(
+    db: Database, ts_start: float, ts_end: float, prefer: Sequence[str] = ()
+):
+    """구간의 최악 시점과, 그 이전 30분으로 만든 베이스라인.
+
+    **최악 시점은 사건을 연 룰이 본 지표로 고른다**(`prefer` — 방아쇠 지표). 없으면 CPU.
+    처음엔 늘 `cpu_total` 최대 행이었고, 분류기는 그 행 하나만 본다 — 59초 동안 디스크가
+    막힌 사건에서 CPU 가 1초 튄 행이 뽑혀 "CPU 병목"으로 설명됐다(감사 F-016). 방아쇠
+    우선(`_choose`)도 못 살린다: 그 행에서는 IO 점수 자체가 없다.
+    지표마다 최악값을 모은 합성 행은 기각 — 서로 다른 순간을 섞어 분류 문턱이 보정된
+    조건(한 시점)과 달라지고 여러 병목이 동시에 점수를 얻는다.
+    """
     rows = db.query(
         "SELECT * FROM metrics_raw WHERE ts >= ? AND ts <= ? ORDER BY ts",
         (ts_start, ts_end),
@@ -440,7 +476,13 @@ def _peak_and_baselines(db: Database, ts_start: float, ts_end: float):
             row["ts"], {k: row[k] for k in row.keys() if k not in ("ts", "cpu_per_core")}
         )
 
-    peak_row = max(rows, key=lambda r: r["cpu_total"] or 0.0)
+    columns = set(rows[0].keys())
+    metric = next((m for m in prefer if m in columns), "cpu_total")
+    values = [r for r in rows if r[metric] is not None] or rows
+    if metric in _LOWER_IS_WORSE:
+        peak_row = min(values, key=lambda r: r[metric] if r[metric] is not None else float("inf"))
+    else:
+        peak_row = max(values, key=lambda r: r[metric] or 0.0)
     peak = {k: peak_row[k] for k in peak_row.keys() if k != "cpu_per_core"}
 
     # GPU 는 별도 테이블이라 따로 붙인다. 없으면 없는 대로 둔다.

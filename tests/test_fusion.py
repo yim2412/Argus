@@ -995,3 +995,46 @@ def test_claim_never_wins_over_observed_hardware_states() -> None:
     assert _CLAIM_WINS_OVER == {"NONE", "CONTENTION"}, (
         f"주장이 이기는 병목 종류가 바뀌었다: {sorted(_CLAIM_WINS_OVER)}"
     )
+
+
+# ---------------------------------------------------------------- 최악 시점 (감사 F-016)
+
+
+def _disk_stall_with_cpu_blip(db: Database, start: float, *, evidence: dict | None) -> None:
+    """평소 30분 → 60초 디스크 정체(응답 200ms·큐 6·CPU 15%) 안 5초 지점에 **1초만** CPU 95%."""
+    base = [(start - 1800 + i, 10.0 + (i % 7) * 0.3, 20.0, 40.0, 1.0 + (i % 7) * 0.1, 0.05)
+            for i in range(1800)]
+    during = [(start + i, 15.0, 20.0, 40.5, 200.0, 6.0) for i in range(60)]
+    # 사건 구간은 신호 시각 근처(0~10초)로 잡힌다 — 튐이 그 안에 있어야 CPU 로 틀릴 수 있다
+    during[5] = (start + 5, 95.0, 99.0, 40.5, 1.0, 0.0)            # 그 순간 디스크는 평소
+    db.insert_many("metrics_raw",
+                   ("ts", "cpu_total", "cpu_max_core", "mem_percent", "disk_resp_ms", "disk_queue"),
+                   base + during)
+    features = {"rule": "디스크 응답 저하"}
+    if evidence is not None:
+        features["evidence"] = evidence
+    db.insert_many("anomaly_signals", ("ts", "detector", "score", "severity", "features", "run_id"),
+                   [(start + 10, "rules", 0.8, "warning", json.dumps(features), None)])
+
+
+def test_peak_follows_the_metric_that_opened_the_incident(db: Database) -> None:
+    """디스크 룰이 연 사건은 디스크가 가장 나빴던 순간으로 판정한다.
+
+    처음엔 늘 `cpu_total` 최대 행을 골라, 59초 동안 디스크가 막힌 사건이 CPU 1초 튐 때문에
+    "CPU 병목"으로 설명됐다. 방아쇠 우선도 못 살렸다 — 그 행에서는 IO 점수 자체가 없다.
+    """
+    now = time.time()
+    start = now - 900
+    _disk_stall_with_cpu_blip(db, start, evidence={"disk_resp_ms": 200.0})
+    row = _run(db, start, now)
+    assert row["bottleneck"] == "IO", f"디스크 사건이 {row['bottleneck']} 로 설명됐다"
+
+
+def test_without_trigger_metrics_the_peak_is_still_cpu(db: Database) -> None:
+    """대조 — 방아쇠 지표가 없으면 예전처럼 CPU 최대 행이다(그래서 위 테스트가 CPU 로 틀릴 수 있는 장면이다).
+    이게 참이 아니면 위 테스트는 방아쇠 배선이 아니라 다른 무언가를 재고 있다."""
+    now = time.time()
+    start = now - 900
+    _disk_stall_with_cpu_blip(db, start, evidence=None)
+    row = _run(db, start, now)
+    assert row["bottleneck"] == "CPU", f"방아쇠 없이도 {row['bottleneck']} — 장면이 CPU 튐을 못 만든다"
