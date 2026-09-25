@@ -78,6 +78,11 @@ def data_dir() -> Path:
     return root
 
 
+def components_health_path() -> Path:
+    """상주가 쓰고 창이 읽는 컴포넌트 건강 표(감사 F-014). 두 프로세스가 같은 이름을 쓰게 여기 하나."""
+    return data_dir() / "components.json"
+
+
 def _sub(name: str) -> Path:
     p = data_dir() / name
     p.mkdir(parents=True, exist_ok=True)

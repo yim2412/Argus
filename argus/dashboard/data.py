@@ -434,7 +434,29 @@ def health() -> dict:
         "last_end_ts": closed[0]["ts_end"] if closed else None,
         "sample_ts": sample[0]["ts"] if sample else None,
         "unlabeled": len(unlabeled_notified()),
+        "broken": broken_components(),
     }
+
+
+def broken_components() -> list[dict]:
+    """상주가 남긴 컴포넌트 건강 표에서 `ok` 가 아닌 것들 (감사 F-014).
+
+    **다섯째가 여기 있는 이유**: 융합·탐지·롤업이 죽으면 사건이 안 생겨 "정상"과 똑같이
+    조용하다. 수집은 살아 있으니 `sample_ts` 로도 안 갈린다. 파일이 오래됐는지는 보지
+    않는다 — 상주가 통째로 죽으면 `sample_ts` 판정이 먼저 걸린다. 못 읽으면 빈 목록이다
+    (창이 이것 때문에 죽으면 안 된다).
+    """
+    import json
+
+    from ..paths import components_health_path
+
+    try:
+        snap = json.loads(components_health_path().read_text(encoding="utf-8"))
+        items = (snap.get("components") or {}).items()
+        return [{"name": name, "status": d.get("status")} for name, d in sorted(items)
+                if isinstance(d, dict) and d.get("status") != "ok"]
+    except (OSError, ValueError, AttributeError):
+        return []
 
 
 @ttl_cache(10.0)

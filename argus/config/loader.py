@@ -101,6 +101,23 @@ class SelfTelemetrySettings(BaseModel):
     interval_s: float = Field(default=5.0, gt=0)
 
 
+class ComponentHealthSettings(BaseModel):
+    """컴포넌트 건강 — 창이 "멈춘 구성요소"를 보이게 (감사 F-014).
+
+    처음엔 컴포넌트가 setup 에서 죽거나 tick 이 계속 실패해도 흔적이 로그·크래시 파일뿐이었다.
+    융합·탐지·롤업이 죽으면 창에는 "사건 없음 = 정상"으로 보였다.
+    """
+
+    publish_s: float = Field(default=30.0, gt=0)
+    """상태 파일을 다시 쓰는 주기(메인 스레드). 창은 이 파일을 읽는다."""
+    failing_after: int = Field(default=3, ge=1)
+    """연속 이만큼 tick 이 실패하면 "실패 중". 한두 번은 일시 오류로 본다."""
+    stale_factor: float = Field(default=5.0, gt=1)
+    """마지막 성공이 (주기 × 스로틀 배수) 의 이 배를 넘으면 "멈춤" — tick 이 안 돌아오는 경우."""
+    stale_min_s: float = Field(default=120.0, gt=0)
+    """"멈춤"의 하한. 주기가 짧은 수집기가 잠깐 밀린 것을 멈춤으로 읽지 않게."""
+
+
 class HeapCensusSettings(BaseModel):
     enabled: bool = True
     interval_s: float = Field(default=300.0, gt=0)
@@ -653,6 +670,7 @@ class Settings(BaseModel):
     budget: BudgetSettings = BudgetSettings()
     self_telemetry: SelfTelemetrySettings = SelfTelemetrySettings()
     heap_census: HeapCensusSettings = HeapCensusSettings()
+    component_health: ComponentHealthSettings = ComponentHealthSettings()
     gap_monitor: GapMonitorSettings = GapMonitorSettings()
     calibration: CalibrationSettings = CalibrationSettings()
     collector: CollectorSettings = CollectorSettings()

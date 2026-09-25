@@ -56,6 +56,8 @@ class Supervisor:
         *,
         multiplier_fn: Callable[[], float] | None = None,
         wake_granularity_s: float = 5.0,
+        health_sink: Callable[[dict], None] | None = None,
+        health_settings=None,
     ) -> None:
         self._components: list[Component] = []
         self._threads: list[threading.Thread] = []
@@ -73,6 +75,15 @@ class Supervisor:
         # 지금 tick 안에 들어가 있는 컴포넌트 → 진입 시각. 예산 초과 시점에 누가 돌고
         # 있었는지를 알려면 이게 있어야 한다(`active_components`). tick 당 쓰기 두 번뿐이다.
         self._active: dict[str, float] = {}
+        # 컴포넌트 건강 — 창이 "멈춘 구성요소"를 보이게(감사 F-014). 처음엔 setup 실패·반복
+        # tick 실패·스레드 사망의 흔적이 로그와 크래시 파일뿐이었고, 둘 다 읽는 화면이 없어
+        # 융합이 죽으면 "사건 없음 = 정상"으로 보였다. 메인 스레드(`wait`)가 주기적으로 넘긴다.
+        from ..config.loader import ComponentHealthSettings
+
+        self._health_cfg = health_settings or ComponentHealthSettings()
+        self._health_sink = health_sink
+        self._health: dict[str, dict] = {}
+        self._last_publish = 0.0
 
     # **`tick()` 을 감싼 try 바깥에서 읽는 것들만** 검사한다. 없으면 예외가 스레드를
     # 그대로 죽이기 때문이다.
@@ -99,6 +110,7 @@ class Supervisor:
                 "`Component` 를 상속하면 기본값이 채워진다."
             )
         self._components.append(component)
+        self._health[component.name] = {"state": "starting", "since": time.time(), "last_ok": None, "errors": 0}
         return self
 
     # ------------------------------------------------------------------ 실행
@@ -116,6 +128,11 @@ class Supervisor:
         except Exception as e:
             log.exception("컴포넌트 스레드가 죽었다", extra={"component": component.name})
             write_crash(e, context=f"thread:{component.name}")
+            self._mark(component.name, state="dead")
+
+    def _mark(self, name: str, **fields) -> None:
+        entry = self._health.setdefault(name, {"since": time.time(), "last_ok": None, "errors": 0})
+        entry.update(fields)
 
     def _run_component_inner(self, component: Component) -> None:
         name = component.name
@@ -124,7 +141,9 @@ class Supervisor:
         except Exception as e:
             log.exception("컴포넌트 setup 실패 — 이 컴포넌트만 중단한다", extra={"component": name})
             write_crash(e, context=f"setup:{name}")
+            self._mark(name, state="setup_failed")
             return
+        self._mark(name, state="running", since=time.time())
 
         backoff = 0.0
         log.debug("컴포넌트 시작", extra={"component": name, "interval_s": component.interval_s})
@@ -137,6 +156,7 @@ class Supervisor:
             except Exception:
                 self._error_counts[name] = self._error_counts.get(name, 0) + 1
                 count = self._error_counts[name]
+                self._mark(name, errors=self._health.get(name, {}).get("errors", 0) + 1)
                 # 처음 몇 번만 전체 트레이스백을 남긴다. 이후엔 요약만.
                 if count <= 3:
                     log.exception("컴포넌트 tick 실패", extra={"component": name, "errors": count})
@@ -150,6 +170,7 @@ class Supervisor:
                 if backoff:
                     log.info("컴포넌트 회복", extra={"component": name})
                 backoff = 0.0
+                self._mark(name, last_ok=time.time(), errors=0)
             finally:
                 # tick 이 어떻게 끝나든 지운다. 예외 경로에서 빠뜨리면 그 컴포넌트가
                 # **영원히 실행 중으로 보여** 계측이 거짓말을 한다.
@@ -162,6 +183,43 @@ class Supervisor:
         except Exception:
             log.exception("컴포넌트 teardown 실패", extra={"component": name})
         log.debug("컴포넌트 종료", extra={"component": name})
+
+    def health_snapshot(self, now: float | None = None) -> dict:
+        """컴포넌트마다 `ok`·`failing`·`stale`·`setup_failed`·`dead` 중 하나.
+
+        `stale` 은 tick 이 돌아오지 않는 경우다 — 예외가 없으니 실패 수로는 안 보인다.
+        마지막 성공(없으면 시작 시각)이 (주기 × 스로틀 배수) × `stale_factor` 와
+        `stale_min_s` 중 큰 것을 넘으면 멈춘 것으로 본다.
+        """
+        now = now if now is not None else time.time()
+        cfg = self._health_cfg
+        multiplier = self._multiplier_fn()
+        by_name = {c.name: c for c in self._components}
+        out: dict[str, dict] = {}
+        for name, entry in list(self._health.items()):
+            state = entry.get("state", "starting")
+            if state in ("setup_failed", "dead"):
+                status = state
+            elif entry.get("errors", 0) >= cfg.failing_after:
+                status = "failing"
+            else:
+                comp = by_name.get(name)
+                interval = comp.interval_s * (multiplier if comp and comp.throttleable else 1.0) if comp else 1.0
+                limit = max(cfg.stale_factor * interval, cfg.stale_min_s)
+                ref = entry.get("last_ok") or entry.get("since") or now
+                status = "stale" if now - ref > limit else "ok"
+            out[name] = {"status": status, "errors": entry.get("errors", 0), "last_ok": entry.get("last_ok")}
+        return {"written_at": now, "components": out}
+
+    def publish_health(self) -> None:
+        """건강 표를 넘긴다. **넘기기 실패가 상주를 멈추지 않는다** — 관측 보조일 뿐이다."""
+        self._last_publish = time.monotonic()
+        if self._health_sink is None:
+            return
+        try:
+            self._health_sink(self.health_snapshot())
+        except Exception as exc:
+            log.warning("컴포넌트 건강을 남기지 못했다", extra={"error": str(exc)})
 
     def active_components(self) -> list[str]:
         """지금 tick 안에 있는 컴포넌트를 **오래 돈 순**으로 돌려준다.
@@ -287,6 +345,8 @@ class Supervisor:
             while not self._stop.is_set():
                 # 타임아웃을 두어야 Windows 에서 KeyboardInterrupt 가 전달된다.
                 self._stop.wait(0.5)
+                if time.monotonic() - self._last_publish >= self._health_cfg.publish_s:
+                    self.publish_health()
         except KeyboardInterrupt:
             log.info("KeyboardInterrupt")
             self._stop.set()
@@ -294,6 +354,17 @@ class Supervisor:
     @property
     def stopping(self) -> bool:
         return self._stop.is_set()
+
+
+def write_health_file(snapshot: dict, path) -> None:
+    """건강 표를 **원자적으로** 쓴다 — 창이 반쯤 쓴 파일을 읽지 않게(임시 파일 → 교체)."""
+    import json
+    from pathlib import Path
+
+    target = Path(path)
+    temp = target.with_suffix(".tmp")
+    temp.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    temp.replace(target)
 
 
 class CallableComponent(Component):

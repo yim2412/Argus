@@ -91,6 +91,14 @@ self_telemetry:
   enabled: true
   interval_s: 5.0
 
+component_health:
+  # 창이 "멈춘 구성요소"를 보이게. 융합·탐지·롤업이 죽으면 사건이 안 생겨 "정상"과 구별되지
+  # 않았다 — 흔적은 로그·크래시 파일뿐이었고 둘 다 읽는 화면이 없었다.
+  publish_s: 30.0         # 상태 파일(%APPDATA%\Argus\components.json)을 다시 쓰는 주기
+  failing_after: 3        # 연속 이만큼 tick 이 실패하면 "실패 중"
+  stale_factor: 5.0       # 마지막 성공이 (주기 × 스로틀 배수) 의 이 배를 넘으면 "멈춤"
+  stale_min_s: 120.0      # "멈춤"의 하한 — 짧은 주기의 수집기가 잠깐 밀린 것은 멈춤이 아니다
+
 heap_census:
   # 파이썬 힙에 무엇이 쌓이는지 센다. 두 기계 모두 `private_mb` 가 프로세스 수명 내내
   # 단조 증가하는데(노트북 117시간에 40->198MB) `threads`·`handles` 는 상수였다 —

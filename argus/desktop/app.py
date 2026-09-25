@@ -195,6 +195,8 @@ class _Banner(QtWidgets.QLabel):
 #: 스로틀이 걸리면 ×10 까지 늦춰지므로(`runtime/budget`) 그보다 넉넉해야 한다 —
 #: 스로틀은 정상 동작이고, 그때마다 "수집 멈춤"이 뜨면 그것이 오탐이다.
 STALE_SAMPLE_S = 60.0
+# 컴포넌트 건강 상태 → 사람이 읽는 말(감사 F-014)
+_BROKEN_WORD = {"failing": "반복 실패", "stale": "응답 없음", "setup_failed": "시작 실패", "dead": "중단"}
 
 
 class _HealthPoller(QtCore.QThread):
@@ -334,6 +336,14 @@ def _health_line(health: dict, now: float) -> tuple[str, str, str, int | None]:
     age = now - float(sample_ts)
     if age > STALE_SAMPLE_S:
         return ("수집이 멈췄습니다", f"마지막 표본 {_ago(age)} 전 — 상주를 확인하세요",
+                theme.STATUS["critical"], None)
+
+    # **구성요소가 멈췄는지를 사건보다 먼저 본다.** 융합·탐지가 죽으면 새 사건이 안 생겨
+    # "정상"과 구별되지 않는다 — 수집은 살아 있어 위 판정으로도 안 갈린다(감사 F-014).
+    broken = health.get("broken") or []
+    if broken:
+        names = ", ".join(f"{b['name']}({_BROKEN_WORD.get(b.get('status'), b.get('status'))})" for b in broken)
+        return ("구성요소가 멈췄습니다", f"{names} — 로그를 확인하거나 상주를 다시 시작하세요",
                 theme.STATUS["critical"], None)
 
     incident = health.get("open")

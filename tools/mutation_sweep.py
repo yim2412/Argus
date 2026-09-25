@@ -2174,6 +2174,39 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    Mutant(
+        "health_is_published",
+        "메인 대기 루프가 컴포넌트 건강을 넘긴다 (F-014 — 끊기면 창이 멈춘 구성요소를 모른다)",
+        (
+            (
+                "argus/runtime/supervisor.py",
+                "                    self.publish_health()\n",
+                "                    pass  # MUTANT: 넘기지 않는다\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "stuck_component_is_stale",
+        "tick 이 안 돌아오는 컴포넌트는 멈춤이다 (F-014 — 예외가 없어 실패 수로는 안 보인다)",
+        (
+            (
+                "argus/runtime/supervisor.py",
+                '                status = "stale" if now - ref > limit else "ok"\n',
+                '                status = "ok"  # MUTANT: 멈춤을 안 본다\n',
+            ),
+        ),
+    ),
+    Mutant(
+        "window_shows_broken_components",
+        "창 상태 줄이 멈춘 구성요소를 사건보다 먼저 보인다 (F-014 — 안 보이면 '정상'으로 읽힌다)",
+        (
+            (
+                "argus/desktop/app.py",
+                "    if broken:\n",
+                "    if False:  # MUTANT: 멈춘 구성요소를 숨긴다\n",
+            ),
+        ),
+    ),
 ]
 
 

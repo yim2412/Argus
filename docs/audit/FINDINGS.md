@@ -223,7 +223,7 @@
 - 수정비용: 작음(경고 로그 + 창 표시) — 막을지 경고할지는 **판단 필요**
 - 대상: `argus/storage/hot.py`
 
-### F-014 · 영역: 조용한 실패 · 상태: 미처리
+### F-014 · 영역: 조용한 실패 · 상태: 수정됨
 - 위치: `argus/runtime/supervisor.py:122` (setup 실패 → `return`, 컴포넌트 영구 중단) · `argus/dashboard/data.py:408` `health()`
 - 요약: 컴포넌트가 setup 에서 실패해 영구히 멈추거나 tick 이 계속 실패해도 흔적은 **로그와 `crash_*.json` 뿐**이고, 둘 다 읽는 코드가 없다. `health()` 는 수집 정지(`sample_ts`)만 가른다 — **융합·탐지·롤업·알림이 죽으면 "사건 없음"으로 보여 정상과 구별되지 않는다.** 백테스트가 놓친 13건 중 3건(a8fd5fb 지문 스레드 몇 주 · e5a547f 트레이 열기 · 7b32e3e explorer 재시작)이 이 유형이다 — 매번 그 자리만 막았고 유형 전체를 드러내는 장치는 없다.
 - 근거: 인용 (크래시 파일 소비자 grep 0건, health 반환 필드 4개)
@@ -233,6 +233,7 @@
 - 심각도: 중간 (재현 전이라 상한)
 - 수정비용: 중간 — 수퍼바이저가 컴포넌트별 마지막 성공 tick·연속 실패 수를 `meta`/자기계측에 남기고 `health()` 가 "멈춘 구성요소"를 한 줄로
 - 대상: `argus/runtime/supervisor.py`, `argus/runtime/selftel.py`, `argus/dashboard/data.py`, `argus/desktop/app.py`
+- 결과: 수퍼바이저가 컴포넌트마다 상태를 센다 — `ok`·`failing`(연속 실패 `failing_after`회)·`stale`(마지막 성공이 주기×스로틀 배수×`stale_factor` 와 `stale_min_s` 중 큰 것을 넘음 — tick 이 안 돌아오는 경우)·`setup_failed`·`dead`. 메인 스레드 대기 루프가 `publish_s`(30초)마다 `%APPDATA%\Argus\components.json` 에 원자적으로 쓰고(DB 락을 안 건드린다, 실패해도 상주는 계속), 창의 `health()` 가 읽어 상태 줄에 **"구성요소가 멈췄습니다 — fusion(응답 없음)"** 을 사건보다 먼저 띄운다(수집 정지가 그보다 먼저). 문턱은 config `component_health` 절. `tests/test_component_health.py` 5개 — 실제 스레드로 네 컴포넌트(기동 실패·매 틱 실패·정상·응답 없음)를 가른다(정상이 `ok` 라는 대조 포함) · 대기 루프가 넘긴다 · 넘기기 실패가 상주를 안 멈춘다 · 창이 파일을 읽는다(없음·깨짐은 빈 목록) · 상태 줄 우선순위. 5회 연속 통과(흔들림 없음). 첫 실행에서 "매 틱 실패"가 `stale` 로 나왔다 — 백오프(1·2초…)로 1.5초 안에 연속 실패가 둘뿐이라 테스트 문턱을 2로(제품 동작은 맞다 — 어차피 문제로 보인다). 되돌리는 변이 셋(넘기지 않기·멈춤 안 보기·창에서 숨기기) 전부 빨강, `mutation_sweep` 등록. 전체 668 통과. **상주 재시작 필요**
 
 ### F-015 · 영역: 데이터 보존 · 상태: 수정됨
 - 위치: `argus/storage/warm.py:397` — `"SELECT MAX(date_key) AS d FROM warm_exports WHERE kind = ?"`
@@ -280,6 +281,7 @@
 - 심각도: 중간
 - 수정비용: 작음 — reset 에서 베이스라인은 남기고 지속 시계·쿨다운만 버린다(또는 복귀 뒤 `warm` 재호출)
 - 대상: `argus/detection/rules.py`, `argus/detection/live.py`, 테스트
+- 판단: 수정 판에서 설계 확인 중 **판단 필요로 돌렸다.** 베이스라인은 새 관측이 올 때마다 30분 창 밖 표본을 **시각 기준으로** 버린다(`MetricBaseline._trim`). 그래서 (a) reset 에서 베이스라인을 안 버리기만 하면 30분 미만 절전(부하 축은 6시간 미만)에만 효과가 있고, 밤새 잠든 뒤에는 첫 관측에 어차피 비어 지금과 같다. (b) 공백만큼 표본 시각을 밀어 "잠들기 전 30분"을 평소로 삼으면 긴 절전도 막지만 탐지 동작을 바꾸는 결정이다(탐지 규칙 3 — 리플레이에 공백 시나리오가 없어 수치로 입증할 길도 아직 없다). (c) 지금대로 복귀 직후 1~2분 사각을 감수. 비용: (a) 작음 · (b) 중간 · (c) 없음
 
 ### F-019 · 영역: 조용한 실패 · 상태: 수정됨
 - 위치: `argus/decide/fusion.py:618` — `        self._set_watermark(end)`

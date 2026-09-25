@@ -27,7 +27,7 @@ from .config.loader import ConfigError, load_settings
 from .logging_setup import get_logger, setup, write_crash
 from .machine.calibration import ensure_profile
 from .machine.capabilities import load_or_detect
-from .paths import ENV_DATA_DIR, data_dir, db_path
+from .paths import ENV_DATA_DIR, components_health_path, data_dir, db_path
 from .runtime.budget import BudgetGuard
 from .runtime.gapmon import GapMonitor, gap_event_row
 from .runtime.livecfg import LiveConfig, LiveConfigWatcher
@@ -37,7 +37,7 @@ from .runtime.session import detect_unclean_shutdown
 from .runtime.stopfile import StopFileMonitor, clear_stale, request_stop
 from .runtime.singleton import AlreadyRunning, InstanceLock
 from .runtime.stats import STATS
-from .runtime.supervisor import Supervisor
+from .runtime.supervisor import Supervisor, write_health_file
 from .storage.hot import Database
 from .storage.queue import Sample, SampleQueue
 from .ui.tray import TrayIcon
@@ -380,9 +380,13 @@ def run(args: argparse.Namespace) -> int:
 
         guard = BudgetGuard(settings.budget)
         queue = SampleQueue(maxsize=settings.storage.queue_max_rows)
+        health_path = components_health_path()
         sup = Supervisor(
             multiplier_fn=lambda: guard.multiplier,
             wake_granularity_s=settings.budget.wake_granularity_s,
+            # 창(별도 프로세스)이 "멈춘 구성요소"를 보이게 — 감사 F-014
+            health_sink=lambda snap: write_health_file(snap, health_path),
+            health_settings=settings.component_health,
         )
 
         # 직전 세션이 소비하지 못하고 남긴 종료 신호를 먼저 치운다. 그대로 두면 뜨자마자
