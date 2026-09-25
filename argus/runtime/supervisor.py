@@ -208,7 +208,19 @@ class Supervisor:
                 limit = max(cfg.stale_factor * interval, cfg.stale_min_s)
                 ref = entry.get("last_ok") or entry.get("since") or now
                 status = "stale" if now - ref > limit else "ok"
-            out[name] = {"status": status, "errors": entry.get("errors", 0), "last_ok": entry.get("last_ok")}
+            note = None
+            comp = by_name.get(name)
+            note_fn = getattr(comp, "health_note", None)
+            if callable(note_fn):
+                try:
+                    note = note_fn()
+                except Exception:
+                    note = None
+            # 돌고는 있지만 사용자가 알아야 할 것이 있다(예: 사용자 룰 파일을 못 읽어 기본 룰로 도는 중)
+            if note and status == "ok":
+                status = "degraded"
+            out[name] = {"status": status, "errors": entry.get("errors", 0), "last_ok": entry.get("last_ok"),
+                         "note": note}
         return {"written_at": now, "components": out}
 
     def publish_health(self) -> None:

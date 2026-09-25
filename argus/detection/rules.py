@@ -27,12 +27,13 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 import yaml
 
 from ..logging_setup import get_logger
-from ..paths import resource_path
+from ..paths import data_dir, resource_path
 from .base import (
     SEVERITY_ORDER,
     SEVERITY_WARNING,
@@ -307,16 +308,39 @@ def load_rules(path: Any = None) -> list[Rule]:
     except FileNotFoundError:
         log.warning("룰 파일이 없다 — 룰 탐지 비활성", extra={"path": str(source)})
         return []
+    except yaml.YAMLError as exc:
+        raise RuleError(f"YAML 문법 오류: {exc}") from exc
+
+    # **구조가 틀리면 RuleError 로.** 처음엔 AttributeError·ParserError 가 그대로 올라가, build() 가
+    # "detection 설정을 읽지 못했다"는 틀린 경고를 남기고 룰 탐지 전체가 꺼졌다(감사 F-003).
+    if not isinstance(data, dict):
+        raise RuleError("최상위는 매핑이어야 합니다 (version: … / rules: …)")
+    entries = data.get("rules") or []
+    if not isinstance(entries, list):
+        raise RuleError("rules 는 목록이어야 합니다")
+    known = known_metrics()
 
     rules: list[Rule] = []
-    for index, entry in enumerate(data.get("rules") or []):
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise RuleError(f"rules[{index}] 가 매핑이 아닙니다: {entry!r}"[:200])
         name = entry.get("name") or f"rule[{index}]"
         try:
             when = entry.get("when") or {}
+            if not isinstance(when, dict):
+                raise RuleError("when 은 매핑이어야 합니다")
             mode = "all" if "all" in when else "any" if "any" in when else None
             if mode is None:
                 raise RuleError("when 아래에 all 또는 any 가 필요합니다")
+            if not isinstance(when[mode], list) or not all(isinstance(c, dict) for c in when[mode]):
+                raise RuleError(f"when.{mode} 는 조건 매핑의 목록이어야 합니다")
             conditions = [Condition(**c) for c in when[mode]]
+            # **없는 지표 이름은 로드 시점에 터진다.** 처음엔 오타 난 지표가 오류 없이 로드되고
+            # 영원히 발화하지 않았다 — "예외도 로그도 없이 룰만 죽는다"(감사 F-004, 822c1fa).
+            if known is not None:
+                unknown = sorted({c.metric for c in conditions} - known)
+                if unknown:
+                    raise RuleError(f"없는 지표: {', '.join(unknown)}")
 
             scope = entry.get("regime_scope") or ["ANY"]
             if [s for s in scope if s != "ANY"]:
@@ -336,11 +360,70 @@ def load_rules(path: Any = None) -> list[Rule]:
                 explain=entry.get("explain", ""),
                 regime_scope=scope,
             ))
-        except (RuleError, TypeError) as exc:
+        except (RuleError, TypeError, AttributeError, ValueError) as exc:
             raise RuleError(f"룰 '{name}' 을(를) 읽을 수 없습니다: {exc}") from exc
 
     log.info("룰 로드", extra={"count": len(rules), "path": str(source)})
     return rules
+
+
+_known_metrics: frozenset[str] | None = None
+
+
+def known_metrics() -> frozenset[str] | None:
+    """관측에 실제로 들어오는 지표 이름 — **스키마에서 뽑는다.** 목록을 따로 두면 어긋난다.
+
+    마이그레이션을 메모리 DB 에 적용해 `metrics_raw` 컬럼과 `gpu_` + `gpu_metrics` 컬럼을 모은다
+    (`Observation.flatten_gpus` 가 그 이름으로 펼친다). 못 뽑으면 None — 검사를 건너뛴다.
+    """
+    global _known_metrics
+    if _known_metrics is not None:
+        return _known_metrics
+    try:
+        import sqlite3
+
+        from ..storage.hot import migration_files
+
+        conn = sqlite3.connect(":memory:")
+        try:
+            for _version, path in migration_files():
+                conn.executescript(path.read_text(encoding="utf-8"))
+            raw = {r[1] for r in conn.execute("PRAGMA table_info(metrics_raw)")} - {"ts", "cpu_per_core"}
+            gpu = {f"gpu_{r[1]}" for r in conn.execute("PRAGMA table_info(gpu_metrics)")
+                   if r[1] not in ("ts", "gpu_index")}
+        finally:
+            conn.close()
+        if not raw:
+            return None
+        _known_metrics = frozenset(raw | gpu)
+    except Exception as exc:
+        log.warning("지표 목록을 스키마에서 못 뽑았다 — 룰의 지표 이름 검사를 건너뛴다", extra={"error": str(exc)})
+        return None
+    return _known_metrics
+
+
+def user_rules_path() -> Path:
+    """사용자 룰 파일. 동봉 rules.yaml 머리말이 약속한 자리다."""
+    return data_dir() / "rules.yaml"
+
+
+def load_active_rules() -> tuple[list[Rule], str | None]:
+    """제품이 쓰는 룰과, 사용자에게 보여야 할 문구(없으면 None).
+
+    **사용자 파일이 있으면 그것이 동봉본을 대체한다** — 머리말이 약속했는데 읽는 코드가 없어
+    사용자가 룰을 고쳐도 아무 일도 없었다(감사 F-001). 사용자 파일이 틀렸으면 룰 탐지를 끄지
+    않고 **동봉 룰로 계속 돌며 그 사실을 드러낸다**(설계 규칙 4) — 창 상태 줄에 이 문구가 간다.
+    """
+    user = user_rules_path()
+    if user.exists():
+        try:
+            rules = load_rules(user)
+        except RuleError as exc:
+            log.error("사용자 룰 파일을 읽지 못해 기본 룰을 쓴다", extra={"path": str(user), "error": str(exc)})
+            return load_rules(), f"사용자 룰 파일을 읽지 못해 기본 룰로 돕니다 — {exc}"[:300]
+        log.info("사용자 룰을 쓴다", extra={"path": str(user), "count": len(rules)})
+        return rules, None
+    return load_rules(), None
 
 
 def build() -> "RuleEngine":
@@ -405,7 +488,12 @@ class RuleEngine(BaseDetector):
         load_min_samples: int = 60,
     ) -> None:
         super().__init__(warmup_s=warmup_s)
-        self.rules = list(rules) if rules is not None else load_rules()
+        # 사용자에게 보여야 할 룰 문구(사용자 파일을 못 읽어 기본 룰로 도는 중 등). 없으면 None.
+        self.rules_note: str | None = None
+        if rules is not None:
+            self.rules = list(rules)
+        else:
+            self.rules, self.rules_note = load_active_rules()
         self.baselines = BaselineSet(
             window_s=window_s,
             min_samples=min_samples,

@@ -106,11 +106,16 @@ def _eval(node: ast.AST, variables: Mapping[str, Any]) -> Any:
         if left is None or right is None:
             return None  # 메트릭이 없는 상황. 0 으로 치면 잘못된 판정이 나온다.
         try:
-            return op(float(left), float(right))
+            result = op(float(left), float(right))
         except ZeroDivisionError:
             return None
         except OverflowError as exc:
             raise ExprError(f"수치 범위 초과: {exc}") from exc
+        # 음수의 분수 거듭제곱은 복소수가 된다. 그대로 두면 비교에서 TypeError 가 나고, 룰 평가는
+        # ExprError 만 잡아 **그 틱의 룰 전체**가 건너뛰어졌다(감사 F-021 — 사용자 룰이 열리며 닿는다).
+        if isinstance(result, complex):
+            raise ExprError("실수가 아닌 결과(음수의 분수 거듭제곱 등)")
+        return result
 
     if isinstance(node, ast.UnaryOp):
         op = _UNARY.get(type(node.op))

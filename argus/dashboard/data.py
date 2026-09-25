@@ -453,7 +453,7 @@ def broken_components() -> list[dict]:
     try:
         snap = json.loads(components_health_path().read_text(encoding="utf-8"))
         items = (snap.get("components") or {}).items()
-        return [{"name": name, "status": d.get("status")} for name, d in sorted(items)
+        return [{"name": name, "status": d.get("status"), "note": d.get("note")} for name, d in sorted(items)
                 if isinstance(d, dict) and d.get("status") != "ok"]
     except (OSError, ValueError, AttributeError):
         return []

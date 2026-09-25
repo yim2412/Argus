@@ -57,6 +57,14 @@ class DetectionComponent(Component):
         self._tail: ObservationTail | None = None
         self._signals = 0
 
+    def health_note(self) -> str | None:
+        """사용자에게 보여야 할 탐지 쪽 문구 — 수퍼바이저 건강 표를 거쳐 창 상태 줄로 간다.
+
+        지금은 "사용자 룰 파일을 못 읽어 기본 룰로 도는 중" 하나다(감사 F-001·F-003).
+        """
+        notes = [n for n in (getattr(d, "rules_note", None) for d in self.detectors) if n]
+        return " · ".join(notes) or None
+
     @property
     def detector_names(self) -> list[str]:
         """쉼표로 여러 개를 적을 수 있다. 하나만 적던 기존 설정도 그대로 동작한다."""

@@ -88,7 +88,7 @@ def test_window_reads_what_the_resident_wrote(tmp_path, monkeypatch):
     assert data.broken_components() == [], "파일이 없으면 빈 목록이어야 한다(창이 죽으면 안 된다)"
     write_health_file({"written_at": 1.0, "components": {
         "fusion": {"status": "failing"}, "collector": {"status": "ok"}}}, components_health_path())
-    assert data.broken_components() == [{"name": "fusion", "status": "failing"}]
+    assert data.broken_components() == [{"name": "fusion", "status": "failing", "note": None}]
     components_health_path().write_text("{깨진 json", encoding="utf-8")
     assert data.broken_components() == []
 

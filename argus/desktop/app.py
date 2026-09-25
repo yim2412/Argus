@@ -340,7 +340,7 @@ def _health_line(health: dict, now: float) -> tuple[str, str, str, int | None]:
 
     # **구성요소가 멈췄는지를 사건보다 먼저 본다.** 융합·탐지가 죽으면 새 사건이 안 생겨
     # "정상"과 구별되지 않는다 — 수집은 살아 있어 위 판정으로도 안 갈린다(감사 F-014).
-    broken = health.get("broken") or []
+    broken = [b for b in (health.get("broken") or []) if b.get("status") != "degraded"]
     if broken:
         names = ", ".join(f"{b['name']}({_BROKEN_WORD.get(b.get('status'), b.get('status'))})" for b in broken)
         return ("구성요소가 멈췄습니다", f"{names} — 로그를 확인하거나 상주를 다시 시작하세요",
@@ -353,6 +353,13 @@ def _health_line(health: dict, now: float) -> tuple[str, str, str, int | None]:
         started = now - float(incident["ts_start"])
         return (str(incident.get("title") or "이상 감지"), f"{_ago(started)}째 진행 중",
                 colour, int(incident["id"]))
+
+    # 돌고는 있지만 사용자가 고칠 것이 있다(예: 사용자 룰 파일이 틀려 기본 룰로 도는 중 — 감사 F-003).
+    # "정상" 자리를 대신한다. 사용자가 룰을 고쳤는데 아무 일도 없는 것이 원래 문제였다.
+    degraded = [b for b in (health.get("broken") or []) if b.get("status") == "degraded" and b.get("note")]
+    if degraded:
+        return ("설정 확인이 필요합니다", " · ".join(str(b["note"]) for b in degraded),
+                theme.STATUS["warning"], None)
 
     last_end = health.get("last_end_ts")
     detail = f"마지막 사건 {_ago(now - float(last_end))} 전" if last_end else "기록된 사건 없음"
