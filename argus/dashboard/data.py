@@ -435,7 +435,15 @@ def health() -> dict:
         "sample_ts": sample[0]["ts"] if sample else None,
         "unlabeled": len(unlabeled_notified()),
         "broken": broken_components(),
+        # 사용자 settings.yaml 의 모르는 키(오타·은퇴한 키) — 고쳤는데 아무 일도 없던 것(감사 F-007)
+        "config_unknown": _config_unknown(),
     }
+
+
+def _config_unknown() -> list[str]:
+    from ..config.loader import user_config_unknown_keys
+
+    return user_config_unknown_keys()
 
 
 def broken_components() -> list[dict]:

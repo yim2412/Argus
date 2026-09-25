@@ -2271,7 +2271,8 @@ MUTANTS: list[Mutant] = [
         (
             (
                 "argus/desktop/app.py",
-                "    if degraded:\n",
+                # F-007 에서 모르는 키 문구와 합치며 `if degraded:` → `if notes:` 로 바뀌었다
+                "    if notes:\n",
                 "    if False:  # MUTANT: 설정 문제를 숨긴다\n",
             ),
         ),
@@ -2284,6 +2285,17 @@ MUTANTS: list[Mutant] = [
                 "argus/config/loader.py",
                 '        target.write_text(user_config_template(source.read_text(encoding="utf-8")), encoding="utf-8")\n',
                 '        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")  # MUTANT: 전체 사본\n',
+            ),
+        ),
+    ),
+    Mutant(
+        "unknown_config_keys_are_reported",
+        "settings.yaml 의 모르는 키를 짚는다 (F-007 — 오타면 고친 값이 조용히 무시된다)",
+        (
+            (
+                "argus/config/loader.py",
+                '            out.append(f"{prefix}{key}")\n',
+                "            pass  # MUTANT: 모르는 키를 안 짚는다\n",
             ),
         ),
     ),

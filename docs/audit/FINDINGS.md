@@ -148,7 +148,7 @@
 - 수정비용: 작음
 - 대상: `argus/decide/fusion.py`, `argus/config/loader.py`
 
-### F-007 · 영역: 설정 배선 · 상태: 미처리
+### F-007 · 영역: 설정 배선 · 상태: 수정됨
 - 위치: `argus/config/loader.py` — 모든 설정 모델 (pydantic 기본 `extra="ignore"`)
 - 요약: 사용자 `settings.yaml` 의 **오타 키가 조용히 무시된다.** 22개 절 전부. 사용자는 값을 고쳤는데 아무 일도 안 일어난다.
 - 근거: 실측 — `config_fuzz.py` silent 22건
@@ -158,6 +158,7 @@
 - 심각도: 중간
 - 수정비용: 작음(거부가 아니라 **경고** — 옛 설정 파일의 은퇴한 키가 기동을 막으면 안 된다: 하위호환)
 - 대상: `argus/config/loader.py`
+- 결과: `unknown_keys()` 가 사용자 settings.yaml 을 설정 모델과 대조해 모르는 키 경로를 모은다(하위 모델은 들어가 보고, `load_gates` 같은 임의 이름 매핑은 안 본다). **막지 않는다**(은퇴한 키가 기동을 막으면 안 된다 — 하위호환) — 상주 로그 경고 + 창 상태 줄 **"설정 확인이 필요합니다 — settings.yaml 의 모르는 키(무시됨): …"**(F-003 과 같은 자리). `config_fuzz.py` 가 이제 오타를 `warned` 로 가른다 → **crash+silent 22 → 0**(룰 쪽도 F-003·004 로 0). 테스트: 대조(템플릿엔 모르는 키 없음) · 오타가 기동을 안 막음 · 모르는 키 정확히 둘 · 창 문구. 되돌리는 변이 `unknown_config_keys_are_reported` 빨강. **상주 재시작 필요**
 
 ### F-008 · 영역: 도구 배선 · 상태: 미처리
 - 위치: 안전망 전체 (`tools/audit/run_gates.py` `tools-import`·`tools-help`)

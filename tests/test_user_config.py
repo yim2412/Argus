@@ -70,3 +70,25 @@ def test_prune_keeps_only_changed_values_and_behaviour(env):
     # 그리고 정리 뒤에는 업데이트가 먹는다
     env.write_text(_bump(DEFAULTS), encoding="utf-8")
     assert loader.load_settings(use_env=False).budget.cpu_percent == 1.5
+
+
+def test_typo_keys_are_reported_not_silently_ignored(env):
+    """오타 키는 무시되되 **드러난다** (감사 F-007). 막지는 않는다 — 은퇴한 키가 기동을 막으면 안 된다."""
+    loader.load_settings(use_env=False)                           # 템플릿 생성
+    path = loader.user_config_path()
+    assert loader.user_config_unknown_keys() == [], "대조: 템플릿에는 모르는 키가 없다"
+    path.write_text(
+        "config_version: 1\ngeneral:\n  log_levl: DEBUG\ndetecton:\n  enabled: false\n"
+        "detection:\n  load_gates:\n    gpu_temp_c: {metric: gpu_util_percent, min: 50}\n",
+        encoding="utf-8")
+    assert loader.load_settings(use_env=False).general.log_level == "INFO", "오타 키가 기동을 막거나 값을 바꿨다"
+    assert loader.user_config_unknown_keys() == ["general.log_levl", "detecton"]
+
+    import time
+
+    from argus.desktop.app import _health_line
+
+    now = time.time()
+    text, detail, _c, _id = _health_line({"sample_ts": now - 1, "open": None, "last_end_ts": None, "unlabeled": 0,
+                                          "broken": [], "config_unknown": ["general.log_levl"]}, now)
+    assert text == "설정 확인이 필요합니다" and "general.log_levl" in detail

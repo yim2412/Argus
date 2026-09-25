@@ -34,7 +34,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 PY = sys.executable
 
 # 2026-09-25 실측 644 passed → 감사 수정 판에서 669. 테스트를 지웠으면 이 값을 같이 내린다 — 조용히 줄면 안 된다.
-MIN_TESTS = 684
+MIN_TESTS = 685
 MIN_TOOLS = 16
 COLLECTORS = ("gpu", "network", "pdh", "process", "procsource", "proginfo", "system")
 

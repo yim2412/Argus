@@ -357,9 +357,13 @@ def _health_line(health: dict, now: float) -> tuple[str, str, str, int | None]:
     # 돌고는 있지만 사용자가 고칠 것이 있다(예: 사용자 룰 파일이 틀려 기본 룰로 도는 중 — 감사 F-003).
     # "정상" 자리를 대신한다. 사용자가 룰을 고쳤는데 아무 일도 없는 것이 원래 문제였다.
     degraded = [b for b in (health.get("broken") or []) if b.get("status") == "degraded" and b.get("note")]
-    if degraded:
-        return ("설정 확인이 필요합니다", " · ".join(str(b["note"]) for b in degraded),
-                theme.STATUS["warning"], None)
+    notes = [str(b["note"]) for b in degraded]
+    # 사용자 settings.yaml 의 모르는 키 — 오타면 고친 값이 조용히 무시된다(감사 F-007)
+    unknown = health.get("config_unknown") or []
+    if unknown:
+        notes.append(f"settings.yaml 의 모르는 키(무시됨): {', '.join(unknown[:5])}")
+    if notes:
+        return ("설정 확인이 필요합니다", " · ".join(notes), theme.STATUS["warning"], None)
 
     last_end = health.get("last_end_ts")
     detail = f"마지막 사건 {_ago(now - float(last_end))} 전" if last_end else "기록된 사건 없음"

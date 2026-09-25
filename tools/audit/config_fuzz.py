@@ -79,13 +79,20 @@ def fuzz_settings(base: dict) -> list[tuple[str, str, str]]:
         out.append((key, "삭제", _validate(_set(base, path, None, delete=True))))
         for label, v in BAD_VALUES.items():
             out.append((key, label, _validate(_set(base, path, v))))
-    # 알 수 없는 키 — 오타
+    # 알 수 없는 키 — 오타. 막지 않는 것이 설계다(은퇴한 키가 기동을 막으면 안 된다) — 대신
+    # `unknown_keys` 가 그 키를 짚어 경고·창 표시로 드러내면 `warned`, 못 짚으면 `silent`(감사 F-007).
+    from argus.config.loader import unknown_keys
+
+    def _typo(data: dict, key: str) -> str:
+        res = _validate(data)
+        if res != "ok":
+            return res
+        return "warned" if key in unknown_keys(data) else "silent"
+
     for section in [k for k, v in base.items() if isinstance(v, dict)]:
-        typo = _set(base, (section, "__오타_키__"), 1)
-        res = _validate(typo)
-        out.append((f"{section}.__오타_키__", "알수없는키", "silent" if res == "ok" else res))
-    res = _validate(_set(base, ("__오타_섹션__",), {"a": 1}))
-    out.append(("__오타_섹션__", "알수없는키", "silent" if res == "ok" else res))
+        key = f"{section}.__오타_키__"
+        out.append((key, "알수없는키", _typo(_set(base, (section, "__오타_키__"), 1), key)))
+    out.append(("__오타_섹션__", "알수없는키", _typo(_set(base, ("__오타_섹션__",), {"a": 1}), "__오타_섹션__")))
     return out
 
 

@@ -783,6 +783,37 @@ def ensure_user_config() -> bool:
     return True
 
 
+def unknown_keys(data: dict, model: type[BaseModel] = None, prefix: str = "") -> list[str]:
+    """설정 dict 에서 **모델에 없는 키** 경로(오타·은퇴한 키).
+
+    처음엔 사용자 settings.yaml 의 오타 키가 22개 절 전부에서 조용히 무시됐다 — 값을 고쳤는데
+    아무 일도 없었다(감사 F-007). 막지 않는다: 옛 파일의 은퇴한 키가 기동을 막으면 안 된다(하위호환).
+    하위 모델이면 들어가 보고, 임의 이름을 받는 매핑(`load_gates` 등)은 보지 않는다.
+    """
+    model = model or Settings
+    out: list[str] = []
+    for key, value in (data or {}).items():
+        field = model.model_fields.get(key)
+        if field is None:
+            out.append(f"{prefix}{key}")
+            continue
+        sub = field.annotation
+        if isinstance(value, dict) and isinstance(sub, type) and issubclass(sub, BaseModel):
+            out += unknown_keys(value, sub, f"{prefix}{key}.")
+    return out
+
+
+def user_config_unknown_keys() -> list[str]:
+    """사용자 settings.yaml 의 모르는 키. 파일이 없거나 못 읽으면 빈 목록(창이 이것 때문에 죽으면 안 된다)."""
+    try:
+        path = user_config_path()
+        if not path.exists():
+            return []
+        return unknown_keys(_read_yaml(path))
+    except Exception:
+        return []
+
+
 def load_settings(*, use_user_file: bool = True, use_env: bool = True) -> Settings:
     """설정을 병합·검증해 돌려준다."""
     merged = _read_yaml(resource_path("config/defaults.yaml"))
@@ -799,6 +830,12 @@ def load_settings(*, use_user_file: bool = True, use_env: bool = True) -> Settin
                     "사용자 settings.yaml 이 옛 전체 사본이다 — 기본값 업데이트가 안 먹는다. "
                     "tools\\settings_prune.py 로 정리한다",
                     extra={"path": str(path)},
+                )
+            unknown = unknown_keys(user)
+            if unknown:
+                logging.getLogger("argus.config").warning(
+                    "사용자 settings.yaml 에 모르는 키가 있다 — 무시된다(오타?)",
+                    extra={"path": str(path), "keys": unknown},
                 )
             merged = _deep_merge(merged, user)
 
