@@ -814,15 +814,17 @@ class Fusion(Component):
         if not rows:
             return
         row = dict(rows[0])
-        detectors = set(json.loads(row["detectors"] or "[]"))
-        detectors.add(signal["detector"])
+        before = set(json.loads(row["detectors"] or "[]"))
+        detectors = before | {signal["detector"]}
 
         severity = row["severity"]
         if signal["severity"] and SEVERITY_ORDER.index(signal["severity"]) > SEVERITY_ORDER.index(
             severity
         ):
             severity = signal["severity"]
-        if len(detectors) > 1:
+        # **합의가 처음 생기는 순간에만** 올린다. 처음엔 탐지기가 둘 이상이면 병합마다 올려,
+        # info 신호 여럿이 critical 이 됐다(감사 F-020) — 합의는 한 번이고 나머지는 지속이다.
+        if len(before) == 1 and len(detectors) > 1:
             severity = _escalate(severity)
 
         with self.db._lock:  # noqa: SLF001

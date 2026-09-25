@@ -293,7 +293,7 @@
 - 대상: `argus/decide/fusion.py`, 테스트
 - 결과: `run_once` 의 두 닫기 자리를 `_close_safely` 로 — 닫기(분석·억제·예산·자동 라벨) 중 어디서든 예외가 나면 로그를 남기고 그 사건을 "분석 실패 — 로그 참조" 로 닫고 넘어간다(알림 없음, 사건은 남고 제목으로 화면에 드러난다). 프로브 pr07 FAIL → **PASS**(예외 0번 · B 열림). 테스트 `test_one_incident_failing_to_close_does_not_stall_fusion` — 주입이 실제로 예외를 던진다는 대조를 먼저 단언, 고치기 전 빨강. `mutation_sweep` 에 `close_failure_is_isolated` 등록(잡힘 확인). **상주 재시작 필요**
 
-### F-020 · 영역: 알림 판정 · 상태: 미처리
+### F-020 · 영역: 알림 판정 · 상태: 수정됨
 - 위치: `argus/decide/fusion.py:742` — `            severity = _escalate(severity)`
 - 요약: 탐지기가 둘 이상인 사건은 `_merge` 가 불릴 **때마다** 저장된 심각도를 한 단계씩 올린다. 합의는 한 번인데 신호마다 누적된다(info 신호 여럿 → critical). 저장된 심각도는 알림 예산이 그대로 읽는다(`budget.py:64`).
 - 근거: 인용 + 실DB(읽기 전용): 사건 285건 중 탐지기 2개 이상 29건, 신호 최고 등급보다 2단계 이상 오른 사건 **0건** — 쿨다운 때문에 한 사건에 신호가 적어 아직 안 나타났다
@@ -303,6 +303,7 @@
 - 심각도: 낮음
 - 수정비용: 작음 — "탐지기 수가 1→2 가 되는 순간"에만 승격
 - 대상: `argus/decide/fusion.py`, 테스트
+- 결과: 합의 승격을 **탐지기 수가 1 → 2 가 되는 순간에만** 한 단계로. 세 번째 탐지기나 이후 신호는 지속이라 올리지 않는다. 테스트 `test_consensus_escalates_once_not_per_signal`(info 신호 5개·탐지기 2개 → warning) 고치기 전 빨강(critical). 기존 합의 테스트 그대로 통과. 변이 `consensus_escalates_once` 등록(잡힘 확인). **상주 재시작 필요**
 
 ### F-021 · 영역: 조용한 실패 · 상태: 미처리
 - 위치: `argus/detection/expr.py:109` — `            return op(float(left), float(right))`

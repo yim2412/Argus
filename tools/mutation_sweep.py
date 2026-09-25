@@ -2130,6 +2130,17 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    Mutant(
+        "consensus_escalates_once",
+        "탐지기 합의는 한 번만 올린다 (F-020 — 병합마다 올리면 info 여럿이 critical 이 된다)",
+        (
+            (
+                "argus/decide/fusion.py",
+                "        if len(before) == 1 and len(detectors) > 1:\n",
+                "        if len(detectors) > 1:  # MUTANT: 병합마다 올린다\n",
+            ),
+        ),
+    ),
 ]
 
 

@@ -1108,3 +1108,27 @@ def test_signal_written_late_still_becomes_an_incident(db: Database) -> None:
 def test_ancient_unattached_signals_are_not_resurrected(db: Database) -> None:
     """대조 — 되돌아보기는 창 안만 본다. 오래된 미부착 신호(예: 융합이 없던 시절)를 사건으로 되살리지 않는다."""
     assert _late_signal_scene(db, write_delay_s=FusionSettings().late_lookback_s + 60) == 0
+
+
+# ---------------------------------------------------------------- 합의 승격은 한 번 (감사 F-020)
+
+
+def test_consensus_escalates_once_not_per_signal(db: Database) -> None:
+    """두 탐지기가 합의하면 한 단계 올린다 — 신호가 더 와도 더 올리지 않는다.
+
+    처음엔 `_merge` 가 불릴 때마다 저장된 심각도를 한 단계씩 올려, info 신호 여럿이
+    critical 이 됐다. 저장된 심각도는 알림 예산이 그대로 읽는다.
+    """
+    start = time.time() - 900
+    _signals(db, [
+        (start + 10, "rules", 0.5, "info", None),
+        (start + 20, "procleak", 0.5, "info", None),     # 합의 — info → warning
+        (start + 30, "rules", 0.5, "info", None),
+        (start + 40, "procleak", 0.5, "info", None),
+        (start + 50, "rules", 0.5, "info", None),
+    ])
+    f = Fusion(db)
+    f._set_watermark(start)  # noqa: SLF001
+    f.run_once(now=start + 60 + 15)                          # 아직 안 닫힌다(gap 120)
+    sev = db.query("SELECT severity FROM incidents")[0]["severity"]
+    assert sev == "warning", f"info 합의가 {sev} 까지 올랐다 — 한 단계여야 한다"
