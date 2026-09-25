@@ -168,8 +168,9 @@ MUTANTS: list[Mutant] = [
         (
             (
                 "argus/detection/rules.py",
-                "            if obs.ts - since < rule.for_s:\n                continue\n",
-                "            if False:  # MUTANT: 지속 조건 무력화\n                continue\n",
+                # 2026-09-25 감사 F-002: `held` 변수와 진단 기록이 끼어 앵커가 끊겼었다 — if 줄만 잡는다
+                "            if held < rule.for_s:\n",
+                "            if False:  # MUTANT: 지속 조건 무력화\n",
             ),
         ),
     ),
@@ -179,9 +180,8 @@ MUTANTS: list[Mutant] = [
         (
             (
                 "argus/detection/rules.py",
-                "            if last is not None and obs.ts - last < rule.cooldown_s:\n"
-                "                continue\n",
-                "            if False:  # MUTANT: 쿨다운 무력화\n                continue\n",
+                "            if last is not None and obs.ts - last < rule.cooldown_s:\n",
+                "            if False:  # MUTANT: 쿨다운 무력화\n",
             ),
         ),
     ),
@@ -701,13 +701,10 @@ MUTANTS: list[Mutant] = [
         (
             (
                 "argus/decide/fusion.py",
-                "        except Exception as exc:\n"
+                # 전달 결과 기록 줄이 더해져 앵커가 끊겼었다(F-002) — 주석 한 줄을 re-raise 로 바꾼다
                 "            # 알림 실패가 융합을 죽이면 사건 기록이 통째로 멈춘다."
-                " 탐지가 알림보다 중요하다.\n"
-                '            log.warning("알림 발송 실패", extra={"incident": incident_id,'
-                ' "error": str(exc)})\n'
-                "            return\n",
-                "        except Exception:  # MUTANT: 격리 제거\n            raise\n",
+                " 탐지가 알림보다 중요하다.\n",
+                "            raise  # MUTANT: 격리 제거\n",
             ),
         ),
     ),
@@ -728,10 +725,11 @@ MUTANTS: list[Mutant] = [
         (
             (
                 "argus/storage/retention.py",
-                "            if rollup is not None:\n"
-                "                watermark = watermarks.get(rollup)\n",
+                # 롤업이 여럿(`rollups`)으로 바뀌어 앵커가 끊겼었다(F-002)
+                "            if rollups:\n"
+                "                marks = [watermarks.get(r) for r in rollups]\n",
                 "            if False:  # MUTANT: 워터마크 무력화\n"
-                "                watermark = watermarks.get(rollup)\n",
+                "                marks = [watermarks.get(r) for r in rollups]\n",
             ),
         ),
     ),
@@ -789,8 +787,9 @@ MUTANTS: list[Mutant] = [
         (
             (
                 "argus/detection/baseline.py",
-                "                if baseline is not None and baseline.ready:\n",
-                "                if baseline is not None:  # MUTANT: 표본 문턱 제거\n",
+                # 들여쓰기가 한 단계 줄어 앵커가 끊겼었다(F-002)
+                "            if baseline is not None and baseline.ready:\n",
+                "            if baseline is not None:  # MUTANT: 표본 문턱 제거\n",
             ),
         ),
     ),
@@ -918,11 +917,9 @@ MUTANTS: list[Mutant] = [
         (
             (
                 "argus/desktop/app.py",
-                "    return (\n"
-                "        min(_WANTED_W, int(available.width() * 0.92)),\n"
-                "        min(_WANTED_H, int(available.height() * 0.92)),\n"
-                "    )",
-                "    return _WANTED_W, _WANTED_H  # MUTANT: 화면 크기 무시",
+                # 저장된 창 크기가 더해져 식이 바뀌었다(F-002) — 화면 상한만 떼어 낸다
+                "    return (min(width, available.width()), min(height, available.height()))",
+                "    return width, height  # MUTANT: 화면 크기 무시",
             ),
         ),
     ),
@@ -1290,7 +1287,7 @@ MUTANTS: list[Mutant] = [
         (
             (
                 "argus/storage/retention.py",
-                '            ("process_events", s.events_days * 86400, "program_usage_daily"),\n',
+                '            ("process_events", s.events_days * 86400, ("program_usage_daily",)),\n',
                 '            ("process_events", s.events_days * 86400, None),'
                 "  # MUTANT: 보호 해제\n",
             ),
@@ -1511,8 +1508,9 @@ MUTANTS: list[Mutant] = [
         (
             (
                 "argus/storage/retention.py",
-                '            ("process_metrics", s.process_hours * 3600, ("process_5m", "daily_report")),\n',
-                '            ("process_metrics", s.process_hours * 3600, ("process_5m",)),  # MUTANT\n',
+                # 원본 롤업(`*raw`)이 더해져 앵커가 끊겼었다(F-002)
+                '            ("process_metrics", s.process_hours * 3600, ("process_5m", "daily_report", *raw)),\n',
+                '            ("process_metrics", s.process_hours * 3600, ("process_5m", *raw)),  # MUTANT\n',
             ),
         ),
     ),
@@ -1700,7 +1698,8 @@ MUTANTS: list[Mutant] = [
         (
             (
                 "argus/desktop/pages/incidents.py",
-                '    return "?" if incident.get("notified") else ""\n',
+                # 판정 기준이 `notified` → `pending_answer` 로 바뀌어 앵커가 끊겼었다(F-002)
+                '    return "?" if incident.get("pending_answer") else ""\n',
                 '    return "?"  # MUTANT: 알림 안 나간 것도 답 대기로\n',
             ),
         ),
@@ -1804,7 +1803,8 @@ MUTANTS: list[Mutant] = [
         (
             (
                 "argus/decide/autolabel.py",
-                '    if row["user_label"]:\n        return Verdict(None, "사람이 이미 답했다")\n',
+                # 반환이 `(Verdict, 썼는가)` 튜플로 바뀌어 앵커가 끊겼었다(F-002)
+                '    if row["user_label"]:\n        return Verdict(None, "사람이 이미 답했다"), False\n',
                 "    # MUTANT: 사람 답을 덮는다\n",
             ),
         ),
@@ -1838,7 +1838,7 @@ MUTANTS: list[Mutant] = [
         (
             (
                 "argus/decide/autolabel.py",
-                '        return Verdict(None, "알림이 나가지 않았다")\n',
+                '        return Verdict(None, "알림이 나가지 않았다"), False\n',
                 "        pass  # MUTANT: 안 나간 알림도 판정한다\n",
             ),
         ),
@@ -2072,6 +2072,40 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    # ---- 2026-09-25 감사 수정분
+    Mutant(
+        "warm_watermark_stops_at_gap",
+        "원본 워터마크는 안 나간 날 앞에서 멈춘다 (F-015 — 넘으면 한 번도 안 나간 날이 지워진다)",
+        (
+            (
+                "argus/storage/warm.py",
+                "            if gaps:\n",
+                "            if False:  # MUTANT: 빈칸을 무시하고 MAX 까지\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "migration_is_atomic",
+        "마이그레이션 파일은 통째로 적용되거나 통째로 안 된다 (F-012 — 반쪽이면 영원히 못 연다)",
+        (
+            (
+                "argus/storage/hot.py",
+                '                        f"BEGIN;\\n{sql}\\n;PRAGMA user_version={int(version)};\\nCOMMIT;"\n',
+                '                        f"{sql}\\n;PRAGMA user_version={int(version)};"  # MUTANT: 감싸기 제거\n',
+            ),
+        ),
+    ),
+    Mutant(
+        "peak_follows_trigger_on_mismatch",
+        "방아쇠 자원과 어긋나면 방아쇠 지표의 최악 행으로 다시 본다 (F-016 — 디스크 사건이 CPU 로 설명된다)",
+        (
+            (
+                "argus/decide/fusion.py",
+                "        and bottleneck.kind not in bottleneck.trigger_kinds\n",
+                "        and False  # MUTANT: 다시 보지 않는다\n",
+            ),
+        ),
+    ),
 ]
 
 
@@ -2101,6 +2135,23 @@ def apply(mutant: Mutant, originals: dict[pathlib.Path, str]) -> None:
             )
         path.write_text(text.replace(old, new), encoding="utf-8")
         assert path in originals
+
+
+def stale_anchors(targets: list[Mutant]) -> list[tuple[str, str, int]]:
+    """원문이 정확히 1회가 아닌 변이 (키, 파일, 횟수).
+
+    **시작 전에 전부 본다.** `apply` 만 믿으면 끊긴 앵커가 차례가 올 때에야 드러나고,
+    거기서 전체 실행이 멈춰 **그 뒤 변이는 한 번도 돌지 않는다.** 2026-09-25 감사(F-002)에서
+    160개 중 11개가 끊겨 있었는데, 전체 실행은 11번째(`rule_for`)에서 죽어 나머지 149개도
+    전체 실행으로는 안 돌고 있었다.
+    """
+    stale = []
+    for mutant in targets:
+        for rel, old, _new in mutant.edits:
+            count = (ROOT / rel).read_text(encoding="utf-8").count(old)
+            if count != 1:
+                stale.append((mutant.key, rel, count))
+    return stale
 
 
 def restore(originals: dict[pathlib.Path, str]) -> None:
@@ -2179,6 +2230,13 @@ def main() -> int:
             print(f"[중단] 모르는 대상: {', '.join(sorted(unknown))}")
             return 2
         targets = [m for m in MUTANTS if m.key in set(args.only)]
+
+    stale = stale_anchors(targets)
+    if stale:
+        print(f"[중단] 원문이 끊긴 변이 {len(stale)}개 — 코드가 바뀌었다. 앵커부터 다시 맞춘다:")
+        for key, rel, count in stale:
+            print(f"  {key}: {rel} ({count}회)")
+        return 2
 
     # 무력화 전에 기준을 잡는다. 여기서 이미 빨간불이면 스윕 결과를 읽을 수 없다.
     clear_pycache()

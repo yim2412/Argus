@@ -89,7 +89,7 @@
 - 수정비용: 작음(경로 해석 1곳 + 테스트). 단 **판단 필요**: 약속을 지킬지(사용자 파일 읽기) 약속을 지울지(머리말 수정). 전자면 F-003 이 같이 따라온다
 - 대상: `argus/detection/rules.py`, `argus/config/rules.yaml`, `argus/paths.py`
 
-### F-002 · 영역: 측정 도구 신뢰성 · 상태: 수정중
+### F-002 · 영역: 측정 도구 신뢰성 · 상태: 수정됨
 - 위치: `tools/mutation_sweep.py` — `MUTANTS` 중 11개
 - 요약: 무력화할 원문을 소스에서 찾지 못하는 변이가 160개 중 11개. 전체 실행은 11번째(`rule_for`)에서 `[중단]` 으로 죽는다 — 그 뒤 149개도 전체 실행으로는 한 번도 안 돈다. 끊긴 것: `rule_for` · `rule_cooldown`(탐지 규칙 1) · `notify_failure_isolation` · `rollup_watermark` · `per_program_fallback` · `window_fits_screen` · `usage_retention_watermark` · `daily_report_retention_hold` · `answer_mark_separates_unasked` · `autolabel_never_overwrites_human` · `autolabel_skips_unnotified`. **이 11개 규칙은 지금 아무도 재지 않는다.**
 - 근거: 실측 — 사본에서 전체 실행 → `[중단] rule_for: … 원문이 0회 발견됐다`, exit 1. 앵커 전수 대조 11/160
@@ -99,6 +99,7 @@
 - 심각도: 높음
 - 수정비용: 중간(11개 앵커를 현재 코드에 다시 맞추고, 각각 잡히는지 확인). 도구에 "시작 전 앵커 전수 검사"를 넣으면 다음 번엔 11번째가 아니라 0번째에 전부 보인다
 - 대상: `tools/mutation_sweep.py`
+- 결과: 11개 앵커를 지금 코드에 다시 맞췄다(대부분 `if` 줄만 잡게 좁혀 옆 줄 변화에 덜 끊기게). 도구에 **시작 전 앵커 전수 검사**(`stale_anchors`)를 넣어, 끊기면 11번째가 아니라 시작 시점에 전부 찍고 멈춘다(가짜 앵커로 확인). 작업 트리 사본에서 11개를 돌려 **잡힘 11/11** — 이 11개 규칙이 다시 재어진다. 프로브 p002 FAIL → PASS(162개 · 끊김 0, 감사 수정분 2개 추가 포함)
 
 ### F-003 · 영역: 조용한 실패 · 상태: 미처리
 - 위치: `argus/detection/rules.py:276` — `for index, entry in enumerate(data.get("rules") or []):`
@@ -245,7 +246,7 @@
 - 대상: `argus/storage/warm.py`, 테스트
 - 결과: `raw_watermark` 가 종류마다 "가장 늦게 나간 날" 앞의 **안 나간 날**(`exportable_dates`)을 보고 그 날 시작에서 멈춘다. 0행인 날은 `export_date` 가 기록하므로 빈칸으로 남지 않는다(워터마크가 영구히 묶이지 않는다). 실패한 날은 다음 회차에 다시 시도되고 그때 워터마크가 다시 전진한다. 프로브 FAIL → **PASS**. 테스트 `test_watermark_stops_before_a_day_that_failed_to_export` — "막지 않았으면 MAX 가 08-03" 대조를 먼저 단언, 고치기 전 빨강 확인. 되돌리는 변이(`if gaps:` → `if False:`) 빨강 확인, `mutation_sweep` 에 `warm_watermark_stops_at_gap` 등록. 웜 테스트 31 통과. **상주 재시작 필요**(수정 판 끝에 모아서)
 
-### F-016 · 영역: 설명 정확도 · 상태: 미처리
+### F-016 · 영역: 설명 정확도 · 상태: 수정됨
 - 위치: `argus/decide/fusion.py:443` — `peak_row = max(rows, key=lambda r: r["cpu_total"] or 0.0)`
 - 요약: 사건의 "최악 시점"을 `cpu_total` 이 가장 큰 행 **하나**로 고르고, 병목 판정은 그 행만 본다. 디스크가 막힌 순간과 CPU 가 튄 순간이 다르면 디스크가 멀쩡한 행이 판정된다. 사건을 연 디스크 룰의 방아쇠 우선(`trigger_metrics`)도 못 살린다 — 그 행에서는 IO 점수 자체가 없어서 `_choose` 가 고를 후보에 없다. **"왜 느렸나"가 이 제품의 산출물이다(탐지 규칙 2).**
 - 근거: 실측 — 격리 폴더, 60초 디스크 정체(응답 200ms·큐 6) 중 1초만 CPU 95% → 병목 `CPU`. 대조(튐 없음) → `IO`
@@ -255,6 +256,7 @@
 - 심각도: 높음
 - 수정비용: 중간 — 방아쇠 지표가 있으면 그 지표의 최악 행을 쓰거나, 지표마다 구간 최악값을 모은 합성 행으로 판정. 골든(설명 문장)이 바뀌므로 갱신 필요
 - 대상: `argus/decide/fusion.py`, 테스트, 골든
+- 결과: **CPU 최대 행의 판정이 방아쇠가 가리킨 자원과 어긋날 때만**(구체적 병목인데 방아쇠 자원이 아님) 방아쇠 지표의 최악 행으로 다시 판정하고, 그 판정이 방아쇠 자원이면 채택한다. 방아쇠를 최악 시점 고르기 앞에서 읽게 순서를 바꿨다. **처음 설계(늘 방아쇠 지표로 고르기)는 골든이 막았다** — 누수 시나리오가 `NONE`(→ 탐지기 주장 "80 → 602MB, 9분간 줄지 않음", 시작 시각도 누수 시점)에서 `MEMORY`("메모리 압박 — 100%", 시작 367초 늦음)로 바뀌어 설명을 잃었다. 의도한 변경이 아니라 갱신하지 않고 설계를 좁혔다 → 골든 그대로. 지표마다 최악값을 모은 합성 행도 기각(서로 다른 순간을 섞으면 분류 문턱의 전제가 깨진다). 프로브 pr03 FAIL → **PASS**. 테스트 2개(`test_fusion.py`): 방아쇠가 있으면 IO · 대조(방아쇠가 없으면 CPU — 그래야 장면이 틀릴 수 있는 장면이다). 대조가 한 번 걸렸다 — 사건 구간이 신호 근처 0~10초로 잡혀 55초의 튐이 밖에 있었다, 튐을 5초로 옮겼다. 되돌리는 변이 빨강, `mutation_sweep` 에 `peak_follows_trigger_on_mismatch` 등록(잡힘 확인). 전체 655 통과. **상주 재시작 필요**
 
 ### F-017 · 영역: 조용한 실패 · 상태: 미처리
 - 위치: `argus/decide/fusion.py:583` — `"WHERE run_id IS NULL AND ts > ? AND ts <= ? ORDER BY ts",`
