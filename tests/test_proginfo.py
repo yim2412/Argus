@@ -300,3 +300,48 @@ def test_only_the_most_recent_path_is_used(db) -> None:
     ProgramInfoCollector(db).run_once()
     row = db.query("SELECT description FROM program_info WHERE name = 'cmd'")[0]
     assert row["description"], "옛 경로를 읽어 빈손이 됐다"
+
+
+def test_marking_updates_rows_that_already_have_a_description(db) -> None:
+    """이미 설명이 있는 행도 포어그라운드로 표시된다 — upsert 의 **갱신 경로** (감사 F-024).
+
+    위 테스트는 행이 없는 경우(삽입 경로)만 쟀다. 갱신 경로를 꺼도(`DO UPDATE … WHERE 0`)
+    전체 테스트가 초록이었다 — 설명을 먼저 얻은 프로그램(대부분이 그렇다)이 사용시간 표에서 빠진다.
+    """
+    with db._lock:  # noqa: SLF001
+        db.conn.execute(
+            "INSERT INTO program_info (name, description, company, attempts, checked_at, foreground_seen)"
+            " VALUES ('chrome', 'Google Chrome', 'Google LLC', 1, 0, 0)"
+        )
+        db.conn.commit()
+    _buckets(db, [("chrome", 1.0)])
+
+    ProgramInfoCollector(db).mark_foreground()
+
+    row = db.query("SELECT foreground_seen, description FROM program_info WHERE name = 'chrome'")[0]
+    assert row["foreground_seen"] == 1, "설명이 이미 있는 프로그램이 포어그라운드로 표시되지 않았다"
+    assert row["description"] == "Google Chrome", "표시하면서 설명을 지웠다"
+
+
+def test_user_only_usage_drops_background_services(db, monkeypatch) -> None:
+    """"내가 쓰는 프로그램만"은 포어그라운드 이력이 없는 것을 거른다 (감사 F-024).
+
+    위 테스트들은 두 프로그램 모두 포어그라운드로 넣어 필터 자체가 재어지지 않았다 — 필터를 지워도
+    초록이었고, 그러면 상위가 전부 svchost·conhost 다.
+    """
+    from argus.dashboard import data
+
+    _usage_rows(db, [("chrome", 3600.0), ("svchost", 72000.0)])
+    with db._lock:  # noqa: SLF001
+        db.conn.executemany(
+            "INSERT INTO program_info (name, description, company, attempts, checked_at, foreground_seen)"
+            " VALUES (?, NULL, NULL, 0, 0, ?)",
+            [("chrome", 1), ("svchost", 0)],
+        )
+        db.conn.commit()
+    monkeypatch.setattr(data, "usage_exclude", lambda: ())      # 제외 목록과 떼어 필터만 잰다
+    data.program_usage.cache_clear()
+    assert [r["name"] for r in data.program_usage(days=1, user_only=True)] == ["chrome"]
+    data.program_usage.cache_clear()
+    assert {r["name"] for r in data.program_usage(days=1, user_only=False)} == {"chrome", "svchost"}, "대조"
+    data.program_usage.cache_clear()

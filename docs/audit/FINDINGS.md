@@ -347,7 +347,7 @@
 - 수정비용: 작음 — 구조표 한 줄
 - 대상: `CLAUDE.md`
 
-### F-024 · 영역: 테스트 사각 · 상태: 미처리
+### F-024 · 영역: 테스트 사각 · 상태: 수정됨
 - 위치: `tools/mutation_sweep.py` — `MUTANTS` 중 3개
 - 요약: 규칙 무력화 전수(149개 측정, 원문 끊김 11개는 F-002) 중 **3개가 무력화돼도 테스트가 전부 초록**: `foreground_mark_upserts` · `shutdown_test_suppresses_notifications` · `usage_user_only_filter`. 그 규칙을 지키는 단언이 없다(또는 `expect_caught` 표시가 틀렸다).
 - 근거: 실측 — `.audit_runs/2026-09-25/`(git 무시) `sweep_jobs.py collect` → 측정 149/149 · 잡힘 146 · 안 잡힘 3
@@ -357,6 +357,7 @@
 - 심각도: 중간
 - 수정비용: 작음(키마다 단언 하나)
 - 대상: 해당 규칙의 테스트 파일
+- 결과: 생존 3개 중 둘은 단언이 없던 것 — `foreground_mark_upserts`: 기존 테스트는 upsert 의 **삽입 경로**(행이 없을 때)만 쟀다 → 설명이 이미 있는 행이 표시되는지(갱신 경로) 테스트 추가. `usage_user_only_filter`: 기존 테스트가 두 프로그램을 모두 포어그라운드로 넣어 필터 자체가 재어지지 않았다 → 배경 서비스(foreground_seen 0)가 걸러지는지 + 대조(user_only=False 면 둘 다). 둘 다 이제 잡힘. 셋째 `shutdown_test_suppresses_notifications` 는 **기각** — 도구에 `expect_caught=False`·사유(테스트 자신의 배선)가 이미 있었는데 감사 수집기 `sweep_jobs collect` 가 그 표시를 무시해 "안 잡힘"으로 셌다. 수집기가 `알려진 안 잡힘` 을 따로 세게 고쳤다
 
 ### F-025 · 영역: 테스트 사각 · 상태: 미처리
 - 위치: `argus/detection/` · `argus/decide/` — if-py 변이 생존 줄 (목록은 `.audit_runs/2026-09-25/` 수집 출력)

@@ -112,12 +112,18 @@ def collect(out: pathlib.Path, also: list[pathlib.Path]) -> int:
             missing_jobs.append((job["id"], lost))
     keys, stale = runnable_keys()
     caught = sorted(k for k, v in results.items() if v == "잡힘")
-    blind = sorted(k for k, v in results.items() if v == "안 잡힘")
+    # `expect_caught=False` 는 못 잡히는 것이 이미 알려진 변이다(사유가 `note` 에 있다). 처음엔 이걸
+    # 무시해 "안 잡힘"으로 셌고, 감사 대장(F-024)에 기각할 항목이 섞였다.
+    known_blind = {m.key for m in _mutants().MUTANTS if not getattr(m, "expect_caught", True)}
+    blind = sorted(k for k, v in results.items() if v == "안 잡힘" and k not in known_blind)
+    expected = sorted(k for k, v in results.items() if v == "안 잡힘" and k in known_blind)
     unmeasured = sorted(set(keys) - set(results))
     print(f"측정 {len(results)}/{len(keys)} · 잡힘 {len(caught)} · 안 잡힘 {len(blind)} · "
-          f"못 잰 것 {len(unmeasured)} · 원문 끊김 {len(stale)}")
+          f"알려진 안 잡힘 {len(expected)} · 못 잰 것 {len(unmeasured)} · 원문 끊김 {len(stale)}")
     for k in blind:
         print(f"  [안 잡힘] {k}")
+    for k in expected:
+        print(f"  [알려진 안 잡힘] {k}")
     for jid, lost in missing_jobs:
         print(f"  [결과 없음] 작업 {jid}: {', '.join(lost)}")
     for jid, key in stopped:
