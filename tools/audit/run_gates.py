@@ -33,8 +33,8 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PY = sys.executable
 
-# 2026-09-25 실측 644 passed. 테스트를 지웠으면 이 값을 같이 내린다 — 조용히 줄면 안 된다.
-MIN_TESTS = 644
+# 2026-09-25 실측 644 passed → 감사 수정 판에서 669. 테스트를 지웠으면 이 값을 같이 내린다 — 조용히 줄면 안 된다.
+MIN_TESTS = 669
 MIN_TOOLS = 16
 COLLECTORS = ("gpu", "network", "pdh", "process", "procsource", "proginfo", "system")
 
@@ -101,6 +101,22 @@ def gate_collectors() -> tuple[bool, str]:
     return not bad, f"{len(COLLECTORS)}개" + ("" if not bad else " · FAIL " + ", ".join(bad))
 
 
+def gate_sweep_anchors() -> tuple[bool, str]:
+    """mutation_sweep 의 무력화 원문이 소스에 정확히 1회씩 있는가.
+
+    코드를 옮기거나 들여쓰기만 바꿔도 앵커가 끊기고, 끊긴 변이는 그 규칙을 **아무도 안 재게**
+    만든다(감사 F-002: 11개가 그 상태였다). 2026-09-25 수정 판에서 창 환경을 함수로 옮기다 또
+    하나를 끊었다 — 그때 게이트에 이게 없었다.
+    """
+    spec = importlib.util.spec_from_file_location("_mutation_sweep", ROOT / "tools" / "mutation_sweep.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["_mutation_sweep"] = mod
+    spec.loader.exec_module(mod)
+    stale = mod.stale_anchors(mod.MUTANTS)
+    return not stale, f"변이 {len(mod.MUTANTS)}개" + (
+        "" if not stale else " · 끊김 " + ", ".join(k for k, _, _ in stale))
+
+
 GATES = {
     "pytest": gate_pytest,
     "static_scan": lambda: _script_gate("tools/audit/static_scan.py", "[OK] static_scan"),
@@ -111,6 +127,7 @@ GATES = {
     # 74초 — pytest(57초)보다 길어 테스트 모음에 넣지 않고 게이트로만 둔다
     "golden": lambda: _script_gate("tools/audit/golden_replay.py", "[OK] golden_replay"),
     "pyc_audit": lambda: _script_gate("tools/pyc_audit.py", "[OK]"),
+    "sweep_anchors": gate_sweep_anchors,
     "tools-import": gate_tools_import,
     "tools-help": gate_tools_help,
     "collectors": gate_collectors,
