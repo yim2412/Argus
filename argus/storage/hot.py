@@ -138,13 +138,20 @@ class Database:
             sql = path.read_text(encoding="utf-8")
             with self._lock:
                 try:
-                    self.conn.executescript(sql)
-                    # user_version 은 파라미터 바인딩을 못 받는다. 값은 파일명에서 온
-                    # 정수라 주입 위험은 없다.
-                    self.conn.execute(f"PRAGMA user_version={int(version)}")
-                    self.conn.commit()
+                    # **파일 하나를 트랜잭션 하나로 감싼다.** `executescript` 는 실행 전에 COMMIT 하고
+                    # 문장마다 자동 커밋하므로, 그냥 부르면 실패 뒤 `rollback()` 이 되돌릴 것이 없다 —
+                    # 앞 문장(ADD COLUMN)은 남고 버전은 안 올라가 다음 기동부터 `duplicate column` 으로
+                    # 영원히 못 연다(감사 F-012). 스크립트 안에 BEGIN 을 넣으면 실패해도 트랜잭션이
+                    # 열린 채 남아 아래 rollback 이 통째로 되돌린다. SQLite 는 DDL 도 트랜잭션에 든다.
+                    # user_version 도 같은 트랜잭션에 넣는다 — 둘이 따로 커밋되면 같은 틈이 생긴다.
+                    # (user_version 은 파라미터 바인딩을 못 받는다. 값은 파일명에서 온 정수라 주입 위험은 없다.)
+                    # 마이그레이션 파일에 BEGIN/COMMIT·VACUUM·journal_mode 를 넣으면 안 된다.
+                    self.conn.executescript(
+                        f"BEGIN;\n{sql}\n;PRAGMA user_version={int(version)};\nCOMMIT;"
+                    )
                 except sqlite3.Error:
-                    self.conn.rollback()
+                    if self.conn.in_transaction:
+                        self.conn.rollback()
                     log.exception("마이그레이션 실패", extra={"version": version, "file": path.name})
                     raise
             log.debug("마이그레이션 적용", extra={"version": version, "file": path.name})

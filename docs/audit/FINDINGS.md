@@ -199,7 +199,7 @@
 - 수정비용: 작음 — `THIRD_PARTY_NOTICES.txt` 생성 스크립트 + `datas` 한 줄 + 배포 스모크에 존재 검사
 - 대상: `packaging/*.spec`, `packaging/make_deploy.ps1`, 새 고지 파일
 
-### F-012 · 영역: 하위호환 · 상태: 미처리
+### F-012 · 영역: 하위호환 · 상태: 수정됨
 - 위치: `argus/storage/hot.py:141` — `self.conn.executescript(sql)` / `:147` `self.conn.rollback()`
 - 요약: `executescript()` 는 실행 전에 COMMIT 하고 스크립트를 자동 커밋으로 돌린다 — 실패 시 `rollback()` 이 되돌릴 게 없다. 여러 문장짜리 마이그레이션이 중간에 실패하면 앞 문장이 남고 `user_version` 은 안 올라가, **다음 기동부터 `duplicate column` 으로 영원히 DB 를 못 연다**(마이그레이션을 고쳐 재배포해도). 실제 파일 중 ALTER 가 2개 이상인 것: 005·012·018·020. 도중 실패의 현실적 방아쇠는 락 대기 초과(이 PC 에서 25초 쓰기 관측 기록 있음)·디스크 가득 참.
 - 근거: 실측(메커니즘) — 합성 마이그레이션으로 재현. 실제 사용자 PC 에서의 발생은 추정
@@ -209,6 +209,7 @@
 - 심각도: 높음 (배포 후 업데이트에서 사용자 PC 의 상주가 벽돌이 된다 — 수집·저장 규칙 4 가 막으려던 바로 그 일)
 - 수정비용: 작음 — 문장 단위 `execute` 를 명시적 `BEGIN`/`COMMIT` 안에서(SQLite DDL 은 트랜잭션 가능) + 프로브를 테스트로
 - 대상: `argus/storage/hot.py`, 테스트
+- 결과: 마이그레이션 파일 하나를 `BEGIN; … PRAGMA user_version=N; COMMIT;` 으로 감싸 `executescript` 에 넘긴다 — 실패해도 트랜잭션이 열린 채 남아 `rollback()` 이 통째로 되돌린다. user_version 도 같은 트랜잭션. 기존 마이그레이션 20개에 트랜잭션 밖 문장(VACUUM·journal_mode·BEGIN/COMMIT)이 없는 것을 확인(주석에만 나온다). 프로브 FAIL → **PASS**("고친 002 로 재기동: ok"). `tests/test_migration_atomic.py` 3개(실패 뒤 흔적 없음 · 실패 → 고친 판 재기동 · 대조: 정상 여러 문장 전부 적용). 고치기 전 빨강, 되돌리는 변이 2/3 빨강. `mutation_sweep` 에 `migration_is_atomic` 등록. 전체 653 통과(모든 테스트가 새 방식으로 마이그레이션 20개를 처음부터 돈다). **상주 재시작 필요**(수정 판 끝에 모아서)
 
 ### F-013 · 영역: 하위호환 · 상태: 미처리
 - 위치: `argus/storage/hot.py:129` — `pending = [(v, p) for v, p in migration_files() if v > current]`
