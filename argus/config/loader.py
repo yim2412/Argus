@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -328,6 +328,18 @@ class BottleneckSettings(BaseModel):
     # 근소한 우위는 뒤집을 근거가 못 된다 — `bottleneck._OVERRIDE_*` 주석 참조.
     override_ratio: float = Field(default=1.5, gt=1.0)
     override_margin: float = Field(default=0.3, ge=0)
+
+
+class NotifyBudgetSettings(BaseModel):
+    """하루에 몇 번까지 알림으로 말을 걸 것인가 (`decide/budget.py`).
+
+    처음엔 코드 상수였다(감사 F-022) — 사용자가 알림이 많다고 느껴도 YAML 로 줄일 수 없었다.
+    """
+
+    per_day: int = Field(default=8, ge=0)
+    """하루 알림 수. 다 쓰면 조용해지는 게 아니라 기준을 critical 로 올린다."""
+    min_severity: Literal["info", "warning", "critical"] = "warning"
+    """이 아래는 대시보드에만 남긴다."""
 
 
 class IncidentSettings(BaseModel):
@@ -651,6 +663,7 @@ class Settings(BaseModel):
     bottleneck: BottleneckSettings = BottleneckSettings()
     thermal_drift: ThermalDriftSettings = ThermalDriftSettings()
     incident: IncidentSettings = IncidentSettings()
+    notify_budget: NotifyBudgetSettings = NotifyBudgetSettings()
     process_leak: ProcessLeakSettings = ProcessLeakSettings()
     severity: SeveritySettings = SeveritySettings()
     fingerprint: FingerprintSettings = FingerprintSettings()

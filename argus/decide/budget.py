@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from datetime import datetime
 
 from ..logging_setup import get_logger
 from ..storage.hot import Database
@@ -36,13 +37,22 @@ class Decision:
 class NotificationBudget:
     """하루 알림 총량과 심각도 컷."""
 
+    # 값의 정본은 config 의 `notify_budget` 절이다(`from_settings`). 여기 기본값은 재분석·
+    # 테스트처럼 설정 없이 만들 때만 쓰인다.
     per_day: int = 8
     # 대시보드에만 남기는 하한. info 는 애초에 알리지 않는다.
     min_severity: str = "warning"
 
+    @classmethod
+    def from_settings(cls, settings) -> "NotificationBudget":
+        return cls(per_day=settings.per_day, min_severity=settings.min_severity)
+
     def used_today(self, db: Database, now: float | None = None) -> int:
         now = now if now is not None else time.time()
-        day_start = now - (now % 86400)
+        # **로컬 자정**부터다. 처음엔 `now % 86400`(UTC 자정)이라 한국에서는 오전 9시에
+        # 예산이 풀렸다(감사 F-022) — 사용자의 "오늘"은 그 사람의 달력이다.
+        local = datetime.fromtimestamp(now)
+        day_start = datetime(local.year, local.month, local.day).timestamp()
         rows = db.query(
             "SELECT COUNT(*) AS c FROM incidents WHERE notified = 1 AND ts_start >= ?",
             (day_start,),

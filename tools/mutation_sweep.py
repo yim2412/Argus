@@ -2141,6 +2141,28 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    Mutant(
+        "notify_budget_day_is_local",
+        "알림 예산의 하루는 로컬 자정부터 (F-022 — UTC 면 한국에서 오전 9시에 풀린다)",
+        (
+            (
+                "argus/decide/budget.py",
+                "        day_start = datetime(local.year, local.month, local.day).timestamp()\n",
+                "        day_start = now - (now % 86400)  # MUTANT: UTC 자정\n",
+            ),
+        ),
+    ),
+    Mutant(
+        "notify_budget_from_settings",
+        "알림 예산은 설정에서 온다 (F-022 — 끊기면 YAML 을 고쳐도 하루 8건 그대로)",
+        (
+            (
+                "argus/decide/budget.py",
+                "        return cls(per_day=settings.per_day, min_severity=settings.min_severity)\n",
+                "        return cls()  # MUTANT: 설정을 무시한다\n",
+            ),
+        ),
+    ),
 ]
 
 

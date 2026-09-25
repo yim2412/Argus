@@ -495,6 +495,7 @@ def run(args: argparse.Namespace) -> int:
         # 않는 이유는 평가와 운영이 같은 코드를 타게 하기 위해서다(detection/live.py).
         # 기본값은 기록만 — 알림은 Phase 9 이고, 오탐률이 검증되기 전에는 붙이지 않는다.
         if settings.detection.enabled:
+            from .decide.budget import NotificationBudget
             from .decide.fusion import Fusion, FusionSettings
             from .detection.live import DetectionComponent
 
@@ -544,6 +545,7 @@ def run(args: argparse.Namespace) -> int:
                         autolabel=settings.autolabel,
                         notify_enabled=settings.detection.notify,
                     ),
+                    budget=NotificationBudget.from_settings(settings.notify_budget),
                     notifier=tray,
                     # 발송 시점마다 다시 물어본다. 위 `notify_enabled` 는 이 창구가
                     # 없을 때(리플레이·재분석)를 위한 값으로 남는다.

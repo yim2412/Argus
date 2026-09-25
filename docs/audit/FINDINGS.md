@@ -316,7 +316,7 @@
 - 수정비용: 작음
 - 대상: `argus/detection/expr.py`, 테스트
 
-### F-022 · 영역: 설정 배선 · 상태: 미처리
+### F-022 · 영역: 설정 배선 · 상태: 수정됨
 - 위치: `argus/decide/fusion.py:62` — `    lag_s: float = 15.0`
 - 요약: 설계 규칙 3("임계값·튜닝 상수는 config 한 곳에만") 위반 묶음. 융합의 `lag_s`(15)·`gap_s`(120), 알림 예산의 `per_day`(8)·`min_severity` 가 코드 상수이고 `__main__.py` 가 넘기지 않는다 — YAML 로 튜닝할 수 없다. 덤으로 알림 예산의 "하루"가 `now % 86400`(UTC 자정)이라 한국 시간 **오전 9시**에 초기화된다(`budget.py:45` — `day_start = now - (now % 86400)`).
 - 근거: 인용 — `__main__.py:541` 의 `FusionSettings(...)` 인자, `fusion.py:532` 의 `NotificationBudget()`
@@ -326,6 +326,7 @@
 - 심각도: 낮음
 - 수정비용: 작음 — config 절 추가 + 배선 테스트(**기본값이 아닌 값으로**)
 - 대상: `argus/config/defaults.yaml`, `argus/config/loader.py`, `argus/__main__.py`, `argus/decide/budget.py`, 테스트
+- 결과: **절반 수정 · 절반 기각.** ① 알림 예산: config 에 `notify_budget` 절(`per_day`·`min_severity`) — `NotificationBudget.from_settings` 로 만들어 `__main__` 이 융합에 넘긴다. "하루"를 로컬 자정으로. `tests/test_notify_budget.py` 3개: 기본값이 아닌 값(3·critical)이 설정에서 예산까지 온다(코드 기본이 3 이 아니라는 대조 포함) · `__main__` 배선 문구 · 로컬 자정 경계(로컬=UTC 인 PC 에서는 가를 수 없어 skip 으로 드러낸다). 되돌리는 변이 둘(UTC 자정 · 설정 무시) 빨강, `mutation_sweep` 에 등록. ② **융합의 `lag_s`·`gap_s` 는 기각** — `FusionSettings` docstring 에 "임계값이 아니라 시간 구조라 config 가 아닌 여기 둔다"는 기존 결정이 있었다. 분석 때 그 줄을 못 읽었다(이력은 [기존] 이었어야 한다). **상주 재시작 필요**
 
 ### F-023 · 영역: 위생 · 상태: 미처리
 - 위치: `CLAUDE.md:27` — `` `severity` 가 등급을 두 축(현재 손실·위험)으로 매긴다 ``
