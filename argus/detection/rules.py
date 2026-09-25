@@ -25,8 +25,8 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
-from functools import lru_cache
 from typing import Any, Iterable, Mapping, Sequence
 
 import yaml
@@ -142,8 +142,43 @@ class Condition:
         return actual != threshold
 
 
-@lru_cache(maxsize=1)
+# 프로파일을 못 읽었을 때 다시 시도하기까지. 실패를 수명 내내 캐시하면 cores·ram 을 쓰는 룰이
+# 재시작 전까지 죽고(감사 F-027), 매 틱 다시 읽으면 첫 실행에서는 캘리브레이션이 매 틱 돈다.
+MACHINE_RETRY_AFTER_FAILURE_S = 600.0
+_machine_cache: dict[str, float] | None = None
+_machine_failed_at: float | None = None
+
+
+def _machine_cache_clear() -> None:
+    global _machine_cache, _machine_failed_at
+    _machine_cache = None
+    _machine_failed_at = None
+
+
 def machine_variables() -> dict[str, float]:
+    """성공은 끝까지, 실패는 `MACHINE_RETRY_AFTER_FAILURE_S` 동안만 기억한다."""
+    global _machine_cache, _machine_failed_at
+    if _machine_cache is not None:
+        return _machine_cache
+    now = time.time()
+    if _machine_failed_at is not None and now - _machine_failed_at < MACHINE_RETRY_AFTER_FAILURE_S:
+        return {}
+    out = _read_machine_variables()
+    if out:
+        _machine_cache, _machine_failed_at = out, None
+    else:
+        _machine_failed_at = now
+        _warn_once(
+            "기계 프로파일을 못 읽었다 — cores·ram 을 쓰는 룰은 평가되지 않는다 "
+            f"({MACHINE_RETRY_AFTER_FAILURE_S / 60:.0f}분 뒤 다시 시도)"
+        )
+    return out
+
+
+machine_variables.cache_clear = _machine_cache_clear  # type: ignore[attr-defined]  # 테스트가 쓰던 이름
+
+
+def _read_machine_variables() -> dict[str, float]:
     """이 PC 의 능력값. 룰이 절대값 대신 이것으로 문턱을 표현한다(규칙 2).
 
     `ctx_switches_ps > 50000` 은 12코어 기준으로 정한 값이라 4코어 PC 에서는 과하고,

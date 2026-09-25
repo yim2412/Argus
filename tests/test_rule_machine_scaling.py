@@ -135,3 +135,39 @@ def test_shipped_rules_use_machine_relative_thresholds() -> None:
         assert any(expected_var in v for v in values), (
             f"{rule_name} 의 {metric} 문턱이 `{expected_var}` 를 쓰지 않는다: {values}"
         )
+
+
+def test_failed_profile_read_is_retried_later_not_cached_for_life(monkeypatch) -> None:
+    """프로파일을 못 읽은 결과를 수명 내내 들고 있지 않는다 (감사 F-027).
+
+    처음엔 `lru_cache` 가 실패 결과(`{}`)도 캐시해, 첫 실행 캘리브레이션이 한 번 실패하면
+    `cores`·`ram_mb` 를 쓰는 룰(컨텍스트 스위치 급증 등)이 **재시작 전까지** 평가되지 않았다.
+    그렇다고 매 틱 다시 읽으면 첫 실행에서는 캘리브레이션(PowerShell)이 매 틱 돈다 — 그래서
+    실패는 잠깐만 기억하고, 성공은 끝까지 기억한다.
+    """
+    from argus.detection import rules as rules_mod
+    from argus.machine import calibration
+
+    calls = []
+    now = [1_000_000.0]
+    monkeypatch.setattr(rules_mod.time, "time", lambda: now[0])
+
+    class _Profile:
+        cpu = {"logical": 8, "physical": 4}
+        memory = {"total_gb": 16}
+
+    def flaky():
+        calls.append(now[0])
+        if len(calls) == 1:
+            raise OSError("주입: 첫 캘리브레이션 실패")
+        return _Profile()
+
+    monkeypatch.setattr(calibration, "ensure_profile", flaky)
+    assert machine_variables() == {}
+    assert machine_variables() == {}, "실패 직후에 다시 읽었다"
+    assert len(calls) == 1, "실패 직후 매번 다시 읽는다 — 첫 실행에서 캘리브레이션이 매 틱 돈다"
+    now[0] += rules_mod.MACHINE_RETRY_AFTER_FAILURE_S + 1
+    assert machine_variables().get("cores") == 8.0, "실패가 수명 내내 캐시됐다 — 룰이 재시작 전까지 죽는다"
+    now[0] += 10 * rules_mod.MACHINE_RETRY_AFTER_FAILURE_S
+    machine_variables()
+    assert len(calls) == 2, "성공한 뒤에도 다시 읽는다 — 성공은 끝까지 캐시해야 한다"

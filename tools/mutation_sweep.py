@@ -2163,6 +2163,17 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    Mutant(
+        "machine_failure_is_retried",
+        "기계 프로파일 읽기 실패를 수명 내내 들고 있지 않는다 (F-027 — 룰이 재시작 전까지 죽는다)",
+        (
+            (
+                "argus/detection/rules.py",
+                "    if _machine_failed_at is not None and now - _machine_failed_at < MACHINE_RETRY_AFTER_FAILURE_S:\n",
+                "    if _machine_failed_at is not None:  # MUTANT: 실패를 영원히 기억한다\n",
+            ),
+        ),
+    ),
 ]
 
 
