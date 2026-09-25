@@ -203,6 +203,39 @@ def test_zero_row_day_still_advances_the_watermark(store) -> None:
     )
 
 
+def test_watermark_stops_before_a_day_that_failed_to_export(store) -> None:
+    """**중간 날짜 하나가 실패하면 워터마크는 그 앞에서 멈춘다** (감사 F-015).
+
+    `export_pending` 은 하루가 실패하면 로그만 남기고 다음 날짜로 간다. 워터마크를 "가장 늦게
+    나간 날짜(MAX)"로 잡으면 빈칸 뒤까지 가고, `retention` 이 워터마크까지 지우면 **한 번도
+    웜으로 안 나간 날의 원본이 복구 불가능하게 사라진다.** 현실적 방아쇠: 백신의 파일 잠금,
+    디스크 가득 참.
+    """
+    warm_store, db, _settings = store
+    for d in range(3):                                    # 08-01·08-02·08-03
+        t = BASE + d * 86400
+        db.insert_many("metrics_raw", ("ts", "cpu_total"), [(t + i, 10.0) for i in range(5)])
+        db.insert_many("gpu_metrics", ("ts", "gpu_index", "util_percent"), [(t + i, 0, 5.0) for i in range(5)])
+        db.insert_many("process_metrics", ("ts", "pid", "name", "cpu_percent"), [(t, 1, "x", 1.0)])
+    real = warm_store.export_date
+
+    def flaky(date_key, kind="metrics"):
+        if date_key == "2026-08-02" and kind == "raw_metrics":
+            raise OSError("주입: 파일 잠금")
+        return real(date_key, kind)
+
+    warm_store.export_date = flaky
+    warm_store.export_pending(BASE + 30 * 86400)
+
+    gap_start = datetime.fromisoformat("2026-08-02T00:00:00").timestamp()
+    mark = warm_store.raw_watermark()
+    # 대조: 막지 않았으면 08-03 끝까지 갔을 것이다 — 그게 아니면 이 테스트는 아무것도 안 잰다
+    assert db.query("SELECT MAX(date_key) AS d FROM warm_exports WHERE kind='raw_metrics'")[0]["d"] == "2026-08-03"
+    assert mark is not None and mark <= gap_start, (
+        f"08-02 가 안 나갔는데 워터마크가 그 뒤({datetime.fromtimestamp(mark)})까지 갔다 — 원본이 지워진다"
+    )
+
+
 # ------------------------------------------------------------------ retention 관문
 
 

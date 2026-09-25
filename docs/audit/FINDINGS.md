@@ -232,7 +232,7 @@
 - 수정비용: 중간 — 수퍼바이저가 컴포넌트별 마지막 성공 tick·연속 실패 수를 `meta`/자기계측에 남기고 `health()` 가 "멈춘 구성요소"를 한 줄로
 - 대상: `argus/runtime/supervisor.py`, `argus/runtime/selftel.py`, `argus/dashboard/data.py`, `argus/desktop/app.py`
 
-### F-015 · 영역: 데이터 보존 · 상태: 미처리
+### F-015 · 영역: 데이터 보존 · 상태: 수정됨
 - 위치: `argus/storage/warm.py:397` — `"SELECT MAX(date_key) AS d FROM warm_exports WHERE kind = ?"`
 - 요약: `raw_watermark()` 가 종류마다 **가장 늦게 내보낸 날짜(MAX)** 를 쓴다. `export_pending` 은 하루가 실패하면 로그만 남기고 다음 날짜로 가므로, 중간 날짜가 비어도 워터마크는 그 뒤까지 간다. `Retention` 은 그 워터마크까지 초 단위 원본을 지운다 → **한 번도 웜으로 나가지 않은 날의 원본이 복구 불가능하게 삭제된다.** 현실적 방아쇠: 백신의 파일 잠금으로 `temp.replace(target)` 실패, 디스크 가득 참.
 - 근거: 실측 — 격리 폴더 3일치, 09-02 raw_metrics 내보내기만 실패 주입 → 09-02 원본 SQLite 0행·웜 없음. 대조(주입 없음)에서는 09-02 가 웜으로 나감(프로브가 유효함을 확인)
@@ -242,6 +242,7 @@
 - 심각도: 높음
 - 수정비용: 작음 — 워터마크를 "빈칸 없이 이어진 마지막 날짜"로 + 프로브를 테스트로
 - 대상: `argus/storage/warm.py`, 테스트
+- 결과: `raw_watermark` 가 종류마다 "가장 늦게 나간 날" 앞의 **안 나간 날**(`exportable_dates`)을 보고 그 날 시작에서 멈춘다. 0행인 날은 `export_date` 가 기록하므로 빈칸으로 남지 않는다(워터마크가 영구히 묶이지 않는다). 실패한 날은 다음 회차에 다시 시도되고 그때 워터마크가 다시 전진한다. 프로브 FAIL → **PASS**. 테스트 `test_watermark_stops_before_a_day_that_failed_to_export` — "막지 않았으면 MAX 가 08-03" 대조를 먼저 단언, 고치기 전 빨강 확인. 되돌리는 변이(`if gaps:` → `if False:`) 빨강 확인, `mutation_sweep` 에 `warm_watermark_stops_at_gap` 등록. 웜 테스트 31 통과. **상주 재시작 필요**(수정 판 끝에 모아서)
 
 ### F-016 · 영역: 설명 정확도 · 상태: 미처리
 - 위치: `argus/decide/fusion.py:443` — `peak_row = max(rows, key=lambda r: r["cpu_total"] or 0.0)`

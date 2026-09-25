@@ -391,7 +391,7 @@ class WarmStore:
         원본은 남아야 한다 — 앞선 종류 기준으로 지우면 뒤처진 쪽은 영영 못 나간다.
         `retention._rules()` 가 롤업을 목록으로 받는 것과 같은 이유다.
         """
-        latest: list[date] = []
+        marks: list[float] = []
         for kind in RAW_KINDS:
             rows = self.db.query(
                 "SELECT MAX(date_key) AS d FROM warm_exports WHERE kind = ?", (kind,)
@@ -399,11 +399,20 @@ class WarmStore:
             if not rows or not rows[0]["d"]:
                 return None  # 한 번도 안 나간 종류가 있다. 아무것도 지우지 않는다.
             try:
-                latest.append(date.fromisoformat(rows[0]["d"]))
+                latest = date.fromisoformat(rows[0]["d"])
             except ValueError:
                 return None
-        # 내보낸 날짜의 **끝**까지가 안전하다. 그 날짜는 통째로 파일에 있다.
-        return _day_bounds(min(latest))[1]
+            # 내보낸 날짜의 **끝**까지가 안전하다. 그 날짜는 통째로 파일에 있다.
+            safe = _day_bounds(latest)[1]
+            # **단, 그 앞에 빈칸이 없을 때만.** `export_pending` 은 하루가 실패하면 로그만 남기고
+            # 다음 날짜로 가므로, MAX 만 보면 한 번도 안 나간 날을 넘어 지운다(감사 F-015 —
+            # 백신 파일 잠금·디스크 가득 참이 방아쇠). 안 나간 날의 **시작**에서 멈춘다.
+            # 0행인 날은 `export_date` 가 기록하므로 여기 빈칸으로 남지 않는다.
+            gaps = [d for d in self.exportable_dates(kind) if date.fromisoformat(d) < latest]
+            if gaps:
+                safe = min(safe, _day_bounds(date.fromisoformat(min(gaps)))[0])
+            marks.append(safe)
+        return min(marks)
 
     def _publish_raw_watermark(self) -> None:
         """원본 내보내기 진척을 `rollup_state` 에 남긴다. `retention` 이 여기를 본다."""
