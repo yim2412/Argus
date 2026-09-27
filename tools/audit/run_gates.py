@@ -28,31 +28,39 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PY = sys.executable
 
 # 2026-09-25 실측 644 passed → 감사 수정 판에서 669. 테스트를 지웠으면 이 값을 같이 내린다 — 조용히 줄면 안 된다.
-MIN_TESTS = 722
+MIN_TESTS = 730
 MIN_TOOLS = 16
 COLLECTORS = ("gpu", "network", "pdh", "process", "procsource", "proginfo", "system")
 
 
-def _run(cmd: list[str], timeout: float = 900) -> tuple[int, str]:
-    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+def _run(cmd: list[str], timeout: float = 900, extra_env: dict | None = None) -> tuple[int, str]:
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", **(extra_env or {}))
     p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", timeout=timeout, env=env)
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
 def gate_pytest() -> tuple[bool, str]:
-    rc, out = _run([PY, "-m", "pytest", "-q", "-p", "no:cacheprovider"])
+    # 가짜 APPDATA 로 돌려 테스트가 사용자 데이터 폴더에 쓰는지 본다. 2026-09-27 까지 격리가 없어
+    # 주입한 크래시가 진짜 크래시 기록에 섞였고, 사용자 settings.yaml·machine_profile.json 을 읽었다.
+    # ARGUS_DATA_DIR 을 비워야 격리가 conftest 에서 오는지를 잰다(밖에서 주면 conftest 가 없어도 통과).
+    with tempfile.TemporaryDirectory(prefix="argus_gate_appdata_") as fake:
+        env = {"APPDATA": fake, "ARGUS_DATA_DIR": ""}
+        rc, out = _run([PY, "-m", "pytest", "-q", "-p", "no:cacheprovider"], extra_env=env)
+        leaked = sorted(str(p.relative_to(fake)) for p in pathlib.Path(fake).rglob("*") if p.is_file())
     m = re.search(r"(\d+) passed", out)
     passed = int(m.group(1)) if m else 0
     failed = re.search(r"(\d+) failed", out)
-    ok = rc == 0 and passed >= MIN_TESTS and not failed
-    return ok, f"{passed} passed (하한 {MIN_TESTS}) rc={rc}" + (f" · {failed.group(0)}" if failed else "")
+    ok = rc == 0 and passed >= MIN_TESTS and not failed and not leaked
+    return ok, (f"{passed} passed (하한 {MIN_TESTS}) rc={rc}" + (f" · {failed.group(0)}" if failed else "")
+                + (f" · 사용자 데이터 폴더로 샘 {len(leaked)}: {', '.join(leaked[:3])}" if leaked else ""))
 
 
 def _script_gate(rel: str, marker: str) -> tuple[bool, str]:
