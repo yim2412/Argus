@@ -23,9 +23,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PY = sys.executable
+# 상태줄(~/.claude/statusline.sh)이 첫 줄을 띄운다. 한 건에 수 분이라 이게 없으면 멈춘 것처럼 보인다
+PROGRESS = pathlib.Path.home() / ".claude" / "bg-progress.txt"
 
 # (커밋, 사고 한 줄) — CLAUDE.md·PLAN·CHANGELOG 의 "실제로 당한 것"에서 골랐다.
 CASES = [
@@ -86,9 +89,21 @@ def _remove(dest: pathlib.Path) -> None:
                    capture_output=True)
 
 
+def _progress(i: int, n: int, commit: str, t0: float) -> None:
+    """남은 시간은 끝난 건들의 실제 평균에서 낸다 — 끝난 게 없으면 모른다고 쓴다."""
+    el = time.monotonic() - t0
+    eta = f"남음 약 {el * (n - i) / i / 60:.0f}분" if i else "남음 모름"
+    try:
+        PROGRESS.write_text(f"감사 백테스트 {i + 1}/{n}건째 ({commit}) · 경과 {el / 60:.0f}분 · {eta}\n",
+                            encoding="utf-8")
+    except OSError:
+        pass
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        # 파일로 돌리면 블록 버퍼라 끝날 때까지 로그가 비어 멈춘 것처럼 보였다
+        sys.stdout.reconfigure(encoding="utf-8", line_buffering=True)
     import argparse
 
     # argparse 가 없을 때는 `--help` 를 커밋 이름으로 읽어 "후보 0/0" 을 냈다(감사 F-009 와 같은 모양)
@@ -102,19 +117,24 @@ def main() -> int:
     cases = [c for c in CASES if not wanted or c[0] in wanted]
     base = pathlib.Path(tempfile.mkdtemp(prefix="argus_bt_"))
     caught = 0
-    for commit, story in cases:
-        before, after = base / f"{commit}_before", base / f"{commit}_after"
-        try:
-            _checkout(f"{commit}^", before)
-            _checkout(commit, after)
-            only_before = sorted(_fails(before) - _fails(after))
-        finally:
-            _remove(before)
-            _remove(after)
-        caught += bool(only_before)
-        print(f"\n{'[후보]' if only_before else '[놓침]'} {commit} — {story}")
-        for ln in only_before[:8]:
-            print(f"    {ln[:160]}")
+    t0 = time.monotonic()
+    try:
+        for i, (commit, story) in enumerate(cases):
+            _progress(i, len(cases), commit, t0)
+            before, after = base / f"{commit}_before", base / f"{commit}_after"
+            try:
+                _checkout(f"{commit}^", before)
+                _checkout(commit, after)
+                only_before = sorted(_fails(before) - _fails(after))
+            finally:
+                _remove(before)
+                _remove(after)
+            caught += bool(only_before)
+            print(f"\n{'[후보]' if only_before else '[놓침]'} {commit} — {story}")
+            for ln in only_before[:8]:
+                print(f"    {ln[:160]}")
+    finally:
+        PROGRESS.unlink(missing_ok=True)
     shutil.rmtree(base, ignore_errors=True)
     print(f"\n후보 {caught}/{len(cases)} — 후보가 정말 그 사고인지는 위 줄을 읽고 판정한다")
     return 0
