@@ -523,6 +523,19 @@ class RuleEngine(BaseDetector):
         self._since.clear()
         self._last_fired.clear()
 
+    def on_gap(self) -> None:
+        """절전 복귀. **지속 조건 시계와 쿨다운만 버리고 평소값(베이스라인)은 남긴다** (감사 F-018).
+
+        처음엔 `reset()` 으로 베이스라인까지 버렸다. 그러면 복귀 직후엔 창이 표본 60개뿐이라 이상이
+        ~60초 만에 "평소"가 되어 `for` 를 못 채웠다 — 복귀 직후 시작한 이상을 놓쳤다. 지속 시계는
+        버려야 한다("3시간 동안 조건이 참이었다"가 되면 자고 일어나자마자 알림이 터진다).
+        남긴 표본도 창(30분, 부하 축 6시간) 밖이면 다음 관측에 시각 기준으로 잘린다 — 그래서 이
+        고침은 짧은 절전에만 효과가 있다. 긴 절전까지 막는 '표본 시각 밀기'는 탐지 동작을 바꾸는
+        결정이라 하지 않았다(사용자 결정).
+        """
+        self._since.clear()
+        self._last_fired.clear()
+
     def observe(self, obs: Observation) -> Detection | None:
         # GPU 지표는 `obs.gpus` 에 장치별 리스트로 온다. 룰에서 `gpu_temp_c` 처럼
         # 평평한 이름으로 쓰게 펼쳐 준다. 규칙은 `Observation` 이 갖고 있다 —

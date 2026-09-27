@@ -40,7 +40,7 @@ def fired(reset: bool, idle_s: int) -> bool:
         eng.observe(Observation(ts=t + i, metrics={"mem_percent": 45 + (i % 7) / 7, "cpu_total": 10.0}))
     t += 1800
     if reset:
-        eng.reset()                                        # on_time_gap 이 하는 일
+        eng.on_gap()                                       # on_time_gap 이 룰 엔진에 하는 일(F-018 뒤)
     for i in range(idle_s):
         eng.observe(Observation(ts=t + i, metrics={"mem_percent": 40.0, "cpu_total": 10.0}))
     t += idle_s

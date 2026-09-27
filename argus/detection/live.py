@@ -142,7 +142,9 @@ class DetectionComponent(Component):
         직후 알림이 터진다. 실제로는 그 3시간을 보지 못했다.
         """
         for detector in self.detectors:
-            detector.reset()
+            # 탐지기가 복귀용 초기화를 따로 두면 그것을 쓴다 — 룰 엔진은 평소값을 남긴다(감사 F-018)
+            on_gap = getattr(detector, "on_gap", None)
+            (on_gap if callable(on_gap) else detector.reset)()
         if self._tail is not None:
             self._tail.skip_to_now()
         log.info("시간 공백 — 탐지 상태 초기화", extra={"gap_s": round(gap_s, 1)})

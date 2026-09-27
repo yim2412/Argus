@@ -2321,6 +2321,17 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    Mutant(
+        "time_gap_keeps_baseline",
+        "절전 복귀는 평소값을 남기고 지속 시계만 버린다 (F-018 — 버리면 복귀 직후 이상을 놓친다)",
+        (
+            (
+                "argus/detection/live.py",
+                "            (on_gap if callable(on_gap) else detector.reset)()\n",
+                "            detector.reset()  # MUTANT: 평소값까지 버린다\n",
+            ),
+        ),
+    ),
 ]
 
 

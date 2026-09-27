@@ -112,3 +112,26 @@ def test_time_gap_skips_the_backlog_instead_of_judging_it(db, clock):
     assert comp._tail.cursor == pytest.approx(T + 305, abs=1.0), "복귀했는데 꼬리가 밀린 구간 앞에 남아 있다"
     comp.tick()
     assert _signals(db) == 0
+
+
+def test_time_gap_keeps_the_rule_baseline_but_drops_sustain_clocks(db, clock):
+    """복귀 때 룰 엔진은 평소값을 남기고 지속 시계만 버린다 (감사 F-018 — 사용자 결정: 안 버리기만).
+
+    처음엔 베이스라인까지 버려, 복귀 직후엔 표본 60개뿐이라 이상이 ~60초 만에 평소가 되어 놓쳤다.
+    """
+    db.insert_many("metrics_raw", COLUMNS, _rows(T - 1900, 1900, _normal))
+    comp = _component(db)
+    engine = next(d for d in comp.detectors if d.name == "rules")
+    engine._since["가짜 룰"] = T - 100                               # 잠들기 전부터 참이던 조건
+    before = engine.baselines.readiness().get("cpu_total", 0)
+    assert before >= 60, "대조: 예열로 평소값이 서 있어야 한다"
+    clock[0] = T + 600                                               # 10분 잠듦(창 30분 안)
+    comp.on_time_gap(600.0)
+    assert engine.baselines.readiness().get("cpu_total", 0) == before, "복귀가 평소값을 버렸다"
+    assert not engine._since, "지속 시계를 안 버렸다 — 자고 일어나자마자 알림이 터진다"
+    # 복귀 1분 뒤 시작한 이상을 잡는다
+    db.insert_many("metrics_raw", COLUMNS, _rows(T + 596, 60, _normal))
+    db.insert_many("metrics_raw", COLUMNS, _rows(T + 656, 90, lambda i: 95.0))
+    clock[0] = T + 760
+    comp.tick()
+    assert _signals(db) >= 1, "복귀 직후 시작한 이상을 놓쳤다"
