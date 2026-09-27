@@ -2310,6 +2310,17 @@ MUTANTS: list[Mutant] = [
             ),
         ),
     ),
+    Mutant(
+        "explanation_baseline_is_configured",
+        "설명 쪽 '평소' 창이 detection 설정을 따른다 (F-006 — 박혀 있으면 YAML 을 고쳐도 그대로)",
+        (
+            (
+                "argus/decide/fusion.py",
+                "    peak, baselines = _peak_and_baselines(db, ts_start, ts_end, baseline=settings.baseline)\n",
+                "    peak, baselines = _peak_and_baselines(db, ts_start, ts_end)  # MUTANT: 기본값\n",
+            ),
+        ),
+    ),
 ]
 
 

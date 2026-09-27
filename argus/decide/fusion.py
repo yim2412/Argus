@@ -65,6 +65,10 @@ class FusionSettings:
     # 보다 늦게 쓰이면 탐지 시각이 이미 워터마크 뒤라 영영 안 읽혔다(감사 F-017 — 쓰기 지연 실측
     # 최악 115초). 창 밖의 오래된 미부착 신호는 되살리지 않는다.
     late_lookback_s: float = 600.0
+    # 사건 경계·최악 시점 판정의 "평소" — (창 초, 최소 표본). **탐지와 같은 값이어야 한다**:
+    # 처음엔 (1800, 60) 이 박혀 있어 `detection.baseline_window_s`·`min_samples` 를 고쳐도 설명 쪽은
+    # 그대로였다(감사 F-006, 설계 규칙 3). `__main__` 이 detection 설정을 넘긴다.
+    baseline: tuple[float, int] = (1800.0, 60)
     # 귀인 비교 창: 사건 시작 전 이만큼을 "평소"로 본다.
     before_window_s: float = 180.0
     before_margin_s: float = 30.0
@@ -77,6 +81,21 @@ class FusionSettings:
     # 채점이 쓰고, 이 값은 사용자에게 실제로 띄울지만 정한다. 기본이 꺼짐인 이유는
     # 알림이 되돌릴 수 없기 때문이다(오탐 3번이면 사용자는 알림을 끈다).
     notify_enabled: bool = False
+
+    @classmethod
+    def from_settings(cls, cfg, **overrides) -> "FusionSettings":
+        """제품 설정에서 만든다 — 상주·재분석(`rescore_incidents`)·채점(`eval`)이 **같은 값**을 쓰게.
+
+        처음엔 세 곳이 각자 필드를 골라 채워, 베이스라인 값을 넘기는 곳과 안 넘기는 곳이 갈렸다
+        (감사 F-006). 한 곳에서 흘려보낸다.
+        """
+        return cls(
+            bottleneck=cfg.bottleneck,
+            incident=cfg.incident,
+            autolabel=cfg.autolabel,
+            baseline=(cfg.detection.baseline_window_s, cfg.detection.min_samples),
+            **overrides,
+        )
 
 
 def open_incident(db: Database, signal: dict, severity: str) -> int:
@@ -248,14 +267,14 @@ def analyze_incident(
     # 문제에도 신호를 한 번만 내므로, 신호 시각을 그대로 쓰면 **5분짜리 문제가
     # "0초"로 기록된다.** 실측에서 정확히 그랬고, 그러면 사용자는 순간 스파이크로
     # 읽으며 비교 창 길이가 0 이라 원인 후보가 통째로 비어 버린다.
-    ts_start, ts_end = _refine_bounds(db, ts_start, ts_end, settings.incident)
+    ts_start, ts_end = _refine_bounds(db, ts_start, ts_end, settings.incident, settings.baseline)
 
     # 방아쇠를 **최악 시점 고르기 앞에서** 읽는다. 무엇이 울렸는지가 어느 순간을 볼지와
     # 무엇에 막혔는지의 입력이다(F-016).
     triggers, trigger_metrics, claim = _trigger_rules(db, incident_id)
 
     # 그 구간에서 가장 나빴던 시점을 병목 판정의 대상으로 삼는다.
-    peak, baselines = _peak_and_baselines(db, ts_start, ts_end)
+    peak, baselines = _peak_and_baselines(db, ts_start, ts_end, baseline=settings.baseline)
     if peak is None:
         # 원본이 이미 정리됐거나 수집이 죽어 있던 구간. 사건은 닫되 설명은 비운다 —
         # 지어내지 않는다.
@@ -279,7 +298,9 @@ def analyze_incident(
         and bottleneck.kind not in _CLAIM_WINS_OVER
         and bottleneck.kind not in bottleneck.trigger_kinds
     ):
-        alt_peak, _ = _peak_and_baselines(db, ts_start, ts_end, prefer=trigger_metrics)
+        alt_peak, _ = _peak_and_baselines(
+            db, ts_start, ts_end, prefer=trigger_metrics, baseline=settings.baseline
+        )
         if alt_peak is not None:
             alt = classify(
                 alt_peak, baselines, settings=settings.bottleneck, trigger_metrics=trigger_metrics
@@ -391,7 +412,8 @@ _BOUND_METRICS = ("cpu_total", "mem_percent", "disk_resp_ms", "disk_queue", "ctx
 
 
 def _refine_bounds(
-    db: Database, ts_start: float, ts_end: float, cfg: IncidentSettings
+    db: Database, ts_start: float, ts_end: float, cfg: IncidentSettings,
+    baseline: tuple[float, int] = (1800.0, 60),
 ) -> tuple[float, float]:
     """지표에서 사건의 실제 시작·끝을 다시 찾는다.
 
@@ -404,10 +426,10 @@ def _refine_bounds(
     """
     from ..explain.changepoint import find_onset, find_recovery
 
-    baselines = BaselineSet(window_s=1800.0, min_samples=60)
+    baselines = BaselineSet(window_s=baseline[0], min_samples=baseline[1])
     for row in db.query(
         "SELECT * FROM metrics_raw WHERE ts >= ? AND ts < ? ORDER BY ts",
-        (ts_start - 1800.0, ts_start),
+        (ts_start - baseline[0], ts_start),
     ):
         baselines.observe(
             row["ts"], {k: row[k] for k in row.keys() if k not in ("ts", "cpu_per_core")}
@@ -453,7 +475,8 @@ _LOWER_IS_WORSE = frozenset({"cpu_perf_percent", "mem_avail_mb"})
 
 
 def _peak_and_baselines(
-    db: Database, ts_start: float, ts_end: float, prefer: Sequence[str] = ()
+    db: Database, ts_start: float, ts_end: float, prefer: Sequence[str] = (),
+    baseline: tuple[float, int] = (1800.0, 60),
 ):
     """구간의 최악 시점과, 그 이전 30분으로 만든 베이스라인.
 
@@ -471,10 +494,10 @@ def _peak_and_baselines(
     if not rows:
         return None, BaselineSet()
 
-    baselines = BaselineSet(window_s=1800.0, min_samples=60)
+    baselines = BaselineSet(window_s=baseline[0], min_samples=baseline[1])
     for row in db.query(
         "SELECT * FROM metrics_raw WHERE ts >= ? AND ts < ? ORDER BY ts",
-        (ts_start - 1800.0, ts_start),
+        (ts_start - baseline[0], ts_start),
     ):
         baselines.observe(
             row["ts"], {k: row[k] for k in row.keys() if k not in ("ts", "cpu_per_core")}

@@ -1132,3 +1132,43 @@ def test_consensus_escalates_once_not_per_signal(db: Database) -> None:
     f.run_once(now=start + 60 + 15)                          # 아직 안 닫힌다(gap 120)
     sev = db.query("SELECT severity FROM incidents")[0]["severity"]
     assert sev == "warning", f"info 합의가 {sev} 까지 올랐다 — 한 단계여야 한다"
+
+
+# ---------------------------------------------------------------- 설명 쪽 베이스라인 배선 (감사 F-006)
+
+
+def test_explanation_baseline_follows_detection_settings(monkeypatch) -> None:
+    """사건 경계·최악 시점의 "평소" 창이 `detection` 설정을 따른다 — **기본값이 아닌 값으로** 잰다.
+
+    처음엔 (1800, 60) 이 박혀 있어 YAML 을 고쳐도 설명 쪽은 그대로였다. 상주·재분석·채점이 각자
+    FusionSettings 를 채우다 한 곳이 빠질 뻔했다 — `from_settings` 하나로 모았다.
+    """
+    from argus.config.loader import load_settings
+
+    monkeypatch.setenv("ARGUS_DETECTION__BASELINE_WINDOW_S", "900")
+    monkeypatch.setenv("ARGUS_DETECTION__MIN_SAMPLES", "30")
+    fs = FusionSettings.from_settings(load_settings(use_user_file=False))
+    assert fs.baseline == (900.0, 30)
+    assert FusionSettings().baseline != (900.0, 30), "대조: 코드 기본과 같으면 배선을 못 잰다"
+    for src in ("argus/__main__.py", "tools/rescore_incidents.py", "argus/eval/attribution.py"):
+        text = Path(src).read_text(encoding="utf-8")
+        assert "FusionSettings.from_settings(" in text, f"{src} 가 FusionSettings 를 따로 채운다 — 값이 갈린다"
+
+
+def test_analysis_uses_the_configured_baseline(db: Database, monkeypatch) -> None:
+    """`analyze_incident` 가 그 값을 실제로 두 판정 함수에 넘긴다."""
+    from argus.decide import fusion as fusion_mod
+
+    seen = []
+    real_refine, real_peak = fusion_mod._refine_bounds, fusion_mod._peak_and_baselines
+    monkeypatch.setattr(fusion_mod, "_refine_bounds",
+                        lambda *a, **k: (seen.append(("refine", a[4] if len(a) > 4 else k.get("baseline"))), real_refine(*a, **k))[1])
+    monkeypatch.setattr(fusion_mod, "_peak_and_baselines",
+                        lambda *a, **k: (seen.append(("peak", k.get("baseline"))), real_peak(*a, **k))[1])
+    start = time.time() - 900
+    _metrics(db, start - 100, 200)
+    _signals(db, [(start + 10, "rules", 0.8, "warning", None)])
+    f = Fusion(db, FusionSettings(baseline=(900.0, 30)))
+    f._set_watermark(start)  # noqa: SLF001
+    f.run_once(now=start + 600)
+    assert ("refine", (900.0, 30)) in seen and ("peak", (900.0, 30)) in seen, seen

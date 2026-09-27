@@ -543,12 +543,7 @@ def run(args: argparse.Namespace) -> int:
             sup.add(
                 Fusion(
                     db,
-                    FusionSettings(
-                        bottleneck=settings.bottleneck,
-                        incident=settings.incident,
-                        autolabel=settings.autolabel,
-                        notify_enabled=settings.detection.notify,
-                    ),
+                    FusionSettings.from_settings(settings, notify_enabled=settings.detection.notify),
                     budget=NotificationBudget.from_settings(settings.notify_budget),
                     notifier=tray,
                     # 발송 시점마다 다시 물어본다. 위 `notify_enabled` 는 이 창구가

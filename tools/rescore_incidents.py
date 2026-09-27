@@ -42,10 +42,7 @@ def _overlaps(lo: float, hi: float, windows: list[tuple[float, float]]) -> bool:
 def _fusion_settings() -> FusionSettings:
     """제품이 쓰는 것과 같은 판정 문턱. 기본값으로 재분석하면 config 를 고친 사용자의
     사건과 결과가 갈려, "고친 뒤 어떻게 달라지나"를 보려는 이 도구의 목적이 깨진다."""
-    cfg = load_settings()
-    return FusionSettings(
-        bottleneck=cfg.bottleneck, incident=cfg.incident, autolabel=cfg.autolabel
-    )
+    return FusionSettings.from_settings(load_settings())
 
 
 def _top(contributors) -> str:
