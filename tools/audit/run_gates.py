@@ -212,11 +212,23 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="감사 게이트")
     ap.add_argument("--skip", nargs="*", default=[], choices=list(GATES))
     args = ap.parse_args()
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    from bgprogress import Progress  # 전체는 3분 남짓 — 백그라운드로 던지면 상태줄에서 본다
+
+    todo = [(n, fn) for n, fn in GATES.items() if n not in args.skip]
+    with Progress("run_gates", "감사 게이트", len(todo), eta=False) as progress:
+        return _run_gates(GATES, args.skip, progress)
+
+
+def _run_gates(gates, skip, progress) -> int:
     results = []
-    for name, fn in GATES.items():
-        if name in args.skip:
+    done = 0
+    for name, fn in gates.items():
+        if name in skip:
             print(f"[SKIP] {name}")
             continue
+        progress.step(done, name)
+        done += 1
         t = time.monotonic()
         try:
             res = fn()

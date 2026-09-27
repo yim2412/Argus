@@ -23,12 +23,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
+
+from bgprogress import DISABLE_ENV, Progress
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 PY = sys.executable
-# 상태줄(~/.claude/statusline.sh)이 첫 줄을 띄운다. 한 건에 수 분이라 이게 없으면 멈춘 것처럼 보인다
-PROGRESS = pathlib.Path.home() / ".claude" / "bg-progress.txt"
 
 # (커밋, 사고 한 줄) — CLAUDE.md·PLAN·CHANGELOG 의 "실제로 당한 것"에서 골랐다.
 CASES = [
@@ -58,7 +57,8 @@ STEPS = [
 
 
 def _fails(tree: pathlib.Path) -> set[str]:
-    env = dict(os.environ, PYTHONPATH=str(tree), PYTHONIOENCODING="utf-8")
+    # 자식 게이트는 상태줄에 따로 줄을 띄우지 않는다 — 백테스트 한 줄이면 된다
+    env = dict(os.environ, PYTHONPATH=str(tree), PYTHONIOENCODING="utf-8", **{DISABLE_ENV: "0"})
     env.pop("ARGUS_DATA_DIR", None)
     out: set[str] = set()
     for name, args in STEPS:
@@ -89,17 +89,6 @@ def _remove(dest: pathlib.Path) -> None:
                    capture_output=True)
 
 
-def _progress(i: int, n: int, commit: str, t0: float) -> None:
-    """남은 시간은 끝난 건들의 실제 평균에서 낸다 — 끝난 게 없으면 모른다고 쓴다."""
-    el = time.monotonic() - t0
-    eta = f"남음 약 {el * (n - i) / i / 60:.0f}분" if i else "남음 모름"
-    try:
-        PROGRESS.write_text(f"감사 백테스트 {i + 1}/{n}건째 ({commit}) · 경과 {el / 60:.0f}분 · {eta}\n",
-                            encoding="utf-8")
-    except OSError:
-        pass
-
-
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         # 파일로 돌리면 블록 버퍼라 끝날 때까지 로그가 비어 멈춘 것처럼 보였다
@@ -117,10 +106,10 @@ def main() -> int:
     cases = [c for c in CASES if not wanted or c[0] in wanted]
     base = pathlib.Path(tempfile.mkdtemp(prefix="argus_bt_"))
     caught = 0
-    t0 = time.monotonic()
-    try:
+    # 한 건에 수 분 × 13건 — 이게 없으면 상태줄이 비어 멈춘 것처럼 보였다
+    with Progress("backtest", "감사 백테스트", len(cases)) as progress:
         for i, (commit, story) in enumerate(cases):
-            _progress(i, len(cases), commit, t0)
+            progress.step(i, commit)
             before, after = base / f"{commit}_before", base / f"{commit}_after"
             try:
                 _checkout(f"{commit}^", before)
@@ -133,8 +122,6 @@ def main() -> int:
             print(f"\n{'[후보]' if only_before else '[놓침]'} {commit} — {story}")
             for ln in only_before[:8]:
                 print(f"    {ln[:160]}")
-    finally:
-        PROGRESS.unlink(missing_ok=True)
     shutil.rmtree(base, ignore_errors=True)
     print(f"\n후보 {caught}/{len(cases)} — 후보가 정말 그 사고인지는 위 줄을 읽고 판정한다")
     return 0

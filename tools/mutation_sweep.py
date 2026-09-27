@@ -2414,9 +2414,10 @@ class Result:
     seconds: float = 0.0
 
 
-def sweep(targets: list[Mutant]) -> list[Result]:
+def sweep(targets: list[Mutant], progress) -> list[Result]:
     results: list[Result] = []
     for i, mutant in enumerate(targets, 1):
+        progress.step(i, mutant.key)  # 기준선이 첫 단위라 i 개가 끝난 상태
         originals = {p: p.read_text(encoding="utf-8") for p in mutant.paths()}
         started = time.time()
         print(f"\n[{i}/{len(targets)}] {mutant.key} — {mutant.rule}", flush=True)
@@ -2464,7 +2465,18 @@ def main() -> int:
             print(f"  {key}: {rel} ({count}회)")
         return 2
 
+    sys.path.insert(0, str(ROOT / "tools" / "audit"))
+    from bgprogress import Progress
+
+    # 상태줄 진행 줄. 단위는 기준선 + 변이 N + 복원 확인 — 앞뒤 pytest 도 1분 남짓이라
+    # 변이만 세면 그동안 상태줄이 비어 멈춘 것처럼 보인다(2026-09-27 실측)
+    with Progress("mutation_sweep", "변이 스윕", len(targets) + 2) as progress:
+        return _run_sweep(targets, progress)
+
+
+def _run_sweep(targets: list[Mutant], progress) -> int:
     # 무력화 전에 기준을 잡는다. 여기서 이미 빨간불이면 스윕 결과를 읽을 수 없다.
+    progress.step(0, "기준선")
     clear_pycache()
     print("기준선 (무력화 없음) …", flush=True)
     failing, summary, _ = run_pytest()
@@ -2473,7 +2485,7 @@ def main() -> int:
         print("[중단] 무력화 전부터 테스트가 실패한다. 먼저 그것부터 고친다.")
         return 1
 
-    results = sweep(targets)
+    results = sweep(targets, progress)
 
     print("\n" + "=" * 72)
     print(f"{'대상':22} {'결과':10} 규칙")
@@ -2507,6 +2519,7 @@ def main() -> int:
     # 그 상태로 감사하면 검사할 `.pyc` 가 하나도 없어 "검사한 모듈 0개 [OK]" 가 나온다.
     # 아무것도 보지 않고 통과하는 검사다 — 첫 실행(2026-08-03)이 실제로 그랬다.
     # 복원된 소스로 한 번 컴파일시킨 뒤 그 캐시를 소스와 대조해야 의미가 생긴다.
+    progress.step(len(targets) + 1, "복원 확인")
     print("\n복원 확인 (캐시를 다시 만든다) …", flush=True)
     failing, summary, _ = run_pytest()
     print(f"  {summary}", flush=True)
