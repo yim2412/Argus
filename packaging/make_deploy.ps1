@@ -64,6 +64,14 @@ foreach ($f in @("install_autostart.ps1", "argus_task.xml", "argus_snapshot_task
 }
 Copy-Item (Join-Path $Root "packaging\settings.quiet-observer.yaml") $To -Force
 
+# 라이선스·제3자 고지 — 배포물에 하나도 없었다(2026-09-25 감사 F-011). PySide6/Qt 는 LGPL-3,
+# pyarrow 는 NOTICE 를 요구한다. 고지는 tools\third_party_notices.py 가 설치된 패키지에서 만든다.
+foreach ($f in @("LICENSE", "packaging\THIRD_PARTY_NOTICES.txt")) {
+    $src = Join-Path $Root $f
+    if (-not (Test-Path $src)) { Fail "배포물에 실을 고지가 없습니다: $f`n    .venv\Scripts\python.exe tools\third_party_notices.py" }
+    Copy-Item $src $To -Force
+}
+
 # ── 현장에서 돌릴 한 방 스크립트 ────────────────────────────────────────────
 $installer = @"
 <#

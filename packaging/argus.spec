@@ -35,6 +35,9 @@ datas = [
     (os.path.join(PROJECT, "argus", "config", "rules.yaml"), "config"),
     (os.path.join(PROJECT, "argus", "storage", "migrations"), "storage/migrations"),
     (ICON, "assets"),
+    # 라이선스·제3자 고지(2026-09-25 감사 F-011) — 고지는 tools/third_party_notices.py 가 만든다
+    (os.path.join(PROJECT, "LICENSE"), "."),
+    (os.path.join(PROJECT, "packaging", "THIRD_PARTY_NOTICES.txt"), "."),
 ]
 
 # PDH·NVML 은 문자열로 늦게 import 되는 자리가 있어 정적 분석에 안 잡힐 수 있다.
