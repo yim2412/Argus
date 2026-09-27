@@ -110,6 +110,21 @@ def make(survivors: pathlib.Path, out: pathlib.Path) -> int:
     control = dict(jobs[0], id="ctrl", where="(대조: 뒤집지 않음)")
     control["cmd"] = 'cd "{slot}/src" && ' + control["cmd"].split(" || exit 0; ", 1)[1]
     jobs.insert(0, control)
+    # **양성 대조 — 반드시 잡혀야 하는 변이.** 2026-09-25 재확인이 87개 전부 survived 였을 때,
+    # 하네스가 변이를 실제로 적용하는지(사본이 아니라 원본을 불러오지 않는지)를 손으로 확인해야
+    # 했다. 전부 생존은 극단값이라 도구부터 의심해야 하는데, 그 의심을 도구가 스스로 풀게 한다.
+    pos_rel = "argus/decide/fusion.py"
+    pos_text = 'if signal["ts"] - last_ts > self.settings.gap_s:'
+    pos_lines = [i for i, line in enumerate((ROOT / pos_rel).read_text(encoding="utf-8").splitlines(), 1)
+                 if line.strip() == pos_text]
+    if len(pos_lines) == 1:
+        pos = dict(jobs[1], id="pos", where=f"(양성 대조: {pos_rel}:{pos_lines[0]})")
+        esc = pos_text.replace('"', '\\"')
+        pos["cmd"] = (f'cd "{{slot}}/src" && "{py}" "{me}" apply --root . --file "{pos_rel}" '
+                      f'--line {pos_lines[0]} --expect "{esc}" || exit 0; ' + pos["cmd"].split(" || exit 0; ", 1)[1])
+        jobs.insert(1, pos)
+    else:
+        print(f"[경고] 양성 대조 줄을 {len(pos_lines)}개 찾았다 — 대조 없이 만든다")
     out.mkdir(parents=True, exist_ok=True)
     (out / "jobs.json").write_text(
         json.dumps({"workdir": _posix(out / "slots"), "jobs": jobs}, ensure_ascii=False, indent=1),
@@ -133,16 +148,25 @@ def collect(out: pathlib.Path) -> int:
             continue
         verdicts.setdefault(v[-1], []).append(job["where"])
     ctrl = next((k for k, v in verdicts.items() if "(대조: 뒤집지 않음)" in v), None)
+    pos_where = next((j["where"] for j in mine if j.get("id") == "pos"), None)
+    pos = next((k for k, v in verdicts.items() if pos_where in v), None) if pos_where else None
     for v in verdicts.values():
-        if "(대조: 뒤집지 않음)" in v:
-            v.remove("(대조: 뒤집지 않음)")
-    total = len(mine) - 1
-    print(f"대조: {ctrl or '판정 없음'} (survived 여야 한다)")
+        for w in ("(대조: 뒤집지 않음)", pos_where):
+            if w in v:
+                v.remove(w)
+    total = len(mine) - 1 - (1 if pos_where else 0)
+    print(f"대조: {ctrl or '판정 없음'} (survived 여야 한다)"
+          + (f" · 양성 대조: {pos or '판정 없음'} (caught 여야 한다)" if pos_where else " · 양성 대조 없음(옛 jobs.json)"))
     print(f"변이 {total} · " + " · ".join(f"{k} {len(v)}" for k, v in sorted(verdicts.items()))
-          + f" · 판정 없음 {len(missing)}")
+          + f" · 판정 없음 {len(missing) - (1 if pos_where in missing else 0)}")
     if ctrl != "survived":
         print("[FAIL] 대조가 survived 가 아니다 — 슬롯 환경이 깨졌다. 아래 결과는 무효")
         return 1
+    if pos_where and pos != "caught":
+        print("[FAIL] 양성 대조가 caught 가 아니다 — 변이가 실제로 적용·측정되지 않는다. 아래 결과는 무효")
+        return 1
+    if pos_where in missing:
+        missing.remove(pos_where)
     for where in sorted(verdicts.get("survived", [])):
         print(f"  [survived] {where}")
     for where in sorted(verdicts.get("apply-failed", [])):
