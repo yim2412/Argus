@@ -89,7 +89,16 @@ def _remove(dest: pathlib.Path) -> None:
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    wanted = sys.argv[1:]
+    import argparse
+
+    # argparse 가 없을 때는 `--help` 를 커밋 이름으로 읽어 "후보 0/0" 을 냈다(감사 F-009 와 같은 모양)
+    ap = argparse.ArgumentParser(description="감사 도구를 과거 사고(수정 직전·수정 커밋)로 채점한다")
+    ap.add_argument("commits", nargs="*", help="이 커밋만 (기본: 표의 전부)")
+    wanted = ap.parse_args().commits
+    unknown = sorted(set(wanted) - {c[0] for c in CASES})
+    if unknown:
+        print(f"[FAIL] 표에 없는 커밋: {', '.join(unknown)}")
+        return 2
     cases = [c for c in CASES if not wanted or c[0] in wanted]
     base = pathlib.Path(tempfile.mkdtemp(prefix="argus_bt_"))
     caught = 0

@@ -34,7 +34,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 PY = sys.executable
 
 # 2026-09-25 실측 644 passed → 감사 수정 판에서 669. 테스트를 지웠으면 이 값을 같이 내린다 — 조용히 줄면 안 된다.
-MIN_TESTS = 688
+MIN_TESTS = 722
 MIN_TOOLS = 16
 COLLECTORS = ("gpu", "network", "pdh", "process", "procsource", "proginfo", "system")
 
@@ -80,10 +80,18 @@ def gate_tools_import() -> tuple[bool, str]:
     return ok, f"{len(tools)}개 (하한 {MIN_TOOLS})" + ("" if not bad else " · " + " | ".join(bad))
 
 
+# argparse 없이 둘 수 있는 도구 — **사유 필수.** 없으면 `--help` 가 무시되고 본 동작을 한다
+# (감사 F-009: make_icon.py --help 가 아이콘을 다시 썼다).
+NO_ARGPARSE_OK = {
+    "soak_entry.py": "상주 진입점 — 인자를 argus 의 argparse 로 넘겨 --help 는 사용법만 찍는다",
+}
+
+
 def gate_tools_help() -> tuple[bool, str]:
-    tools = [p for p in sorted((ROOT / "tools").glob("*.py"))
-             if "ArgumentParser" in p.read_text(encoding="utf-8")]
-    bad = []
+    all_tools = [p for p in sorted((ROOT / "tools").glob("*.py")) if "__main__" in p.read_text(encoding="utf-8")]
+    tools = [p for p in all_tools if "ArgumentParser" in p.read_text(encoding="utf-8")]
+    bad = [f"{p.name} argparse 없음" for p in all_tools
+           if p not in tools and p.name not in NO_ARGPARSE_OK]
     for p in tools:
         rc, out = _run([PY, str(p.relative_to(ROOT)), "--help"], timeout=120)
         if rc != 0 or "usage:" not in out:
@@ -99,6 +107,69 @@ def gate_collectors() -> tuple[bool, str]:
         if rc != 0 or not last or not last[-1].startswith("[OK]"):
             bad.append(name)
     return not bad, f"{len(COLLECTORS)}개" + ("" if not bad else " · FAIL " + ", ".join(bad))
+
+
+# DB 를 쓰는 도구의 **안전한 호출**(미리보기·읽기 전용). 합성 DB 위에서 본체까지 돌린다.
+DRYRUN_TOOLS = {
+    "autolabel_backfill.py": [],                     # 기본이 미리보기(--apply 없이는 안 쓴다)
+    "backfill_rollup.py": [],                        # 기본이 미리보기
+    "rescore_incidents.py": ["--hours", "48"],       # 읽기 전용
+    "grade_probe.py": [],                            # 읽기 전용
+    "inject_progress.py": [],                        # 읽기 전용
+    "readiness.py": [],                              # 읽기 전용
+    "eval_snapshot.py": ["list"],
+    "fault_injector.py": ["--dry-run", "cpu_spin", "--duration", "5"],   # 부하도 라벨도 없다
+}
+_SYNTH_DB = r'''
+import time, json
+from argus.storage.hot import Database
+from argus.paths import db_path
+t = time.time() - 3600
+with Database(db_path()) as db:
+    db.insert_many("metrics_raw", ("ts", "cpu_total", "mem_percent", "disk_resp_ms"),
+                   [(t + i, 10.0 + i % 5, 40.0, 1.0) for i in range(600)])
+    db.insert_many("process_metrics", ("ts", "pid", "name", "cpu_percent", "rss_mb", "handles"),
+                   [(t + i, 10, "python", 5.0, 100.0 + i, 400) for i in range(0, 600, 5)])
+    db.insert_many("anomaly_signals", ("ts", "detector", "score", "severity", "features"),
+                   [(t + 300, "rules", 0.8, "warning", json.dumps({"rule": "CPU 과부하", "evidence": {"cpu_total": 90}}))])
+    with db._lock:
+        cur = db.conn.execute(
+            "INSERT INTO incidents (ts_start, ts_end, severity, title, detectors, signal_count, peak_score, notified)"
+            " VALUES (?, ?, 'warning', 'CPU 병목 — python 100%', '[\"rules\"]', 1, 0.8, 1)", (t + 300, t + 360))
+        db.conn.execute("INSERT INTO incident_signals (incident_id, ts, detector, score) VALUES (?, ?, 'rules', 0.8)",
+                        (cur.lastrowid, t + 300))
+        db.conn.commit()
+print("synth-ok")
+'''
+
+
+def gate_tools_dryrun() -> tuple[bool, str]:
+    """DB 도구를 합성 DB 위에서 **본체까지** 돌린다 (감사 F-008).
+
+    임포트·`--help` 게이트는 호출 시점의 시그니처 드리프트를 못 잡는다 — af73bf7 에서 `judge()` 에
+    `observer` 가 필수가 되자 `autolabel_backfill` 이 실행 즉시 TypeError 였고 테스트는 전부 초록,
+    하루 동안 자동 판정이 멈춘 것이 아무 데도 안 보였다. 합성 DB 에 **알림이 나간 닫힌 사건**을
+    넣어 판정 경로를 실제로 탄다. 격리 데이터 폴더라 실제 DB 는 안 건드린다.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="gate_dryrun_") as d:
+        env = dict(os.environ, ARGUS_DATA_DIR=d, ARGUS_NO_NOTIFY="1", PYTHONIOENCODING="utf-8")
+        made = subprocess.run([PY, "-c", _SYNTH_DB], cwd=ROOT, env=env, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=120)
+        if made.returncode != 0 or "synth-ok" not in made.stdout:
+            return False, "합성 DB 를 못 만들었다: " + (made.stderr or made.stdout)[-200:]
+        bad = []
+        for tool, args in DRYRUN_TOOLS.items():
+            if not (ROOT / "tools" / tool).exists():
+                bad.append(f"{tool} 없음")
+                continue
+            r = subprocess.run([PY, str(ROOT / "tools" / tool), *args], cwd=ROOT, env=env, capture_output=True,
+                               text=True, encoding="utf-8", errors="replace", timeout=300)
+            out = (r.stdout or "") + (r.stderr or "")
+            if r.returncode not in (0, 1) or "Traceback" in out:
+                bad.append(f"{tool} rc={r.returncode}")
+    return not bad, f"{len(DRYRUN_TOOLS)}개" + ("" if not bad else " · FAIL " + ", ".join(bad))
 
 
 def gate_sweep_anchors() -> tuple[bool, str]:
@@ -128,6 +199,7 @@ GATES = {
     "golden": lambda: _script_gate("tools/audit/golden_replay.py", "[OK] golden_replay"),
     "pyc_audit": lambda: _script_gate("tools/pyc_audit.py", "[OK]"),
     "sweep_anchors": gate_sweep_anchors,
+    "tools-dryrun": gate_tools_dryrun,
     "tools-import": gate_tools_import,
     "tools-help": gate_tools_help,
     "collectors": gate_collectors,

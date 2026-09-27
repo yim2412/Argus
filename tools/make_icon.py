@@ -73,7 +73,14 @@ def build(out: Path) -> Path:
 
 
 if __name__ == "__main__":
-    target = Path(__file__).resolve().parent.parent / "argus" / "assets" / "argus.ico"
+    import argparse
+
+    # **argparse 를 둔다.** 없을 때 `--help` 가 무시되고 아이콘을 다시 썼다(감사 F-009) — 쓰기가 있는
+    # 도구는 `--help` 에서 아무것도 건드리면 안 된다.
+    default = Path(__file__).resolve().parent.parent / "argus" / "assets" / "argus.ico"
+    ap = argparse.ArgumentParser(description="앱 아이콘(.ico)을 다시 그린다 — 결정론이라 같은 파일이 나온다")
+    ap.add_argument("--out", type=Path, default=default, help=f"쓸 곳 (기본: {default})")
+    target = ap.parse_args().out
     try:
         build(target)
     except ImportError:

@@ -448,6 +448,10 @@ def _axis_supply_stall(kinds: list[str], axis: str, days: dict[str, Day]) -> str
 
 
 def main() -> int:
+    import argparse
+
+    # 읽기만 하지만 도구 규약을 맞춘다 — argparse 가 없으면 `--help` 가 무시되고 본 동작을 한다(감사 F-009)
+    argparse.ArgumentParser(description="데이터 대기 중인 작업을 지금 시작해도 되는지 판정한다(읽기 전용)").parse_args()
     days = _days()
     if not days:
         print("[대기] 롤업 데이터가 아직 없다. 상주 인스턴스가 도는지 먼저 확인할 것.")

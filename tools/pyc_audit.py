@@ -39,7 +39,12 @@ def cached_consts(pyc: pathlib.Path) -> set:
 
 
 def main() -> int:
-    roots = [pathlib.Path(p) for p in (sys.argv[1:] or ["argus", "tools"])]
+    import argparse
+
+    # argparse 가 없을 때는 `--help` 를 검사할 경로로 읽었다(감사 F-009)
+    ap = argparse.ArgumentParser(description="소스와 __pycache__ 의 모듈 상수가 어긋났는지 검사한다")
+    ap.add_argument("roots", nargs="*", default=["argus", "tools"], help="검사할 폴더 (기본: argus tools)")
+    roots = [pathlib.Path(p) for p in ap.parse_args().roots]
     stale: list[tuple[str, str, object]] = []
     checked = 0
 
