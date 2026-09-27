@@ -24,15 +24,16 @@ UI 는 시스템 트레이 + 네이티브 창(PySide6).
 | `collector/` | psutil·PDH·NVML 로 리소스를 읽는다 | 수집기 하나가 죽어도 나머지는 계속돼야 한다. `procsource` 가 전 프로세스를 한 번에 가져온다 |
 | `storage/` | 핫(SQLite) + 웜(Parquet/DuckDB) | **장기 데이터는 `history` 를 거친다.** SQLite 만 읽으면 이틀치뿐이다 |
 | `detection/` | "평소와 다름"을 신호로 | `baseline`(중앙값/MAD) 위에 `rules`(전역)·`procleak`(프로세스별 + **이름으로 묶은 그룹 축**). 룰 표현식은 `expr` 이 `eval()` 없이 평가한다 |
-| `decide/` | 신호 → 사건, 무엇을 알릴지 | `fusion` 이 신호를 사건 하나로 접고, `budget`·`suppression` 이 알림 양을 막는다. `severity` 가 등급을 두 축(현재 손실·위험)으로 매긴다 |
+| `decide/` | 신호 → 사건, 무엇을 알릴지 | `fusion` 이 신호를 사건 하나로 접고, `budget`·`suppression` 이 알림 양을 막는다. `severity` 는 **위험 축**(누수의 지문 대비 위치)만 쓴다 — 현재 손실 축은 2026-08-09 기각(`docs/DONE.md` §10), `combine`·`clock_loss_impact` 는 `tools/grade_probe.py` 만 부른다 |
 | `explain/` | "왜 느렸는지" | `bottleneck`(무엇에 막혔나) → `attribution`(누가 가져갔나) → `report`(문장). `changepoint` 가 시작 시각을 찾는다 |
 | `eval/` | 리플레이 + 채점 | `python -m argus.eval`. 탐지기를 건드렸으면 여기를 돌린다 |
-| `runtime/` | 스레드·자기예산·자기계측 | `budget` 이 예산 초과 시 스스로 샘플링을 낮춘다 — **RSS 는 큐 적체·표본 유실이 동반될 때만** 건다(2026-08-25). `heapcensus` 가 파이썬 힙에 무엇이 쌓이는지 5분마다 센다 |
+| `report/` | 일일 생산성 리포트 ("어제 무엇을 했나") | **이상탐지와 별개 트랙** — `detection/`·`decide/` 를 읽지도 쓰지도 않는다. `builder` 가 하루를 접고(`daily_report`, 롤업 기반 `_RollupBase`), `data` 가 조회한다(UI 를 모른다) |
+| `runtime/` | 스레드·자기예산·자기계측 | `budget` 이 예산 초과 시 스스로 샘플링을 낮춘다 — **RSS 는 큐 적체·표본 유실이 동반될 때만** 건다(2026-08-25). `heapcensus` 가 파이썬 힙에 무엇이 쌓이는지 5분마다 센다. 수퍼바이저가 컴포넌트 건강(ok·failing·stale·setup_failed·dead·degraded)을 `%APPDATA%\Argus\components.json` 에 남기고 창이 "멈춘 구성요소"로 보인다(2026-09-25 감사 F-014) |
 | `machine/` | 이 PC 의 능력·성능 기준 | 절대 임계값 대신 여기 값을 기준으로 상대화한다 |
 | `ui/` | 트레이 아이콘 + 풍선 알림 | `Shell_NotifyIcon` 직접(의존성 0). 알림 전달자 규약은 `notify(title, message, severity, incident_id=None) -> bool` 하나뿐. `incident_id` 는 풍선을 눌렀을 때 열 사건이다 |
 | `desktop/` | 네이티브 창 (PySide6) | `python -m argus.desktop.app`. **상주와 별도 프로세스** — 창이 죽어도 수집은 계속된다. 검증은 `--seconds N` 이 그린 표본 수로 |
 | `dashboard/` | **조회 계층** (이름만 대시보드로 남았다) | `data.py`(조회)·`theme.py`(색)뿐. UI 독립(`ttl_cache`)이라 창이 그대로 쓴다. Streamlit 판은 2026-08-09 에 삭제 |
-| `config/` | `defaults.yaml` + `rules.yaml` | 임계값이 코드에 박혀 있으면 규칙 3 위반이다 |
+| `config/` | `defaults.yaml` + `rules.yaml` | 임계값이 코드에 박혀 있으면 규칙 3 위반이다. 사용자 `settings.yaml` 은 **주석 템플릿**(+`config_version`) — 전체 사본은 업데이트된 기본값을 막았다(옛 사본은 `tools\settings_prune.py`). 사용자 `rules.yaml` 은 동봉본을 통째로 대체하고, 틀렸으면 기본 룰로 돌며 창에 드러낸다(2026-09-25 감사) |
 | `tools/` | 단독 실행 도구 | `fault_injector`(결함 주입) · `ramp_replay`(느린 누수를 제품 탐지기에 리플레이 — 주입 전에 먼저 묻는다) · `inject_progress`(주입 진행·판정) · `eval_snapshot`(평가 입력 고정) · `rescore_incidents`(사건 재분석) · `readiness`(착수 판정) · `pyc_audit`(캐시 검사) · `mutation_sweep`(규칙 무력화 측정). **전체 목록은 `tools/README.md`** |
 
 **실시간과 리플레이는 같은 경로를 쓴다**(`detection/live.py`, `detection/replay_source.py`).
@@ -109,7 +110,10 @@ UI 는 시스템 트레이 + 네이티브 창(PySide6).
 3. **수치 없이 모델을 추가하지 않는다.** 새 탐지기는 리플레이 + 결함주입 스코어보드에서
    기존 대비 개선을 **입증한 뒤에만** 채택한다. 개선이 없으면 복잡도 비용만 남으므로 넣지 않는다.
 
-4. **부트스트랩 기간에는 탐지하지 않는다.** 베이스라인이 설 때까지(초기 2시간)는 수집만 한다.
+4. **베이스라인이 서기 전에는 탐지하지 않는다.** 문턱은 시간이 아니라 **표본 수**다
+   (`detection.min_samples`, 기본 60). 재시작 때는 DB 의 최근 30분으로 즉시 채운다(예열 —
+   `DetectionComponent.setup` 의 `warm`). 처음 적었던 "초기 2시간은 수집만"은 PLAN:441 에서
+   폐지됐다 — PC 를 켤 때마다 2시간을 기다리게 된다. (2026-09-25 감사 F-010 에서 고침)
 
 5. **사용자 룰 파일의 표현식은 `eval()` 금지.** AST 화이트리스트 파서로 평가한다.
 

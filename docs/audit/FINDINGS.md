@@ -9,9 +9,12 @@
 > - 이력: `[신규]` / `[기존]`(계획서·CHANGELOG·DONE 에 이미 있음). 정지 규칙은 `[신규]` 만 센다.
 > - 상태: `미처리` · `수정중` · `수정됨` · `기각` · `판단 필요`
 
-## ▶ 재개 지점 (2026-09-25 17:00 — **합의 받음, 3단계(수정 판) 진행 중**)
+## ▶ 재개 지점 (2026-09-27 — **감사 끝.** 29건 전부 `수정됨`, 보고서 `REPORT.md`)
 
-**지금 단계: 2단계(분석) 끝 → 두 번째 멈춤.** 코드는 한 줄도 안 고쳤다(감사 도구 `~/.claude/tools/pool.js` 는
+**재개할 것 없음.** 남은 사각·후속은 `REPORT.md` "재지 않은 것 · 알려진 사각". 아래는 분석 끝(두 번째 멈춤)
+시점의 기록이라 고치지 않는다.
+
+**(당시) 2단계(분석) 끝 → 두 번째 멈춤.** 코드는 한 줄도 안 고쳤다(감사 도구 `~/.claude/tools/pool.js` 는
 고쳤다 — 측정이 결과를 버리고 있었다, `ef4511f`). 합의를 받으면 아래 순서대로 3단계(수정 판)를 무인으로 간다.
 끝난 것: 0단계 설계 · 1단계 안전망(`8f3f7d8`) · 대장 F-001~F-029 · 변이 수집(스윕 F-024 · if-py F-025, 양성 대조로
 하네스 확인) · 독립 리뷰 14건 판정 · 남은 영역(트레이 UI · 리소스 누수 · 인코딩 CP949 흉내).
@@ -126,7 +129,7 @@
 - 대상: `argus/detection/rules.py`
 - 결과: 로드 시점에 지표 이름을 **스키마에서 뽑은 목록**(`known_metrics()` — 마이그레이션을 메모리 DB 에 적용해 `metrics_raw` + `gpu_` 컬럼, 31개)과 대조해 없으면 `RuleError("없는 지표: …")`. 목록을 따로 두면 스키마와 어긋나 그 자체가 새 사각이 된다. 동봉 룰 10개 통과. 테스트: 오타(`cpu_totl`) 거절 · 대조(있는 지표 통과). 변이 `unknown_metric_is_rejected` 빨강
 
-### F-005 · 영역: UI · 상태: 미처리
+### F-005 · 영역: UI · 상태: 수정됨
 - 위치: `argus/config/rules.yaml` — `CPU 과부하` 룰 `explain: "CPU {cpu_total}% 로 45초 이상 지속 …"` / `for: 30s`
 - 요약: 사용자에게 가는 알림 문장이 "45초 이상 지속"이라 말하는데 실제 발화 조건은 30초다. 주석(“45초로 잡았더니 … 놓쳤다”)대로 `for` 만 내리고 문장을 안 고쳤다.
 - 근거: 실측 — 전 룰의 `explain` 속 시간과 `for` 대조: 10개 중 1개 불일치
@@ -136,8 +139,9 @@
 - 심각도: 중간 (사용자가 보는 문장이 사실과 다르다 — 설명이 산출물이라는 탐지 규칙 2)
 - 수정비용: 작음 + 재발 방지로 정적 검사 1개
 - 대상: `argus/config/rules.yaml`, `tools/audit/static_scan.py` 또는 테스트
+- 결과: 「CPU 과부하」 문장을 30초로 고쳤다. 재발 방지는 정적 검사 대신 **테스트**로 — `tests/test_rules_explain.py` 가 동봉 룰마다 문장 속 시간(초·분)이 `for` 와 같은지 본다(파서가 시간을 읽는다는 대조 포함). 문장을 되돌리면 빨강. 프로브 p005 FAIL → PASS
 
-### F-006 · 영역: 설정 배선 · 상태: 미처리
+### F-006 · 영역: 설정 배선 · 상태: 수정됨
 - 위치: `argus/decide/fusion.py:381`, `:434` — `baselines = BaselineSet(window_s=1800.0, min_samples=60)`
 - 요약: 사건 경계·최악 시점 계산의 베이스라인 창/표본 수가 코드에 박혀 있다. `detection.baseline_window_s`·`min_samples` 를 YAML 에서 바꿔도 **설명 쪽은 안 바뀐다**(규칙 3). 창 앞 조회도 `ts_start - 1800.0` 으로 같이 박혀 있다.
 - 근거: 인용
@@ -147,6 +151,7 @@
 - 심각도: 중간
 - 수정비용: 작음
 - 대상: `argus/decide/fusion.py`, `argus/config/loader.py`
+- 결과: `FusionSettings.baseline`(창 초, 최소 표본)을 두고 `_refine_bounds`·`_peak_and_baselines` 가 그 값을 쓴다. 설정에서 만드는 곳이 셋(상주 `__main__`·재분석 `tools/rescore_incidents`·채점 `eval/attribution`)으로 흩어져 필드를 각자 골라 채우고 있었다 — `FusionSettings.from_settings(cfg)` 하나로 모아 셋 다 그걸 쓴다. 테스트: 기본값이 아닌 값(900·30)이 설정에서 온다(코드 기본과 다르다는 대조) · 세 곳이 `from_settings` 를 쓴다 · `analyze_incident` 가 두 판정 함수에 그 값을 넘긴다. 되돌리는 변이 `explanation_baseline_is_configured` 빨강. **상주 재시작 필요**
 
 ### F-007 · 영역: 설정 배선 · 상태: 수정됨
 - 위치: `argus/config/loader.py` — 모든 설정 모델 (pydantic 기본 `extra="ignore"`)
@@ -160,7 +165,7 @@
 - 대상: `argus/config/loader.py`
 - 결과: `unknown_keys()` 가 사용자 settings.yaml 을 설정 모델과 대조해 모르는 키 경로를 모은다(하위 모델은 들어가 보고, `load_gates` 같은 임의 이름 매핑은 안 본다). **막지 않는다**(은퇴한 키가 기동을 막으면 안 된다 — 하위호환) — 상주 로그 경고 + 창 상태 줄 **"설정 확인이 필요합니다 — settings.yaml 의 모르는 키(무시됨): …"**(F-003 과 같은 자리). `config_fuzz.py` 가 이제 오타를 `warned` 로 가른다 → **crash+silent 22 → 0**(룰 쪽도 F-003·004 로 0). 테스트: 대조(템플릿엔 모르는 키 없음) · 오타가 기동을 안 막음 · 모르는 키 정확히 둘 · 창 문구. 되돌리는 변이 `unknown_config_keys_are_reported` 빨강. **상주 재시작 필요**
 
-### F-008 · 영역: 도구 배선 · 상태: 미처리
+### F-008 · 영역: 도구 배선 · 상태: 수정됨
 - 위치: 안전망 전체 (`tools/audit/run_gates.py` `tools-import`·`tools-help`)
 - 요약: `tools/` 의 시그니처 드리프트는 **호출 시점**에 터진다(af73bf7: `judge()` 에 `observer` 필수 → 실행 즉시 `TypeError`). 임포트·`--help` 게이트는 그걸 못 잡는다. 백테스트에서 놓침.
 - 근거: 실측 — af73bf7^ 트리에서 게이트 초록, 도구 실행은 `TypeError: judge() missing 1 required keyword-only argument: 'observer'`
@@ -170,8 +175,9 @@
 - 심각도: 중간
 - 수정비용: 중간 — 도구마다 **합성 DB 위의 미리보기(dry-run)** 를 게이트에 넣는다. 쓰기가 있는 도구는 미리보기 경로가 있어야 한다
 - 대상: `tools/audit/run_gates.py`, 해당 도구들
+- 결과: 게이트 `tools-dryrun` — 격리 데이터 폴더에 합성 DB(마이그레이션 + 표본·프로세스·신호 + **알림이 나간 닫힌 사건**)를 만들고, DB 를 쓰는 도구 8개를 **안전한 호출**(미리보기·읽기 전용: autolabel_backfill·backfill_rollup 은 기본 미리보기, rescore·grade_probe·inject_progress·readiness 는 읽기 전용, eval_snapshot list, fault_injector --dry-run)로 본체까지 돌려 rc·트레이스백을 본다. **백테스트**: 제품 `autolabel.evaluate` 에 필수 인자를 넣어 af73bf7 과 같은 드리프트를 흉내 내자 새 게이트는 `autolabel_backfill.py rc=1` 로 빨강, 기존 import 게이트는 초록(18개) — 사각이 정확히 메워진다. 돌지 않는 도구: `ramp_replay`(수 분 리플레이)·`replay_day`(웜 파일 필요)·`mutation_sweep` — 합성 DB 로 의미 있게 못 돈다
 
-### F-009 · 영역: 위생 · 상태: 미처리
+### F-009 · 영역: 위생 · 상태: 수정됨
 - 위치: `tools/make_icon.py` · `tools/readiness.py` · `tools/soak_entry.py` · `tools/pyc_audit.py`
 - 요약: argparse 가 없어 `--help` 를 무시하고 **본 동작을 한다.** 감사 중 `make_icon.py --help` 가 `argus/assets/argus.ico` 를 다시 썼다(결정론이라 diff 는 없었다). `soak_entry` 는 상주 진입점이라 `--help` 가 상주를 띄울 수 있다(확인 안 함 — 이번엔 인자 파서가 argus 쪽이라 usage 가 떴다).
 - 근거: 실측(make_icon) / 인용(나머지)
@@ -181,8 +187,9 @@
 - 심각도: 낮음
 - 수정비용: 작음
 - 대상: 위 4개 도구
+- 결과: argparse 가 없던 도구 넷 중 셋에 붙였다 — `make_icon`(--out, --help 에서 아이콘을 안 건드리는 것 확인 · 평소 실행은 같은 파일) · `pyc_audit`(검사 폴더를 위치 인자로 — 전엔 --help 를 경로로 읽었다) · `readiness`(읽기 전용이지만 규약). `soak_entry` 는 인자를 argus 의 argparse 로 넘겨 --help 에 사용법만 찍으므로 둔다. 재발 방지: 게이트 `tools-help` 가 `__main__` 이 있는 도구 중 argparse 가 없는 것을 FAIL 로 — 예외는 사유 필수 허용 목록(`soak_entry` 하나). 허용 목록을 비우면 FAIL 나는 것 확인
 
-### F-010 · 영역: 위생 · 상태: 미처리
+### F-010 · 영역: 위생 · 상태: 수정됨
 - 위치: `CLAUDE.md` 구조 표 · 탐지 규칙 4
 - 요약: ① 구조 표에 `argus/report/` 패키지가 없다(파일 → 역할 표가 "어디를 고칠지"의 근거라 빠지면 안 보인다). ② 탐지 규칙 4 "초기 2시간은 수집만"은 PLAN:441 에서 **재시작 후 부트스트랩 폐지**로 바뀌었고 실제 문턱은 표본 수(`min_samples: 60`)다. CLAUDE.md 가 낡았다.
 - 근거: 인용
@@ -192,8 +199,9 @@
 - 심각도: 낮음
 - 수정비용: 작음
 - 대상: `CLAUDE.md`
+- 결과: ① 구조표에 `report/` 행 추가(탐지와 별개 트랙임을 적었다). ② 탐지 규칙 4 를 실제 동작으로 — 문턱은 표본 수(`detection.min_samples`), 재시작 때는 최근 30분으로 예열, "초기 2시간"은 PLAN:441 에서 폐지됐다고 적었다. `doc_numbers` 게이트 OK
 
-### F-011 · 영역: 라이선스·귀속 · 상태: 미처리
+### F-011 · 영역: 라이선스·귀속 · 상태: 수정됨
 - 위치: `packaging/argus.spec:33`, `packaging/argus_ui.spec:24` — `datas = [` (LICENSE·고지 없음)
 - 요약: 배포물(`dist/argus`, `dist/argus-ui`)에 자체 `LICENSE` 도, 제3자 고지도 없다. PyInstaller 가 dist-info 4개(duckdb·numpy·markupsafe·pydantic)의 라이선스만 우연히 실었다. **PySide6/Qt 는 LGPL-3** 이라 고지와 교체 가능성(onedir 는 충족) 안내가 필요하고, pyarrow(Apache-2.0)는 NOTICE 를 요구한다.
 - 근거: 실측 — `find dist -iname "*licen*"` 결과가 위 4개 dist-info 밖에 없음(2026-08-17 빌드)
@@ -203,6 +211,7 @@
 - 심각도: 중간 (배포가 전제인 프로젝트)
 - 수정비용: 작음 — `THIRD_PARTY_NOTICES.txt` 생성 스크립트 + `datas` 한 줄 + 배포 스모크에 존재 검사
 - 대상: `packaging/*.spec`, `packaging/make_deploy.ps1`, 새 고지 파일
+- 결과: `tools/third_party_notices.py` 가 설치된 패키지 정보(importlib.metadata)에서 런타임 뿌리(pyproject dependencies + ui extras)와 하위 의존성을 따라가 `packaging/THIRD_PARTY_NOTICES.txt` 를 만든다 — 18개 구성요소 · 라이선스 원문 49개 · PySide6/shiboken6 LGPL-3 교체 가능성 안내(onedir 라 가능) · pyarrow NOTICE 원문. 목록을 손으로 두지 않는다(의존성이 바뀌면 어긋난다). 두 spec 의 `datas` 에 LICENSE·고지 추가, 배포 스크립트 `make_deploy.ps1` 이 배포 폴더 맨 위에 복사하고 **없으면 멈춘다**(BOM 유지·파싱 확인). 테스트 `tests/test_third_party_notices.py` 5개(생성기가 LGPL·NOTICE 를 싣고 개발 도구는 안 싣는다 · spec 둘 · 배포 스크립트 · 파일이 저장소에 있다). **실제 exe 빌드로는 확인하지 않았다** — 이 프로젝트는 배포 시점에 빌드한다. 덤: 노트북 배포용 `settings.quiet-observer.yaml` 에 `config_version: 1` 을 넣었다 — 없으면 F-026 의 "옛 전체 사본" 경고가 거짓으로 뜬다
 
 ### F-012 · 영역: 하위호환 · 상태: 수정됨
 - 위치: `argus/storage/hot.py:141` — `self.conn.executescript(sql)` / `:147` `self.conn.rollback()`
@@ -276,7 +285,7 @@
 - 대상: `argus/decide/fusion.py`, (스키마 변경이면) 마이그레이션, 테스트
 - 결과: 워터마크 앞 `late_lookback_s`(600초) 안에서 **아직 사건에 안 붙은** 신호를 새 신호와 함께 읽는다(탐지 시각 순). 창 밖의 오래된 미부착 신호는 되살리지 않는다. 삽입 순번(rowid) 워터마크 안은 기각 — 조용한 PC 에서 보존 정리가 신호 표를 비우면 rowid 가 1부터 다시 시작해 융합이 영원히 멈출 수 있다. `late_lookback_s` 는 `lag_s`·`gap_s` 와 같은 "시간 구조"라 `FusionSettings` 에 둔다(그 클래스 docstring 의 기존 결정). 프로브 pr02 FAIL → **PASS**. 테스트 2개: 20초 늦은 신호가 사건이 된다 · 대조(창 밖 오래된 신호는 되살리지 않는다). 변이 `late_signals_are_rescanned` 등록(잡힘 확인). 골든 그대로. **상주 재시작 필요**
 
-### F-018 · 영역: 탐지 신뢰성 · 상태: 판단 필요
+### F-018 · 영역: 탐지 신뢰성 · 상태: 수정됨
 - 위치: `argus/detection/rules.py:399` — `        self.baselines.reset()`
 - 요약: 절전 복귀(`on_time_gap`)가 탐지기 `reset()` 을 부르고, 룰 엔진은 **베이스라인 전체**(전역·프로그램별·부하 축 6시간)를 비운다. docstring 의 의도는 "지속 조건 시계를 버린다"인데 평소값까지 버리고, 기동 때와 달리 `warm` 으로 다시 채우지 않는다. 베이스라인은 이상값도 배우므로, 창이 60개뿐인 복귀 직후에는 이상이 ~60초 만에 "평소"가 되어 `for` 를 못 채운다 → **복귀 직후 시작한 이상은 안 잡힌다.** 노트북(배포 대상)은 매일 잠든다. 이 PC 는 최근 5주 공백 0건이라 여기서는 안 보인다.
 - 근거: 실측 — 제품 룰(`registry.build("rules")`), 평소 30분(메모리 45%) → reset → 한가한 1분 → 메모리 90% 3분: 발화 없음. 대조: reset 없음 → 발화 / reset 뒤 한가한 10분 → 발화
@@ -287,6 +296,7 @@
 - 수정비용: 작음 — reset 에서 베이스라인은 남기고 지속 시계·쿨다운만 버린다(또는 복귀 뒤 `warm` 재호출)
 - 대상: `argus/detection/rules.py`, `argus/detection/live.py`, 테스트
 - 판단: 수정 판에서 설계 확인 중 **판단 필요로 돌렸다.** 베이스라인은 새 관측이 올 때마다 30분 창 밖 표본을 **시각 기준으로** 버린다(`MetricBaseline._trim`). 그래서 (a) reset 에서 베이스라인을 안 버리기만 하면 30분 미만 절전(부하 축은 6시간 미만)에만 효과가 있고, 밤새 잠든 뒤에는 첫 관측에 어차피 비어 지금과 같다. (b) 공백만큼 표본 시각을 밀어 "잠들기 전 30분"을 평소로 삼으면 긴 절전도 막지만 탐지 동작을 바꾸는 결정이다(탐지 규칙 3 — 리플레이에 공백 시나리오가 없어 수치로 입증할 길도 아직 없다). (c) 지금대로 복귀 직후 1~2분 사각을 감수. 비용: (a) 작음 · (b) 중간 · (c) 없음
+- 결과: 사용자 결정 (a) "안 버리기만". 탐지기에 복귀 전용 `on_gap()` 을 두고(`reset()` 은 리플레이·채점의 완전 초기화로 그대로), 룰 엔진은 **지속 시계·쿨다운만 버리고 평소값을 남긴다**. `live.on_time_gap` 은 `on_gap` 이 있으면 그것을 부른다(procleak 등은 여전히 reset). 30분 미만 절전(부하 축 6시간 미만)에서 효과 — 긴 절전 뒤에는 창 밖 표본이 시각 기준으로 잘려 지금과 같다(알려진 사각, docstring 에 적음). 프로브 pr04 FAIL → **PASS**(제품 경로 `on_gap` 으로). 테스트: 복귀가 평소값을 남긴다(예열로 섰다는 대조) · 지속 시계는 버린다 · 복귀 1분 뒤 시작한 이상을 잡는다. 되돌리는 변이 `time_gap_keeps_baseline` 빨강. **상주 재시작 필요**
 
 ### F-019 · 영역: 조용한 실패 · 상태: 수정됨
 - 위치: `argus/decide/fusion.py:618` — `        self._set_watermark(end)`
@@ -336,7 +346,7 @@
 - 대상: `argus/config/defaults.yaml`, `argus/config/loader.py`, `argus/__main__.py`, `argus/decide/budget.py`, 테스트
 - 결과: **절반 수정 · 절반 기각.** ① 알림 예산: config 에 `notify_budget` 절(`per_day`·`min_severity`) — `NotificationBudget.from_settings` 로 만들어 `__main__` 이 융합에 넘긴다. "하루"를 로컬 자정으로. `tests/test_notify_budget.py` 3개: 기본값이 아닌 값(3·critical)이 설정에서 예산까지 온다(코드 기본이 3 이 아니라는 대조 포함) · `__main__` 배선 문구 · 로컬 자정 경계(로컬=UTC 인 PC 에서는 가를 수 없어 skip 으로 드러낸다). 되돌리는 변이 둘(UTC 자정 · 설정 무시) 빨강, `mutation_sweep` 에 등록. ② **융합의 `lag_s`·`gap_s` 는 기각** — `FusionSettings` docstring 에 "임계값이 아니라 시간 구조라 config 가 아닌 여기 둔다"는 기존 결정이 있었다. 분석 때 그 줄을 못 읽었다(이력은 [기존] 이었어야 한다). **상주 재시작 필요**
 
-### F-023 · 영역: 위생 · 상태: 미처리
+### F-023 · 영역: 위생 · 상태: 수정됨
 - 위치: `CLAUDE.md:27` — `` `severity` 가 등급을 두 축(현재 손실·위험)으로 매긴다 ``
 - 요약: 현재 손실 축은 2026-08-09 에 기각됐다(`docs/DONE.md` §10). 제품은 위험 축(`leak_risk`)만 쓰고, `combine`·`clock_loss_impact` 는 `tools/grade_probe.py` 에서만 불린다. 구조표가 기각된 설계를 현재형으로 말한다.
 - 근거: 인용 — `grep` 결과 제품 코드의 `decide.severity` 사용처는 `procleak.py:30`(`leak_risk`) 하나
@@ -346,6 +356,7 @@
 - 심각도: 낮음
 - 수정비용: 작음 — 구조표 한 줄
 - 대상: `CLAUDE.md`
+- 결과: CLAUDE.md 구조표 `decide/` 행을 "위험 축만, 현재 손실 축은 2026-08-09 기각, `combine`·`clock_loss_impact` 는 `tools/grade_probe.py` 만 부른다"로. 같이 오늘 바뀐 구조를 반영: `runtime/` 행에 컴포넌트 건강 표(F-014), `config/` 행에 주석 템플릿·사용자 룰(F-026·F-001)
 
 ### F-024 · 영역: 테스트 사각 · 상태: 수정됨
 - 위치: `tools/mutation_sweep.py` — `MUTANTS` 중 3개
@@ -359,7 +370,7 @@
 - 대상: 해당 규칙의 테스트 파일
 - 결과: 생존 3개 중 둘은 단언이 없던 것 — `foreground_mark_upserts`: 기존 테스트는 upsert 의 **삽입 경로**(행이 없을 때)만 쟀다 → 설명이 이미 있는 행이 표시되는지(갱신 경로) 테스트 추가. `usage_user_only_filter`: 기존 테스트가 두 프로그램을 모두 포어그라운드로 넣어 필터 자체가 재어지지 않았다 → 배경 서비스(foreground_seen 0)가 걸러지는지 + 대조(user_only=False 면 둘 다). 둘 다 이제 잡힘. 셋째 `shutdown_test_suppresses_notifications` 는 **기각** — 도구에 `expect_caught=False`·사유(테스트 자신의 배선)가 이미 있었는데 감사 수집기 `sweep_jobs collect` 가 그 표시를 무시해 "안 잡힘"으로 셌다. 수집기가 `알려진 안 잡힘` 을 따로 세게 고쳤다
 
-### F-025 · 영역: 테스트 사각 · 상태: 미처리
+### F-025 · 영역: 테스트 사각 · 상태: 수정됨
 - 위치: `argus/detection/` · `argus/decide/` — if-py 변이 생존 줄 (목록은 `.audit_runs/2026-09-25/` 수집 출력)
 - 요약: 조건 뒤집기 283개 중 핵심 테스트로 87개 생존 → 전체 테스트(644개) 재확인 **87개 전부 생존**. 줄별 판정: **스모크 블록 안 51**(`python -m …` 스모크가 지킨다 — pytest 몫 아님) · **표시·로그 문구 전용 9**(`rules.py:54`·`287`·`504`·`510`·`512`, `fusion.py:177`·`463`, `trace.py:71`·`73`) · **제품이 안 부르는 코드 3**(`severity.py:113`·`117`·`135` — 기각된 현재 손실 축, F-023) · **제품 판정인데 단언 없음 24**. 24개 중 실시간 경로 9줄은 F-028 로 따로 올렸다. 나머지 15: `fusion.py:180`(방아쇠 지표 수집 — 뒤집으면 `trigger_metrics` 가 빈다, F-016 과 같은 경로) · `fingerprint.py:123`(허용 통계량 검사 — 뒤집으면 정상 호출이 전부 예외인데 초록 = 함수가 테스트 밖) · `rules.py:134·136·138·140`(비교 연산자 `>=`·`<`·`<=`·`==` — `<` 는 동봉 「단일 코어 병목」이 쓴다. 뒤집으면 `!=` 로 떨어져 거의 항상 참) · `rules.py:174`(`swap_total_mb`) · `rules.py:242`(`any` 조합) · `thermal.py:157·161`(**재발화 억제 — 탐지 규칙 1 의 자리**) · `procleak.py:215·391·394`(추적 표본 가드) · `expr.py:146`(조건식) · `base.py:191`(첫 관측 시각)
 - 근거: 실측 — `ifpy_recheck.py collect` → 변이 87 · survived 87 · 판정 없음 0 · 대조 survived. **"전부 생존"은 극단값이라 도구를 먼저 의심했다**: 슬롯에서 `argus` 가 사본에서 불러와지는 것을 확인했고, 반드시 잡혀야 할 변이(`fusion.py:600` 사건 분리 조건)를 같은 방식으로 돌려 **caught**(`test_fusion.py` 즉시 실패)를 확인 — 하네스는 유효하다. 앞 단계가 196개를 이미 걸렀으니 남은 87개가 다 사는 것은 자연스럽다
@@ -369,6 +380,7 @@
 - 심각도: 중간
 - 수정비용: 중간 — 단언 15개(모듈별로 묶어). 스모크 블록 51개는 "스모크를 CI 에 넣을지"의 문제로 따로 판단. 하네스에 **양성 대조(잡혀야 할 변이)** 를 기본으로 넣는다 — 이번엔 손으로 했다
 - 대상: `tests/` (detection·decide), `tools/audit/ifpy_recheck.py`
+- 결과: 제품 판정 15줄을 **지금 코드로 다시 쟀다**(줄 번호를 감사 시작 커밋의 원문으로 다시 매김) — 하네스에 **양성 대조**(반드시 잡혀야 하는 변이, `fusion.py` 사건 분리 조건)를 기본으로 넣어 대조 survived · 양성 caught 로 유효성을 스스로 확인. 결과: 1줄(`fusion.py` 방아쇠 지표 수집)은 F-016 테스트가 이미 잡음 · 2줄(`procleak.py` 퇴출 순위 가드 391·394)은 **동치**(트랙은 만들자마자 표본이 붙어 빈 트랙이 없고, 표본 1개면 증가율 0 이라 가드와 같은 값) · 남은 12줄에 `tests/test_guard_assertions.py` 15개 — 비교 연산자 4 · `any` 조합 · 스왑 변수 · 조건식 None · 첫 관측 워밍업 · 지문 통계량 검사 · 시작값 0 트랙(0 나누기) · 발열 탐지기 "판정 없으면 신호 없음"·**하루 한 번**. 작업 트리 사본에서 줄마다 뒤집어 **12/12 잡힘**. 스모크 블록 51줄은 사용자 결정대로 손으로 돌리는 스모크로 둔다
 
 ### F-028 · 영역: 테스트 사각 · 상태: 수정됨
 - 위치: `argus/detection/live.py:126` — `        if rows:`
