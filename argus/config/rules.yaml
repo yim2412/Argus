@@ -35,7 +35,7 @@ rules:
     for: 30s
     cooldown: 10m
     severity: warning
-    explain: "CPU {cpu_total}% 로 45초 이상 지속 (평소 {cpu_total.median}%)"
+    explain: "CPU {cpu_total}% 로 30초 이상 지속 (평소 {cpu_total.median}%)"
 
   - name: 단일 코어 병목
     # 전체 CPU 는 여유로운데 코어 하나가 붙어 있는 상태. 게임·구형 프로그램에서
